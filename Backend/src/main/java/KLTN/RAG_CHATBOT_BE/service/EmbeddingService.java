@@ -13,7 +13,7 @@ public class EmbeddingService {
 
     private final EmbeddingModel embeddingModel;
 
-    public List<Double> embed(String text) {
-        return embeddingModel.embed(text);
-    }
+   public float[] embedText(String text) {
+    return embeddingModel.embed(text);
+}
 }

@@ -22,15 +22,19 @@ public class VectorSearchService {
     }
 
     public String searchRelevantContext(String query) {
-        List<Document> results = vectorStore.similaritySearch(
-                SearchRequest.query(query).withTopK(3));
+        SearchRequest searchRequest = SearchRequest.builder()
+                .query(query)
+                .topK(3)
+                .build();
+
+        List<Document> results = vectorStore.similaritySearch(searchRequest);
 
         if (results == null || results.isEmpty()) {
             return "";
         }
 
         return results.stream()
-                .map(Document::getContent)
+                .map(doc -> doc.getText())
                 .collect(Collectors.joining("\n"));
     }
 }
