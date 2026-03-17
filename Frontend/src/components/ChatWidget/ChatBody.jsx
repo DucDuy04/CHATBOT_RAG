@@ -1,8 +1,8 @@
-import { useChat } from '../../hooks/useChat';
+// import { useChat } from '../../hooks/useChat';
 import ChatMessage from './ChatMessage';
 
-export default function ChatBody() {
-  const { messages } = useChat();
+export default function ChatBody( {messages}) {
+  // const { messages } = useChat();
 
   return (
     <div className="chat-body">

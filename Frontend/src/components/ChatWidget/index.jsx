@@ -2,8 +2,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { useChat } from '../../hooks/useChat';
 import { ChatHeader } from './ChatHeader';
-import { ChatMessage } from './ChatMessage';
+// import ChatMessage  from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import ChatBody from './ChatBody';
 
 export default function ChatWidget() {
     const [isOpen, setIsOpen] = useState(false);
@@ -26,9 +27,10 @@ export default function ChatWidget() {
                     <div className="flex-1 overflow-y-auto p-4 bg-gray-50 scrollbar-hide flex flex-col gap-4">
                         <div className="text-center text-xs text-gray-400 font-medium tracking-widest my-2">TODAY</div>
                         
-                        {messages.map((msg) => (
+                        {/* {messages.map((msg) => (
                             <ChatMessage key={msg.id} msg={msg} />
-                        ))}
+                        ))} */}
+                        <ChatBody messages={messages} />
 
                         {/* Loading Indicator */}
                         {isLoading && (

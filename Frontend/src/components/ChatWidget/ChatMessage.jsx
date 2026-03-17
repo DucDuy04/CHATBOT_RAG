@@ -1,5 +1,5 @@
 // src/components/ChatWidget/ChatMessage.jsx
-export const ChatMessage = ({ msg }) => {
+export default function ChatMessage({ msg }) {
     const isUser = msg.sender === 'user';
     return (
         <div className={`flex gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}>
