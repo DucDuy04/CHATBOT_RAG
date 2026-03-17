@@ -1,0 +1,38 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+# Cấu hình Qdrant
+qdrant:
+  host: localhost
+  port: 6334                    # Dùng cổng gRPC
+  collection-name: documents
+
+# Cấu hình Gemini
+gemini:
+  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
+  embedding-model: text-embedding-004
+  chat-model: gemini-1.5-flash 
+
+# Thư mục lưu file upload
+app:
+  upload-dir: ./uploads
+
+server:
+  port: 8080
+
+
+
+
+

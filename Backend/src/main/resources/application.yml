@@ -1,0 +1,14 @@
+spring:
+  profiles:
+    active: dev
+
+  application:
+    name: rag-chatbot-backend
+
+  servlet:
+    multipart:
+      max-file-size: 50MB      # Giới hạn file upload
+      max-request-size: 50MB
+
+gemini:
+  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
