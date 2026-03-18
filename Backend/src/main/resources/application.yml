@@ -11,4 +11,4 @@ spring:
       max-request-size: 50MB
 
 gemini:
-  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
+  api-key: AIzaSyBoE7yf4FxTPIokqZsoXzIPBCeJjBSDdrQ

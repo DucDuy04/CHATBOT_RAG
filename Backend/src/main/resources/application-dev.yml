@@ -17,13 +17,15 @@ spring:
 qdrant:
   host: localhost
   port: 6334                    # Dùng cổng gRPC
+  http-port: 6333               # Dùng cổng HTTP cho REST API
   collection-name: documents
+  vector-size: 3072             # gemini-embedding-001 = 3072 dimensions
 
 # Cấu hình Gemini
 gemini:
-  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
-  embedding-model: text-embedding-004
-  chat-model: gemini-1.5-flash 
+  api-key: AIzaSyBoE7yf4FxTPIokqZsoXzIPBCeJjBSDdrQ
+  embedding-model: gemini-embedding-001
+  chat-model: gemini-2.0-flash
 
 # Thư mục lưu file upload
 app:
