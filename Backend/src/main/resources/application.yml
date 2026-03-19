@@ -10,5 +10,7 @@ spring:
       max-file-size: 50MB      # Giới hạn file upload
       max-request-size: 50MB
 
-gemini:
-  api-key: AIzaSyBoE7yf4FxTPIokqZsoXzIPBCeJjBSDdrQ
+# gemini:
+#   api-key: GEMINI_API_KEY_PLACEHOLDER
+groq:
+  api-key: GROQ_API_KEY_PLACEHOLDER

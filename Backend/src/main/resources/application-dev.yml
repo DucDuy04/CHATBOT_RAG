@@ -19,13 +19,23 @@ qdrant:
   port: 6334                    # Dùng cổng gRPC
   http-port: 6333               # Dùng cổng HTTP cho REST API
   collection-name: documents
-  vector-size: 3072             # gemini-embedding-001 = 3072 dimensions
+  vector-size: 768             # gemini-embedding-001 = 3072 dimensions
 
 # Cấu hình Gemini
-gemini:
-  api-key: AIzaSyBoE7yf4FxTPIokqZsoXzIPBCeJjBSDdrQ
-  embedding-model: gemini-embedding-001
-  chat-model: gemini-2.0-flash
+# gemini:
+#   api-key: GEMINI_API_KEY_PLACEHOLDER
+#   embedding-model: gemini-embedding-001
+#   chat-model: gemini-2.0-flash-lite
+
+# Cấu hình Groq
+groq:
+  api-key: GROQ_API_KEY_PLACEHOLDER
+  chat-model: llama-3.3-70b-versatile   # Model mạnh nhất, miễn phí
+  base-url: https://api.groq.com/openai/v1
+
+nomic:
+  api-key: NOMIC_API_KEY_PLACEHOLDER
+  embedding-model: nomic-embed-text-v1.5
 
 # Thư mục lưu file upload
 app:
