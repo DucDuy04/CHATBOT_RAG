@@ -6,3 +6,4 @@
 .scrollbar-hide::-webkit-scrollbar { width: 6px; }
 .scrollbar-hide::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-hide::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+

@@ -1,17 +1,18 @@
-export async function getDocuments() {
-  return [];
-}
+import axiosInstance from "./axiosInstance";
 
-export async function uploadDocument(file) {
-  return file;
-}
+// Upload file PDF hoặc TXT
+export const uploadDocument = async (file) => {
+  const formData = new FormData();
+  formData.append("file", file);
 
-export async function deleteDocument(documentId) {
-  return documentId;
-}
+  const response = await axiosInstance.post("/api/documents/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
 
-export default {
-  getDocuments,
-  uploadDocument,
-  deleteDocument,
+// Lấy danh sách tài liệu đã upload
+export const getDocuments = async () => {
+  const response = await axiosInstance.get("/api/documents");
+  return response.data;
 };

@@ -1,16 +1,42 @@
-// src/App.jsx
-import ChatWidget from './components/ChatWidget/index.jsx';
+import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import ChatPage     from "./pages/ChatPage";
+import DocumentPage from "./pages/DocumentPage";
 
-function App() {
+export default function App() {
   return (
-    <div className="bg-gray-100 h-screen w-screen flex flex-col items-center justify-center">
-      <h1 className="text-3xl font-bold text-gray-700">Test Widget RAG Chatbot</h1>
-      <p className="mt-4 text-gray-500">Bấm vào biểu tượng tin nhắn góc dưới cùng bên phải để chat.</p>
-      
-      {/* Gọi Widget */}
-      <ChatWidget />
-    </div>
+    <BrowserRouter>
+      <div className="min-h-screen bg-gray-50">
+
+        {/* Thanh điều hướng */}
+        <nav className="bg-white border-b px-6 py-3 flex gap-6 text-sm">
+          <NavLink
+            to="/"
+            className={({ isActive }) =>
+              isActive
+                ? "font-semibold text-blue-600"
+                : "text-gray-500 hover:text-gray-800"
+            }
+          >
+            Chat
+          </NavLink>
+          <NavLink
+            to="/documents"
+            className={({ isActive }) =>
+              isActive
+                ? "font-semibold text-blue-600"
+                : "text-gray-500 hover:text-gray-800"
+            }
+          >
+            Tài liệu
+          </NavLink>
+        </nav>
+
+        {/* Nội dung trang */}
+        <Routes>
+          <Route path="/"          element={<ChatPage />} />
+          <Route path="/documents" element={<DocumentPage />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
   );
 }
-
-export default App;
