@@ -42,9 +42,10 @@ public class DocumentParserService {
     private String parsePdf(MultipartFile file) throws IOException {
         try (PDDocument document = Loader.loadPDF(file.getBytes())) {
             PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);
+            stripper.setWordSeparator(" ");
+            stripper.setLineSeparator("\n");
             String text = stripper.getText(document);
-            System.out.println("=== TEXT LENGTH: " + text.length()); // Xem độ dài
-            System.out.println("=== TEXT: " + text); // Xem nội dung thực tế
             return cleanText(text);
         }
     }
@@ -56,10 +57,22 @@ public class DocumentParserService {
     }
 
     private String cleanText(String text) {
+        if (text == null) {
+            return "";
+        }
+
         return text
+                .replace('\u00A0', ' ') // Non-breaking space
+                .replace('\u2007', ' ') // Figure space
+                .replace('\u202F', ' ') // Narrow no-break space
+                .replace("\u200B", "") // Zero-width space
+                .replace("\u200C", "") // Zero-width non-joiner
+                .replace("\u200D", "") // Zero-width joiner
+                .replace("\uFEFF", "") // BOM / zero-width no-break space
                 .replaceAll("\\r\\n", "\n") // Chuẩn hóa xuống dòng
                 .replaceAll("\\r", "\n")
                 .replaceAll("[ \\t]+", " ") // Nhiều khoảng trắng → 1
+                .replaceAll("([,.;:!?])(\\S)", "$1 $2") // Đảm bảo có khoảng trắng sau dấu câu
                 .replaceAll("\\n{3,}", "\n\n") // Nhiều dòng trống → tối đa 2
                 .trim();
     }
