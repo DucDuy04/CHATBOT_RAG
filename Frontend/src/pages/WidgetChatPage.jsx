@@ -90,27 +90,9 @@ export default function WidgetChatPage() {
               prev.map((msg) => {
                 if (msg.id !== botMessageId) return msg;
 
-                const current = msg.content;
-                const firstChar = eventData[0] || '';
-                const lastChar = current.slice(-1);
-
-                // Không thêm space nếu token bắt đầu bằng non-ASCII letter (dấu tiếng Việt)
-                // vì có thể là continuation của từ (ví dụ: "D" + "ựa" → "Dựa")
-                const isVietnameseContinuation = /\p{L}/u.test(lastChar)
-                  && /\p{L}/u.test(firstChar)
-                  && !/^[a-zA-Z]/.test(firstChar);
-
-                const needSpace = !isVietnameseContinuation
-                  && current.length > 0
-                  && !current.endsWith(" ")
-                  && !current.endsWith("\n")
-                  && !eventData.startsWith(" ")
-                  && !eventData.startsWith("\n")
-                  && ![",", ".", "!", "?", ";", ":", "-", ")"].includes(firstChar);
-
                 return {
                   ...msg,
-                  content: current + (needSpace ? " " : "") + eventData
+                  content: msg.content + eventData
                 };
               })
             );
