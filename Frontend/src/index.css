@@ -7,3 +7,8 @@
 .scrollbar-hide::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-hide::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
 
+/* Fix text dính liền */
+.overflow-wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
