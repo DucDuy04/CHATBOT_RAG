@@ -1,106 +1,3 @@
-// package KLTN.RAG_CHATBOT_BE.service;
-
-// import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
-// import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
-// import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
-// import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
-// import dev.langchain4j.data.segment.TextSegment;
-// import dev.langchain4j.model.googleai.GoogleAiGeminiChatModel;
-// import dev.langchain4j.store.embedding.EmbeddingMatch;
-// import lombok.RequiredArgsConstructor;
-// import lombok.extern.slf4j.Slf4j;
-// import org.springframework.stereotype.Service;
-// import java.util.List;
-
-// @Slf4j
-// @Service
-// @RequiredArgsConstructor
-// public class ChatService {
-
-// private final EmbeddingService embeddingService;
-// private final PromptBuilderService promptBuilderService;
-// private final GoogleAiGeminiChatModel chatModel;
-// private final ChatMessageRepository chatMessageRepository;
-
-// private static final int TOP_K = 5; // Lấy 5 chunk liên quan nhất
-// private static final double MIN_SIMILARITY = 0.7; // Ngưỡng điểm tương đồng
-// tối thiểu
-
-// public ChatResponse chat(ChatRequest request) {
-// String sessionId = request.getSessionId();
-// String question = request.getMessage();
-
-// log.info("Nhận câu hỏi từ session={}: {}", sessionId, question);
-
-// // Bước 1: Lưu câu hỏi người dùng vào DB
-// saveChatMessage(sessionId, ChatMessage.MessageRole.USER, question, null);
-
-// // Bước 2: Tìm kiếm vector trong Qdrant
-// List<EmbeddingMatch<TextSegment>> matches = embeddingService.search(question,
-// TOP_K);
-
-// // Bước 3: Lọc theo ngưỡng similarity
-// List<EmbeddingMatch<TextSegment>> relevantMatches = matches.stream()
-// .filter(match -> match.score() >= MIN_SIMILARITY)
-// .toList();
-
-// log.info("Tìm được {} chunks liên quan (score >= {})",
-// relevantMatches.size(), MIN_SIMILARITY);
-
-// // Bước 4: Tách text và metadata từ kết quả tìm kiếm
-// List<String> contextChunks = relevantMatches.stream()
-// .map(match -> match.embedded().text())
-// .toList();
-
-// List<ChatResponse.SourceDto> sources = relevantMatches.stream()
-// .map(match -> ChatResponse.SourceDto.builder()
-// .fileName(match.embedded().metadata().getString("fileName"))
-// .chunkText(match.embedded().text())
-// .build())
-// .toList();
-
-// // Bước 5: Lấy lịch sử chat gần nhất
-// List<ChatMessage> chatHistory =
-// chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(sessionId);
-
-// // Bước 6: Xây dựng prompt
-// String prompt = promptBuilderService.buildPrompt(
-// question, contextChunks, chatHistory);
-
-// // Bước 7: Gọi GPT
-// String answer;
-// if (relevantMatches.isEmpty()) {
-// // Không tìm được context liên quan → trả lời mặc định
-// answer = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong
-// tài liệu đã cung cấp.";
-// } else {
-// answer = chatModel.generate(prompt);
-// }
-
-// log.info("GPT trả lời xong cho session={}", sessionId);
-
-// // Bước 8: Lưu câu trả lời vào DB
-// saveChatMessage(sessionId, ChatMessage.MessageRole.ASSISTANT, answer, null);
-
-// return ChatResponse.builder()
-// .answer(answer)
-// .sources(sources)
-// .build();
-// }
-
-// private void saveChatMessage(String sessionId,
-// ChatMessage.MessageRole role,
-// String content,
-// String sources) {
-// ChatMessage message = ChatMessage.builder()
-// .sessionId(sessionId)
-// .role(role)
-// .content(content)
-// .sources(sources)
-// .build();
-// chatMessageRepository.save(message);
-// }
-// }
 package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
@@ -108,12 +5,19 @@ import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
 import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import dev.langchain4j.data.segment.TextSegment;
-// import dev.langchain4j.model.googleai.GoogleAiGeminiChatModel;
+import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.output.Response;
+import org.springframework.http.MediaType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.List;
 
 @Slf4j
@@ -121,74 +25,205 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ChatService {
 
-        private final EmbeddingService embeddingService;
-        private final PromptBuilderService promptBuilderService;
-        private final OpenAiChatModel chatModel;
-        private final ChatMessageRepository chatMessageRepository;
+    private final EmbeddingService embeddingService;
+    private final PromptBuilderService promptBuilderService;
+    private final OpenAiChatModel chatModel;
+    private final ChatMessageRepository chatMessageRepository;
 
-        private static final int TOP_K = 5;
+    @Value("${groq.api-key}")
+    private String groqApiKey;
 
-        public ChatResponse chat(ChatRequest request) {
-                String sessionId = request.getSessionId();
-                String question = request.getMessage();
+    @Value("${groq.chat-model}")
+    private String groqChatModel;
 
-                log.info("Nhận câu hỏi từ session={}: {}", sessionId, question);
+    @Value("${groq.base-url}")
+    private String groqBaseUrl;
 
-                // Bước 1: Lưu câu hỏi người dùng vào DB
+    private static final int TOP_K = 5;
+
+    public ChatResponse chat(ChatRequest request) {
+        String sessionId = request.getSessionId();
+        String question = request.getMessage();
+
+        log.info("Nhan cau hoi tu session={}: {}", sessionId, question);
+
+        saveChatMessage(sessionId, ChatMessage.MessageRole.USER, question, null);
+
+        List<TextSegment> segments = embeddingService.search(question, TOP_K);
+        log.info("Tim duoc {} chunks lien quan", segments.size());
+
+        List<String> contextChunks = segments.stream()
+                .map(TextSegment::text)
+                .toList();
+
+        List<ChatResponse.SourceDto> sources = segments.stream()
+                .map(seg -> ChatResponse.SourceDto.builder()
+                        .fileName(seg.metadata().getString("fileName"))
+                        .chunkText(seg.text())
+                        .build())
+                .toList();
+
+        List<ChatMessage> chatHistory = chatMessageRepository
+                .findTop10BySessionIdOrderByCreatedAtAsc(sessionId);
+
+        String prompt = promptBuilderService.buildPrompt(question, contextChunks, chatHistory);
+
+        String answer;
+        if (segments.isEmpty()) {
+            answer = "Toi khong tim thay thong tin lien quan den cau hoi cua ban trong tai lieu da cung cap.";
+        } else {
+            answer = chatModel.generate(prompt);
+        }
+
+        log.info("Groq tra loi xong cho session={}", sessionId);
+
+        saveChatMessage(sessionId, ChatMessage.MessageRole.ASSISTANT, answer, null);
+
+        return ChatResponse.builder()
+                .answer(answer)
+                .sources(sources)
+                .build();
+    }
+
+    public SseEmitter chatStream(ChatRequest request) {
+        SseEmitter emitter = new SseEmitter(180_000L);
+
+        String sessionId = request.getSessionId();
+        String question = request.getMessage();
+
+        new Thread(() -> {
+            try {
                 saveChatMessage(sessionId, ChatMessage.MessageRole.USER, question, null);
 
-                // Bước 2: Tìm kiếm vector trong Qdrant
                 List<TextSegment> segments = embeddingService.search(question, TOP_K);
-                log.info("Tìm được {} chunks liên quan", segments.size());
+                log.info("[Stream] Tim duoc {} chunks cho session={}", segments.size(), sessionId);
 
-                // Bước 3: Tách text và metadata
                 List<String> contextChunks = segments.stream()
-                                .map(TextSegment::text)
-                                .toList();
+                        .map(TextSegment::text)
+                        .toList();
 
                 List<ChatResponse.SourceDto> sources = segments.stream()
-                                .map(seg -> ChatResponse.SourceDto.builder()
-                                                .fileName(seg.metadata().getString("fileName"))
-                                                .chunkText(seg.text())
-                                                .build())
-                                .toList();
+                        .map(seg -> ChatResponse.SourceDto.builder()
+                                .fileName(seg.metadata().getString("fileName"))
+                                .chunkText(seg.text())
+                                .build())
+                        .toList();
 
-                // Bước 4: Lấy lịch sử chat
                 List<ChatMessage> chatHistory = chatMessageRepository
-                                .findTop10BySessionIdOrderByCreatedAtAsc(sessionId);
+                        .findTop10BySessionIdOrderByCreatedAtAsc(sessionId);
 
-                // Bước 5: Xây dựng prompt
-                String prompt = promptBuilderService.buildPrompt(question, contextChunks, chatHistory);
-
-                // Bước 6: Gọi Gemini
-                String answer;
                 if (segments.isEmpty()) {
-                        answer = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu đã cung cấp.";
-                } else {
-                        answer = chatModel.generate(prompt);
+                    String noContext = "Toi khong tim thay thong tin lien quan den cau hoi cua ban trong tai lieu da cung cap.";
+                    emitter.send(SseEmitter.event()
+                            .name("token")
+                            .data(noContext, MediaType.TEXT_PLAIN));
+                    emitter.send(SseEmitter.event()
+                            .name("done")
+                            .data("[]", MediaType.TEXT_PLAIN));
+                    emitter.complete();
+                    saveChatMessage(sessionId, ChatMessage.MessageRole.ASSISTANT, noContext, null);
+                    return;
                 }
 
-                log.info("Gemini trả lời xong cho session={}", sessionId);
+                String prompt = promptBuilderService.buildPrompt(question, contextChunks, chatHistory);
 
-                // Bước 7: Lưu câu trả lời vào DB
-                saveChatMessage(sessionId, ChatMessage.MessageRole.ASSISTANT, answer, null);
+                OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
+                        .apiKey(groqApiKey)
+                        .baseUrl(groqBaseUrl)
+                        .modelName(groqChatModel)
+                        .temperature(0.7)
+                        .build();
 
-                return ChatResponse.builder()
-                                .answer(answer)
-                                .sources(sources)
-                                .build();
+                StringBuilder fullAnswer = new StringBuilder();
+
+                streamingModel.generate(prompt, new StreamingResponseHandler<AiMessage>() {
+                    @Override
+                    public void onNext(String token) {
+                        try {
+                            fullAnswer.append(token);
+                            emitter.send(SseEmitter.event()
+                                    .name("token")
+                                    .data(token, MediaType.TEXT_PLAIN)); // ✅ thêm MediaType
+                        } catch (IOException e) {
+                            log.error("[Stream] Loi gui token: {}", e.getMessage());
+                            emitter.completeWithError(e);
+                        }
+                    }
+
+                    @Override
+                    public void onComplete(Response<AiMessage> response) {
+                        try {
+                            String sourcesJson = buildSourcesJson(sources);
+                            emitter.send(SseEmitter.event()
+                                    .name("done")
+                                    .data(sourcesJson, MediaType.TEXT_PLAIN)); // ✅ thêm MediaType
+                            emitter.complete();
+                            saveChatMessage(sessionId, ChatMessage.MessageRole.ASSISTANT,
+                                    fullAnswer.toString(), null);
+                            log.info("[Stream] Hoan thanh cho session={}", sessionId);
+                        } catch (IOException e) {
+                            log.error("[Stream] Loi hoan thanh: {}", e.getMessage());
+                            emitter.completeWithError(e);
+                        }
+                    }
+
+                    @Override
+                    public void onError(Throwable error) {
+                        log.error("[Stream] Loi LLM: {}", error.getMessage());
+                        emitter.completeWithError(error);
+                    }
+                });
+
+            } catch (Exception e) {
+                log.error("[Stream] Loi chatStream: {}", e.getMessage());
+                emitter.completeWithError(e);
+            }
+        }).start();
+
+        return emitter;
+    }
+
+    private String buildSourcesJson(List<ChatResponse.SourceDto> sources) {
+        if (sources == null || sources.isEmpty()) {
+            return "[]";
         }
 
-        private void saveChatMessage(String sessionId,
-                        ChatMessage.MessageRole role,
-                        String content,
-                        String sources) {
-                ChatMessage message = ChatMessage.builder()
-                                .sessionId(sessionId)
-                                .role(role)
-                                .content(content)
-                                .sources(sources)
-                                .build();
-                chatMessageRepository.save(message);
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < sources.size(); i++) {
+            ChatResponse.SourceDto src = sources.get(i);
+            sb.append("{")
+                    .append("\"fileName\":\"").append(escapeJson(src.getFileName())).append("\",")
+                    .append("\"chunkText\":\"").append(escapeJson(src.getChunkText())).append("\"")
+                    .append("}");
+            if (i < sources.size() - 1) {
+                sb.append(",");
+            }
         }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String escapeJson(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
+    private void saveChatMessage(String sessionId,
+            ChatMessage.MessageRole role,
+            String content,
+            String sources) {
+        ChatMessage message = ChatMessage.builder()
+                .sessionId(sessionId)
+                .role(role)
+                .content(content)
+                .sources(sources)
+                .build();
+        chatMessageRepository.save(message);
+    }
 }
