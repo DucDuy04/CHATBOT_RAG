@@ -1,9 +1,12 @@
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8
     username: root
     password: root
     driver-class-name: com.mysql.cj.jdbc.Driver
+
+    hikari:
+      connection-init-sql: SET NAMES utf8mb4
 
   jpa:
     hibernate:

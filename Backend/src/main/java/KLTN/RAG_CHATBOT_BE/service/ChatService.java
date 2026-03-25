@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 @Slf4j
@@ -40,6 +41,8 @@ public class ChatService {
     private String groqBaseUrl;
 
     private static final int TOP_K = 5;
+
+    private static final MediaType TEXT_PLAIN_UTF8 = new MediaType("text", "plain", StandardCharsets.UTF_8);
 
     public ChatResponse chat(ChatRequest request) {
         String sessionId = request.getSessionId();
@@ -141,9 +144,13 @@ public class ChatService {
                     public void onNext(String token) {
                         try {
                             fullAnswer.append(token);
+
+                            // ✅ Wrap token vào JSON để giữ nguyên space
+                            String jsonToken = "{\"token\":\"" + escapeJson(token) + "\"}";
+
                             emitter.send(SseEmitter.event()
                                     .name("token")
-                                    .data(token, MediaType.TEXT_PLAIN)); // ✅ thêm MediaType
+                                    .data(jsonToken, MediaType.APPLICATION_JSON));
                         } catch (IOException e) {
                             log.error("[Stream] Loi gui token: {}", e.getMessage());
                             emitter.completeWithError(e);

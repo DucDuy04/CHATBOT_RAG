@@ -9,6 +9,12 @@ spring:
     multipart:
       max-file-size: 50MB      # Giới hạn file upload
       max-request-size: 50MB
+server:
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
 
 # gemini:
 #   api-key: GEMINI_API_KEY_PLACEHOLDER

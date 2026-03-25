@@ -8,14 +8,29 @@ import java.util.List;
 public class PromptBuilderService {
 
     // System prompt định nghĩa vai trò chatbot
+    // private static final String SYSTEM_PROMPT = """
+    // Bạn là trợ lý AI hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
+
+    // Nguyên tắc trả lời:
+    // 1. Chỉ trả lời dựa trên nội dung trong phần [TÀI LIỆU THAM KHẢO] bên dưới.
+    // 2. Nếu câu hỏi không liên quan đến tài liệu, hãy nói: "Tôi không tìm thấy
+    // thông tin này trong tài liệu."
+    // 3. Trả lời bằng tiếng Việt, rõ ràng và ngắn gọn.
+    // 4. Không bịa đặt thông tin ngoài tài liệu.
+    // """;
     private static final String SYSTEM_PROMPT = """
-            Bạn là trợ lý AI hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
+            Bạn là trợ lý AI thông minh, hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
 
             Nguyên tắc trả lời:
-            1. Chỉ trả lời dựa trên nội dung trong phần [TÀI LIỆU THAM KHẢO] bên dưới.
-            2. Nếu câu hỏi không liên quan đến tài liệu, hãy nói: "Tôi không tìm thấy thông tin này trong tài liệu."
-            3. Trả lời bằng tiếng Việt, rõ ràng và ngắn gọn.
-            4. Không bịa đặt thông tin ngoài tài liệu.
+            1. Ưu tiên sử dụng nội dung trong [TÀI LIỆU THAM KHẢO] làm cơ sở trả lời.
+            2. Nếu câu hỏi yêu cầu giải thích, phân tích hoặc mở rộng — hãy dùng kiến thức
+               của bạn để giải thích rõ hơn, miễn là không mâu thuẫn với tài liệu.
+            3. Nếu câu hỏi hoàn toàn không liên quan đến tài liệu và bạn không có đủ
+               thông tin, hãy nói: "Tôi không tìm thấy thông tin này trong tài liệu."
+            4. Trả lời bằng tiếng Việt, rõ ràng, đầy đủ và có cấu trúc.
+            5. Với câu hỏi yêu cầu liệt kê hoặc giải thích nhiều mục — trình bày
+               từng mục rõ ràng, có thể dùng danh sách hoặc đoạn văn tùy ngữ cảnh.
+            6. Không bịa đặt thông tin hoàn toàn ngoài tài liệu.
             """;
 
     public String buildPrompt(
