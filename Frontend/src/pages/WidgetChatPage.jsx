@@ -86,16 +86,20 @@ export default function WidgetChatPage() {
             : dataLine.slice(5);  // bỏ "data:"  (5 ký tự)
 
           if (eventName === "token") {
-            setMessages((prev) =>
-              prev.map((msg) => {
-                if (msg.id !== botMessageId) return msg;
+              let tokenText = eventData;
+              try {
+                  // ✅ Parse JSON để giữ nguyên space
+                  tokenText = JSON.parse(eventData).token;
+              } catch {
+                  tokenText = eventData;
+              }
 
-                return {
-                  ...msg,
-                  content: msg.content + eventData
-                };
-              })
-            );
+              setMessages((prev) =>
+                  prev.map((msg) => {
+                      if (msg.id !== botMessageId) return msg;
+                      return { ...msg, content: msg.content + tokenText };
+                  })
+              );
           } else if (eventName === "done") {
             let sources = [];
             try { sources = JSON.parse(eventData); } catch { sources = []; }
@@ -128,12 +132,12 @@ export default function WidgetChatPage() {
     <div className="flex flex-col h-screen bg-white">
 
       {/* Header nhỏ gọn */}
-      <div className="px-4 py-3 border-b bg-blue-600 text-white font-medium text-sm">
+      <div className="px-4 py-3 text-sm font-medium text-white bg-blue-600 border-b">
         Trợ lý AI
       </div>
 
       {/* Tin nhắn */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-gray-50">
+      <div className="flex-1 p-3 space-y-3 overflow-y-auto bg-gray-50">
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -145,7 +149,7 @@ export default function WidgetChatPage() {
                   ? "bg-blue-600 text-white rounded-br-sm"
                   : "bg-white border text-gray-800 rounded-bl-sm"}`}
             >
-              <p className="whitespace-pre-wrap break-words" style={{ overflowWrap: "anywhere" }}>
+              <p className="break-words whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }}>
                 {msg.content}
                 {msg.streaming && (
                   <span className="inline-block w-0.5 h-3 bg-gray-400
@@ -160,7 +164,7 @@ export default function WidgetChatPage() {
                   </summary>
                   <div className="mt-1 space-y-1">
                     {msg.sources.map((src, i) => (
-                      <div key={i} className="bg-gray-50 rounded p-1 border text-xs">
+                      <div key={i} className="p-1 text-xs border rounded bg-gray-50">
                         <p className="font-medium text-gray-500 truncate">{src.fileName}</p>
                         <p className="line-clamp-2 text-gray-400 mt-0.5">{src.chunkText}</p>
                       </div>
@@ -175,7 +179,7 @@ export default function WidgetChatPage() {
       </div>
 
       {/* Input */}
-      <div className="p-3 border-t bg-white flex gap-2">
+      <div className="flex gap-2 p-3 bg-white border-t">
         <input
           type="text"
           value={input}
@@ -183,15 +187,12 @@ export default function WidgetChatPage() {
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
           placeholder="Nhập câu hỏi..."
           disabled={loading}
-          className="flex-1 border rounded-lg px-3 py-2 text-sm outline-none
-                     focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+          className="flex-1 px-3 py-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         />
         <button
           onClick={handleSend}
           disabled={loading || !input.trim()}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm
-                     font-medium hover:bg-blue-700
-                     disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Gửi
         </button>

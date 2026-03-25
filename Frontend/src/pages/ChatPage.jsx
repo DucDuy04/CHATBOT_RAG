@@ -92,18 +92,22 @@ export default function ChatPage() {
             ? dataLine.slice(6)   // bỏ "data: " (6 ký tự, giữ nguyên nội dung)
             : dataLine.slice(5);  // bỏ "data:"  (5 ký tự, không có space)
 
-          if (eventName === "token") {
-            setMessages((prev) =>
-              prev.map((msg) => {
-                if (msg.id !== botMessageId) return msg;
+         if (eventName === "token") {
+            let tokenText = eventData;
+            try {
+                // ✅ Parse JSON để giữ nguyên space
+                tokenText = JSON.parse(eventData).token;
+            } catch {
+                tokenText = eventData;
+            }
 
-                return {
-                  ...msg,
-                  content: msg.content + eventData
-                };
-              })
+            setMessages((prev) =>
+                prev.map((msg) => {
+                    if (msg.id !== botMessageId) return msg;
+                    return { ...msg, content: msg.content + tokenText };
+                })
             );
-          } else if (eventName === "done") {
+        }else if (eventName === "done") {
             let sources = [];
             try {
               sources = JSON.parse(eventData);
