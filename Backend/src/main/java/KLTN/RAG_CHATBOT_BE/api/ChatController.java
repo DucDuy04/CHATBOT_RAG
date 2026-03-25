@@ -33,7 +33,7 @@ public class ChatController {
 
     // Endpoint mới — streaming SSE
     // produces TEXT_EVENT_STREAM_VALUE để browser biết đây là SSE
-    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(value = "/stream", produces = "text/event-stream;charset=UTF-8")
     public SseEmitter chatStream(@RequestBody ChatRequest request) {
         return chatService.chatStream(request);
     }
