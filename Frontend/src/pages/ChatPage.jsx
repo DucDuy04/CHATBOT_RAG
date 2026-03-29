@@ -93,6 +93,7 @@ export default function ChatPage() {
             : dataLine.slice(5);  // bỏ "data:"  (5 ký tự, không có space)
 
          if (eventName === "token") {
+            await new Promise((resolve) => setTimeout(resolve, 30));
             let tokenText = eventData;
             try {
                 // ✅ Parse JSON để giữ nguyên space
