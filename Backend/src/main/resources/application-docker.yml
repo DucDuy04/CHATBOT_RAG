@@ -1,0 +1,35 @@
+spring:
+  datasource:
+    url: jdbc:mysql://mysql:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+qdrant:
+  host: qdrant
+  port: 6334
+  http-port: 6333
+  url: http://qdrant:6333
+  collection-name: documents
+  vector-size: 768
+
+groq:
+  api-key: ${GROQ_API_KEY}
+  chat-model: llama-3.3-70b-versatile
+  base-url: https://api.groq.com/openai/v1
+
+nomic:
+  api-key: ${NOMIC_API_KEY}
+  embedding-model: nomic-embed-text-v1.5
+
+app:
+  upload-dir: ./uploads
+
+server:
+  port: 8080

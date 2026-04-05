@@ -3,11 +3,9 @@ import react from '@vitejs/plugin-react-swc'
 import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
-    // Serve dist-widget folder as static files
     {
       name: 'serve-dist-widget',
       configureServer(server) {
@@ -30,4 +28,12 @@ export default defineConfig({
       }
     }
   ],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      }
+    }
+  }
 })

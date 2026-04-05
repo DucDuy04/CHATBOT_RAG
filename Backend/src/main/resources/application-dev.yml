@@ -37,7 +37,7 @@ groq:
   base-url: https://api.groq.com/openai/v1
 
 nomic:
-  api-key: NOMIC_API_KEY_PLACEHOLDER
+  api-key: ${NOMIC_API_KEY}
   embedding-model: nomic-embed-text-v1.5
 
 # Thư mục lưu file upload
