@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tùy chỉnh thanh cuộn cho mượt mà (Bóc từ thẻ <style> cũ) */
+.scrollbar-hide::-webkit-scrollbar { width: 6px; }
+.scrollbar-hide::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-hide::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+
+/* Fix text dính liền */
+.overflow-wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Website Trường Đại Học ABC</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background: #f8fafc;
+            color: #1e293b;
+        }
+
+        header {
+            background: #1d4ed8;
+            color: white;
+            padding: 16px 32px;
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .hero {
+            text-align: center;
+            padding: 60px 24px;
+        }
+
+        .hero h1 {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+
+        .hero p {
+            color: #64748b;
+            font-size: 16px;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 24px 60px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .card h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+        }
+
+        .card p {
+            margin: 0;
+            font-size: 14px;
+            color: #64748b;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>Trường Đại Học ABC</header>
+
+    <div class="hero">
+        <h1>Chào mừng bạn đến với Trường ĐH ABC</h1>
+        <p>Hỏi bất kỳ điều gì về tuyển sinh, học phí, chương trình đào tạo...</p>
+    </div>
+
+    <div class="cards">
+        <div class="card">
+            <h3>Tuyển sinh 2025</h3>
+            <p>Thông tin xét tuyển các ngành đại học chính quy</p>
+        </div>
+        <div class="card">
+            <h3>Học phí</h3>
+            <p>Biểu học phí theo từng ngành và năm học</p>
+        </div>
+        <div class="card">
+            <h3>Chương trình đào tạo</h3>
+            <p>Danh sách ngành học và khung chương trình</p>
+        </div>
+        <div class="card">
+            <h3>Học bổng</h3>
+            <p>Các loại học bổng và điều kiện xét duyệt</p>
+        </div>
+    </div>
+
+    <!-- 3 dòng này là tất cả những gì website ngoài cần thêm -->
+    <script>
+        window.RagChatbotConfig = {
+            apiUrl: "http://localhost:8080",
+            frontendUrl: "http://localhost:5173",
+            title: "Tư vấn tuyển sinh",
+        };
+    </script>
+    <link rel="stylesheet" href="http://localhost:5173/dist-widget/widget.css" />
+    <script src="http://localhost:5173/dist-widget/chatbot-widget.iife.js"></script>
+
+</body>
+
+</html>
