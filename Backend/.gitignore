@@ -36,3 +36,5 @@ build/
 uploads/
 target/
 *.class
+
+node_modules.env
