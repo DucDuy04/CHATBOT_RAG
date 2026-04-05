@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -150,13 +152,35 @@ export default function WidgetChatPage() {
                   ? "bg-blue-600 text-white rounded-br-sm"
                   : "bg-white border text-gray-800 rounded-bl-sm"}`}
             >
-              <p className="break-words whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }}>
+              
+            <div className="text-sm prose max-w-none prose-p:leading-relaxed prose-pre:p-0">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // Tinh chỉnh cho Widget: Dùng bảng text-xs, margin/padding nhỏ hơn
+                  table: ({ node, ...props }) => (
+                    <div className="my-2 overflow-x-auto custom-scrollbar">
+                      <table className="min-w-full text-xs border border-collapse border-gray-300" {...props} />
+                    </div>
+                  ),
+                  th: ({ node, ...props }) => (
+                    <th className="border border-gray-300 bg-gray-100 px-2 py-1.5 text-left font-semibold text-gray-700" {...props} />
+                  ),
+                  td: ({ node, ...props }) => (
+                    <td className="border border-gray-300 px-2 py-1.5 text-gray-600" {...props} />
+                  ),
+                  p: ({ node, ...props }) => (
+                    <p className="mb-1.5 last:mb-0 break-words whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }} {...props} />
+                  )
+                }}
+              >
                 {msg.content}
-                {msg.streaming && (
-                  <span className="inline-block w-0.5 h-3 bg-gray-400
-                                   ml-0.5 animate-pulse align-middle" />
-                )}
-              </p>
+              </ReactMarkdown>
+
+              {msg.streaming && (
+                <span className="inline-block w-1 h-3 ml-1 align-middle bg-gray-400 rounded-sm animate-pulse" />
+              )}
+            </div>
 
               {!msg.streaming && msg.sources && msg.sources.length > 0 && (
                 <details className="mt-1 text-xs text-gray-400">

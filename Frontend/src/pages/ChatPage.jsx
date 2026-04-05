@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -168,17 +170,35 @@ export default function ChatPage() {
                   ? "bg-blue-600 text-white rounded-br-sm"
                   : "bg-white border text-gray-800 rounded-bl-sm"}`}
             >
-              {/* FIX: thêm break-words + overflowWrap để text xuống dòng đúng */}
-              <p
-                className="break-words whitespace-pre-wrap"
-                style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
-              >
-                {msg.content}
-                {msg.streaming && (
-                  <span className="inline-block w-0.5 h-4 bg-gray-500
-                                   ml-0.5 animate-pulse align-middle" />
-                )}
-              </p>
+             <div className="text-sm prose max-w-none prose-p:leading-relaxed prose-pre:p-0">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                // Customize lại thẻ table để hiển thị đẹp bằng Tailwind
+                table: ({ node, ...props }) => (
+                  <div className="my-3 overflow-x-auto">
+                    <table className="min-w-full text-sm border border-collapse border-gray-300" {...props} />
+                  </div>
+                ),
+                th: ({ node, ...props }) => (
+                  <th className="px-3 py-2 font-semibold text-left text-gray-700 bg-gray-100 border border-gray-300" {...props} />
+                ),
+                td: ({ node, ...props }) => (
+                  <td className="px-3 py-2 text-gray-600 border border-gray-300" {...props} />
+                ),
+                p: ({ node, ...props }) => (
+                  <p className="mb-2 break-words whitespace-pre-wrap last:mb-0" style={{ overflowWrap: "anywhere" }} {...props} />
+                )
+              }}
+            >
+              {msg.content}
+            </ReactMarkdown>
+            
+            {/* Con trỏ nhấp nháy khi đang stream */}
+            {msg.streaming && (
+              <span className="inline-block w-1.5 h-4 bg-gray-500 ml-1 animate-pulse align-middle rounded-sm" />
+            )}
+          </div>
 
               {!msg.streaming && msg.sources && msg.sources.length > 0 && (
                 <details className="mt-2 text-xs text-gray-500">
