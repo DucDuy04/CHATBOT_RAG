@@ -40,7 +40,7 @@ public class ChatService {
     @Value("${groq.base-url}")
     private String groqBaseUrl;
 
-    private static final int TOP_K = 5;
+    private static final int TOP_K = 8;
 
     private static final MediaType TEXT_PLAIN_UTF8 = new MediaType("text", "plain", StandardCharsets.UTF_8);
 
