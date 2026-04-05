@@ -32,7 +32,7 @@ qdrant:
 
 # Cấu hình Groq
 groq:
-  api-key: YOUR_GROQ_API_KEY_HERE
+  api-key: ${GROQ_API_KEY}
   chat-model: llama-3.3-70b-versatile   # Model mạnh nhất, miễn phí
   base-url: https://api.groq.com/openai/v1
 
