@@ -13,7 +13,7 @@ export default function DocumentPage() {
   const loadDocuments = async () => {
     try {
       const docs = await getDocuments();
-      setDocuments(docs);
+      setDocuments(Array.isArray(docs) ? docs : []);
     } catch (error) {
       console.error("Không load được danh sách tài liệu:", error);
     }
