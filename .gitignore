@@ -11,7 +11,6 @@ Thumbs.db
 .vscode/
 *.iml
 
-
 # Node
 node_modules/
 dist/
