@@ -4,10 +4,14 @@ import KLTN.RAG_CHATBOT_BE.domain.document.Document;
 import KLTN.RAG_CHATBOT_BE.dto.DocumentUploadResponse;
 import KLTN.RAG_CHATBOT_BE.service.DocumentService;
 import lombok.RequiredArgsConstructor;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
 import java.util.List;
+
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/documents")
@@ -17,12 +21,14 @@ public class DocumentController {
     private final DocumentService documentService;
 
     // POST /api/documents/upload
-    @PostMapping("/upload")
+    @PostMapping("/upload/{widgetId}")
     public ResponseEntity<DocumentUploadResponse> upload(
-            @RequestParam("file") MultipartFile file) {
+            @PathVariable UUID widgetId,
+            @RequestParam("file") MultipartFile file
+            ) {
 
         try {
-            Document document = documentService.uploadAndProcess(file);
+            Document document = documentService.uploadAndProcess(file, widgetId);
 
             return ResponseEntity.ok(DocumentUploadResponse.builder()
                     .id(document.getId())

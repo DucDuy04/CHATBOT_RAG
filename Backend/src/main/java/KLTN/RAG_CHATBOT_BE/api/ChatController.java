@@ -4,11 +4,12 @@ import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.service.ChatService;
 import lombok.RequiredArgsConstructor;
-
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/chat")
@@ -17,9 +18,11 @@ public class ChatController {
 
     private final ChatService chatService;
 
-    // POST /api/chat
     @PostMapping
-    public ResponseEntity<ChatResponse> chat(@RequestBody ChatRequest request) {
+    public ResponseEntity<ChatResponse> chat(
+        @RequestAttribute("Widget-Id") UUID widgetId, // Lấy từ WidgetAuthFilter
+        @RequestBody ChatRequest request) {
+
         if (request.getMessage() == null || request.getMessage().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
@@ -27,14 +30,15 @@ public class ChatController {
             return ResponseEntity.badRequest().build();
         }
 
-        ChatResponse response = chatService.chat(request);
+        ChatResponse response = chatService.chat(request, widgetId);
         return ResponseEntity.ok(response);
     }
 
-    // Endpoint mới — streaming SSE
-    // produces TEXT_EVENT_STREAM_VALUE để browser biết đây là SSE
-    @PostMapping(value = "/stream", produces = "text/event-stream;charset=UTF-8")
-    public SseEmitter chatStream(@RequestBody ChatRequest request) {
-        return chatService.chatStream(request);
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(
+        @RequestAttribute("Widget-Id") UUID widgetId, // Thêm dòng này
+        @RequestBody ChatRequest request) {
+        
+        return chatService.chatStream(request, widgetId);
     }
 }

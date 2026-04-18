@@ -55,7 +55,7 @@ public class PromptBuilderService {
         if (!chatHistory.isEmpty()) {
             prompt.append("[LỊCH SỬ HỘI THOẠI]\n");
             for (ChatMessage msg : chatHistory) {
-                String role = msg.getRole() == ChatMessage.MessageRole.USER
+                String role = "user".equalsIgnoreCase(msg.getRole().toString())
                         ? "Người dùng"
                         : "Trợ lý";
                 prompt.append(role).append(": ").append(msg.getContent()).append("\n");

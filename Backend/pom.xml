@@ -72,12 +72,6 @@
 			
 		</dependency>
 
-		<!-- Gemini -->
-		<!-- <dependency>
-			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-google-ai-gemini</artifactId>
-		</dependency> -->
-		<!-- Groq dùng chung API format với OpenAI nên vẫn dùng langchain4j-open-ai -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
 			<artifactId>langchain4j-open-ai</artifactId>
@@ -87,14 +81,14 @@
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
 			<artifactId>langchain4j-nomic</artifactId>
-			<version>0.32.0</version>
+			<!-- <version>0.32.0</version> -->
 		</dependency>
 
 		<!-- LangChain4j — kết nối Qdrant -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
 			<artifactId>langchain4j-qdrant</artifactId>
-			 <version>0.36.2</version>
+			 <!-- <version>0.36.2</version> -->
 		</dependency>
 
 		<!-- Apache PDFBox — đọc file PDF -->
@@ -146,6 +140,7 @@
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
+							<version>1.18.40</version>
 						</path>
 					</annotationProcessorPaths>
 				</configuration>
