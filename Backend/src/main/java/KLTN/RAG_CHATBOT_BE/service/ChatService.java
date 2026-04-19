@@ -24,6 +24,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
@@ -82,17 +85,21 @@ public class ChatService {
                         .build())
                 .toList();
 
-        List<ChatMessage> chatHistory = chatMessageRepository.findBySessionIdOrderByCreatedAtAsc(session.getId());
+        List<ChatMessage> chatHistory = chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
 
-        // 4. Build Prompt kèm theo SYSTEM PROMPT của Widget
-        // String prompt = promptBuilderService.buildPrompt(widget.getSystemPrompt(), question, contextChunks, chatHistory);
-        String prompt = promptBuilderService.buildPrompt(question, contextChunks, chatHistory);
+
+        String userPrompt = promptBuilderService.buildUserPrompt(question, contextChunks, chatHistory);
+        String systemPrompt = promptBuilderService.getSystemPrompt();
 
         String answer;
         if (segments.isEmpty()) {
             answer = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu đã cung cấp.";
         } else {
-            answer = chatModel.generate(prompt);
+            Response<AiMessage> response = chatModel.generate(
+                SystemMessage.from(systemPrompt),
+                UserMessage.from(userPrompt)
+            );
+            answer = response.content().text();
         }
 
         // 5. Lưu câu trả lời của AI
@@ -116,6 +123,7 @@ public class ChatService {
 
                 // LỌC THEO WIDGET ID TRONG QDRANT
                 List<TextSegment> segments = embeddingService.search(question, TOP_K, widgetId);
+                log.info("Search với widgetId={}, tìm được {} chunks", widgetId, segments.size()); 
                 
                 List<String> contextChunks = segments.stream().map(TextSegment::text).toList();
                 List<ChatResponse.SourceDto> sources = segments.stream()
@@ -125,7 +133,7 @@ public class ChatService {
                                 .build())
                         .toList();
 
-                List<ChatMessage> chatHistory = chatMessageRepository.findBySessionIdOrderByCreatedAtAsc(session.getId());
+                List<ChatMessage> chatHistory = chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
 
                 if (segments.isEmpty()) {
                     String noContext = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn.";
@@ -137,49 +145,52 @@ public class ChatService {
                 }
 
                 // TRUYỀN SYSTEM PROMPT VÀO
-                // String prompt = promptBuilderService.buildPrompt(widget.getSystemPrompt(), question, contextChunks, chatHistory);
-                String prompt = promptBuilderService.buildPrompt(question, contextChunks, chatHistory);
+               String userPrompt = promptBuilderService.buildUserPrompt(question, contextChunks, chatHistory);
+               String systemPrompt = promptBuilderService.getSystemPrompt();
 
-                OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
-                        .apiKey(groqApiKey)
-                        .baseUrl(groqBaseUrl)
-                        .modelName(groqChatModel)
-                        .temperature(0.7)
-                        .build();
+               OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
+                    .apiKey(groqApiKey)
+                    .baseUrl(groqBaseUrl)
+                    .modelName(groqChatModel)
+                    .temperature(0.1)
+                    .build();
 
                 StringBuilder fullAnswer = new StringBuilder();
 
-                streamingModel.generate(prompt, new StreamingResponseHandler<AiMessage>() {
-                    @Override
-                    public void onNext(String token) {
-                        try {
-                            fullAnswer.append(token);
-                            String jsonToken = "{\"token\":\"" + escapeJson(token) + "\"}";
-                            emitter.send(SseEmitter.event().name("token").data(jsonToken, MediaType.APPLICATION_JSON));
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
-                        }
-                    }
+              List<dev.langchain4j.data.message.ChatMessage> messages = new java.util.ArrayList<>();
+                    messages.add(SystemMessage.from(systemPrompt));
+                    messages.add(UserMessage.from(userPrompt));
 
-                    @Override
-                    public void onComplete(Response<AiMessage> response) {
-                        try {
-                            String sourcesJson = buildSourcesJson(sources);
-                            emitter.send(SseEmitter.event().name("done").data(sourcesJson, MediaType.TEXT_PLAIN));
-                            emitter.complete();
-                            
-                            // Lưu lại Database khi stream hoàn tất (Đúng chuẩn Ngày 5)
-                            saveChatMessage(session, MessageRole.ASSISTANT, fullAnswer.toString(), sourcesJson);
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
+                    streamingModel.generate(messages, new StreamingResponseHandler<AiMessage>() {
+                        @Override
+                        public void onNext(String token) {
+                            try {
+                                fullAnswer.append(token);
+                                String jsonToken = "{\"token\":\"" + escapeJson(token) + "\"}";
+                                emitter.send(SseEmitter.event().name("token").data(jsonToken, MediaType.APPLICATION_JSON));
+                            } catch (IOException e) {
+                                emitter.completeWithError(e);
+                            }
                         }
-                    }
 
-                    @Override
-                    public void onError(Throwable error) {
-                        emitter.completeWithError(error);
-                    }
-                });
+                        @Override
+                        public void onComplete(Response<AiMessage> response) {
+                            try {
+                                String sourcesJson = buildSourcesJson(sources);
+                                emitter.send(SseEmitter.event().name("done").data(sourcesJson, MediaType.TEXT_PLAIN));
+                                emitter.complete();
+                                saveChatMessage(session, MessageRole.ASSISTANT, fullAnswer.toString(), sourcesJson);
+                            } catch (IOException e) {
+                                emitter.completeWithError(e);
+                            }
+                        }
+
+                        @Override
+                        public void onError(Throwable error) {
+                            log.error("[Stream] LLM error: {}", error.getMessage());
+                            emitter.completeWithError(error);
+                        }
+                    });
 
             } catch (Exception e) {
                 log.error("[Stream] Loi chatStream: {}", e.getMessage());

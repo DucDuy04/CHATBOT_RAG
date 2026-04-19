@@ -5,6 +5,7 @@ import "./widget.css";
   const config = window.RagChatbotConfig || {};
   const apiUrl = config.apiUrl || "http://localhost:8080";
   const title  = config.title  || "Trợ lý AI";
+  const widgetKey = config.widgetKey || config.apiKey || "";
 
   // Tạo nút bubble
   const bubble = document.createElement("div");
@@ -20,7 +21,10 @@ import "./widget.css";
   // Tạo iframe chat
   const frame = document.createElement("iframe");
   frame.id  = "rag-chatbot-frame";
-  frame.src = `${config.frontendUrl || "http://localhost:5173"}/widget`;
+  const baseWidgetUrl = `${config.frontendUrl || "http://localhost:5173"}/widget`;
+  frame.src = widgetKey
+    ? `${baseWidgetUrl}?widgetKey=${encodeURIComponent(widgetKey)}`
+    : baseWidgetUrl;
   frame.classList.add("hidden");
   document.body.appendChild(frame);
 

@@ -3,6 +3,8 @@ package KLTN.RAG_CHATBOT_BE.service;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import org.springframework.stereotype.Service;
 import java.util.List;
+import java.util.Locale;
+import java.util.stream.Collectors;
 
 @Service
 public class PromptBuilderService {
@@ -19,51 +21,54 @@ public class PromptBuilderService {
     // 4. Không bịa đặt thông tin ngoài tài liệu.
     // """;
     private static final String SYSTEM_PROMPT = """
-            Bạn là một trợ lý AI thông minh, chuyên nghiệp, hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
+        Bạn là trợ lý AI chuyên trả lời câu hỏi dựa trên tài liệu được cung cấp.
 
-            NGUYÊN TẮC TRẢ LỜI CƠ BẢN:
-            1. Ưu tiên tuyệt đối: Chỉ sử dụng nội dung trong [TÀI LIỆU THAM KHẢO] làm cơ sở trả lời.
-            2. Suy luận hợp lý: Nếu câu hỏi yêu cầu giải thích, phân tích hoặc mở rộng — hãy dùng tư duy logic của bạn để giải thích rõ hơn, nhưng tuyệt đối không được mâu thuẫn với tài liệu.
-            3. Xử lý thiếu thông tin: Nếu câu hỏi hoàn toàn không liên quan đến tài liệu hoặc tài liệu không có đáp án, hãy nói thẳng: "Tôi không tìm thấy thông tin này trong tài liệu." Không được tự bịa đặt (hallucinate).
-            4. Hình thức: Trả lời bằng tiếng Việt, ngôn từ tự nhiên, dễ hiểu. Cấu trúc câu trả lời rõ ràng (dùng bullet points, in đậm các ý chính).
+        NGUYÊN TẮC TRẢ LỜI:
+        1. Chỉ sử dụng nội dung trong [TÀI LIỆU THAM KHẢO] để trả lời. KHÔNG dùng kiến thức ngoài tài liệu.
+        2. Chỉ trả lời đúng những gì câu hỏi hỏi. KHÔNG thêm thông tin ngoài lề, KHÔNG giải thích thêm khi không được yêu cầu.
+        3. Nếu tài liệu không có thông tin, chỉ trả lời đúng 1 câu: "Tôi không tìm thấy thông tin này trong tài liệu."
+        4. Trả lời bằng tiếng Việt, ngắn gọn, đúng trọng tâm.
 
-            ĐẶC BIỆT LƯU Ý KHI XỬ LÝ DỮ LIỆU BẢNG (TABLE):
-            5. Nhận diện Bảng: Trong [TÀI LIỆU THAM KHẢO] có thể chứa các bảng dữ liệu được định dạng chuẩn Markdown (ví dụ: | Cột 1 | Cột 2 |). Hãy ưu tiên tìm kiếm câu trả lời trong các bảng này nếu người dùng hỏi về thông số, số liệu, hoặc danh sách.
-            6. Trích xuất chính xác: Khi đọc bảng, phải giống đúng hàng (row) và cột (column). Không được lấy râu ông nọ cắm cằm bà kia (ví dụ: lấy tên sản phẩm ở hàng 1 nhưng ghép với giá tiền ở hàng 2).
-            7. Trình bày dạng Bảng: Nếu người dùng yêu cầu so sánh, hoặc nếu câu trả lời chứa nhiều thông số phức tạp được trích ra từ tài liệu, hãy chủ động trình bày lại câu trả lời cho người dùng dưới dạng Bảng Markdown để họ dễ đọc nhất có thể.
-            8. Tổng hợp Bảng (Table Aggregation): Nếu bạn tìm thấy nhiều bảng dữ liệu, hoặc nhiều phần của một bảng nằm rải rác trong các tài liệu tham khảo khác nhau, bạn BẮT BUỘC phải tự động gộp (merge) tất cả các hàng dữ liệu đó lại thành MỘT BẢNG MARKDOWN DUY NHẤT trong câu trả lời. Tuyệt đối không được bỏ sót bất kỳ hàng dữ liệu nào. Nếu cú pháp bảng trong tài liệu bị lỗi nhẹ, hãy tự động sửa lại cho chuẩn định dạng | Cột 1 | Cột 2 | nhưng không được làm sai lệch con số.
-            """;
+        XỬ LÝ BẢNG VÀ DANH SÁCH:
+        5. Khi tài liệu có bảng Markdown (| Cột 1 | Cột 2 |), đọc đúng từng hàng và cột, không nhầm lẫn dữ liệu giữa các hàng.
+        6. Nếu câu trả lời chứa nhiều mục hoặc số liệu, trình bày lại dưới dạng bảng Markdown.
+        7. Nếu dữ liệu bảng nằm rải rác nhiều chunks, BẮT BUỘC gộp tất cả hàng thành MỘT bảng duy nhất, KHÔNG bỏ sót hàng nào.
+        8. Nếu câu hỏi hỏi về danh sách, liệt kê ĐẦY ĐỦ tất cả các mục có trong tài liệu, KHÔNG được bỏ sót.
+        """;
+        public String getSystemPrompt() {
+        return SYSTEM_PROMPT;
+    }
 
-    public String buildPrompt(
+    public String buildUserPrompt(
             String question,
             List<String> contextChunks,
             List<ChatMessage> chatHistory) {
 
         StringBuilder prompt = new StringBuilder();
 
-        // 1. System prompt
-        prompt.append(SYSTEM_PROMPT).append("\n\n");
+        List<String> uniqueChunks = contextChunks.stream()
+                .filter(chunk -> chunk != null && !chunk.isBlank())
+                .map(String::trim)
+                .distinct()
+                .limit(6)
+                .collect(Collectors.toList());
 
-        // 2. Context từ Qdrant
         prompt.append("[TÀI LIỆU THAM KHẢO]\n");
-        for (int i = 0; i < contextChunks.size(); i++) {
+        for (int i = 0; i < uniqueChunks.size(); i++) {
             prompt.append("Đoạn ").append(i + 1).append(":\n");
-            prompt.append(contextChunks.get(i)).append("\n\n");
+            prompt.append(uniqueChunks.get(i)).append("\n\n");
         }
 
-        // 3. Lịch sử chat (nếu có)
         if (!chatHistory.isEmpty()) {
             prompt.append("[LỊCH SỬ HỘI THOẠI]\n");
             for (ChatMessage msg : chatHistory) {
-                String role = "user".equalsIgnoreCase(msg.getRole().toString())
-                        ? "Người dùng"
-                        : "Trợ lý";
+                String role = "USER".equals(msg.getRole().name().toUpperCase(Locale.ROOT))
+                        ? "Người dùng" : "Trợ lý";
                 prompt.append(role).append(": ").append(msg.getContent()).append("\n");
             }
             prompt.append("\n");
         }
 
-        // 4. Câu hỏi hiện tại
         prompt.append("[CÂU HỎI HIỆN TẠI]\n");
         prompt.append(question);
 

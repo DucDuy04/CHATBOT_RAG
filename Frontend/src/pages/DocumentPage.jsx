@@ -5,6 +5,12 @@ export default function DocumentPage() {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage]     = useState("");
+  const [widgetConfigId, setWidgetConfigId] = useState(
+    localStorage.getItem("widget_config_id") || ""
+  );
+  const [widgetApiKey, setWidgetApiKey] = useState(
+    localStorage.getItem("widget_api_key") || ""
+  );
 
   useEffect(() => {
     loadDocuments();
@@ -22,21 +28,42 @@ export default function DocumentPage() {
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!widgetConfigId) {
+      setMessage("Thiếu widgetConfigId. Hãy nhập và lưu cấu hình widget trước khi upload.");
+      e.target.value = "";
+      return;
+    }
 
     setUploading(true);
     setMessage("");
 
     try {
-      const result = await uploadDocument(file);
+      const result = await uploadDocument(file, widgetConfigId);
       setMessage(result.message);
       await loadDocuments();
     } catch (error) {
       console.error("Lỗi upload:", error);
-      setMessage("Upload thất bại, vui lòng thử lại.");
+      setMessage(error?.response?.data?.message || error?.message || "Upload thất bại, vui lòng thử lại.");
     } finally {
       setUploading(false);
       e.target.value = ""; // Reset input để upload lại cùng file
     }
+  };
+
+  const handleSaveWidgetConfig = () => {
+    const normalizedWidgetId = widgetConfigId.trim();
+    const normalizedApiKey = widgetApiKey.trim();
+
+    if (!normalizedWidgetId || !normalizedApiKey) {
+      setMessage("Cần nhập đủ widgetConfigId và widgetApiKey.");
+      return;
+    }
+
+    localStorage.setItem("widget_config_id", normalizedWidgetId);
+    localStorage.setItem("widget_api_key", normalizedApiKey);
+    setWidgetConfigId(normalizedWidgetId);
+    setWidgetApiKey(normalizedApiKey);
+    setMessage("Đã lưu widget config vào localStorage.");
   };
 
   const statusColor = (status) => {
@@ -57,6 +84,30 @@ export default function DocumentPage() {
   return (
     <div className="max-w-3xl mx-auto p-6">
       <h1 className="text-xl font-semibold mb-6">Quản lý tài liệu</h1>
+
+      <div className="mb-6 p-4 border rounded-xl bg-white space-y-3">
+        <p className="text-sm font-medium text-gray-700">Cấu hình Widget để upload/chat</p>
+        <input
+          type="text"
+          value={widgetConfigId}
+          onChange={(e) => setWidgetConfigId(e.target.value)}
+          placeholder="widgetConfigId (UUID)"
+          className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <input
+          type="text"
+          value={widgetApiKey}
+          onChange={(e) => setWidgetApiKey(e.target.value)}
+          placeholder="widgetApiKey (UUID)"
+          className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          onClick={handleSaveWidgetConfig}
+          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+        >
+          Lưu cấu hình widget
+        </button>
+      </div>
 
       {/* Upload box */}
       <label

@@ -54,6 +54,8 @@ public class WidgetAuthFilter extends OncePerRequestFilter {
             // check allowedOrigin...
 
             // ĐÍNH KÈM WIDGET ID VÀO REQUEST CHUYỂN TIẾP CHO CONTROLLER
+            request.setAttribute("Widget-Id", widgetOpt.get().getId());
+            // Backward compatibility cho code cũ nếu có chỗ đang đọc key này
             request.setAttribute("X-Widget-Id", widgetOpt.get().getId());
             
         } catch (IllegalArgumentException e) {

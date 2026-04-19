@@ -39,80 +39,45 @@ public class DocumentParserService {
 
     // 1. Cập nhật hàm parsePdf: Thêm biến currentHeader để lưu trạng thái qua từng
     // trang
-    private String parsePdf(MultipartFile file) throws IOException {
-        byte[] bytes = file.getBytes();
+  private String parsePdf(MultipartFile file) throws IOException {
+    byte[] bytes = file.getBytes();
 
-        try (PDDocument document = Loader.loadPDF(bytes)) {
-            StringBuilder fullContent = new StringBuilder();
-            ObjectExtractor extractor = new ObjectExtractor(document);
-            SpreadsheetExtractionAlgorithm sea = new SpreadsheetExtractionAlgorithm();
-            int totalPages = document.getNumberOfPages();
+    try (PDDocument document = Loader.loadPDF(bytes)) {
+        StringBuilder fullContent = new StringBuilder();
+        ObjectExtractor extractor = new ObjectExtractor(document);
+        SpreadsheetExtractionAlgorithm sea = new SpreadsheetExtractionAlgorithm();
+        int totalPages = document.getNumberOfPages();
+        String[] currentHeader = { "" };
 
-            // Dùng mảng 1 phần tử để lưu Header an toàn trong luồng (Thread-safe)
-            String[] currentHeader = { "" };
+        for (int pageNum = 1; pageNum <= totalPages; pageNum++) {
 
-            for (int pageNum = 1; pageNum <= totalPages; pageNum++) {
+            // 1. Extract text thường
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);
+            stripper.setWordSeparator(" ");
+            stripper.setLineSeparator("\n");
+            stripper.setStartPage(pageNum);
+            stripper.setEndPage(pageNum);
+            String pageText = stripper.getText(document);
+            fullContent.append(cleanText(pageText)).append("\n");
 
-                // 1. Extract text thường của trang này
-                PDFTextStripper stripper = new PDFTextStripper();
-                stripper.setSortByPosition(true);
-                stripper.setWordSeparator(" ");
-                stripper.setLineSeparator("\n");
-                stripper.setStartPage(pageNum);
-                stripper.setEndPage(pageNum);
-                String pageText = stripper.getText(document);
-                fullContent.append(cleanText(pageText)).append("\n");
-
-                // 2. Detect và extract table trên trang này
-                try {
-                    Page page = extractor.extract(pageNum);
-                    List<Table> tables = sea.extract(page);
-
-                    for (Table table : tables) {
-                        fullContent.append("\n[TABLE_START]\n");
-                        // Truyền currentHeader vào để xử lý
-                        fullContent.append(convertTableToMarkdown(table, currentHeader));
-                        fullContent.append("[TABLE_END]\n");
-                    }
-                } catch (Exception e) {
-                    // Bỏ qua nếu không có table
+            // 2. Extract table
+            try {
+                Page page = extractor.extract(pageNum);
+                List<Table> tables = sea.extract(page);
+                for (Table table : tables) {
+                    fullContent.append("\n[TABLE_START]\n");
+                    fullContent.append(convertTableToMarkdown(table, currentHeader));
+                    fullContent.append("[TABLE_END]\n");
                 }
+            } catch (Exception e) {
+                // bỏ qua nếu không có table
             }
-            return fullContent.toString();
         }
+        return fullContent.toString();
     }
-    // private String convertTableToMarkdown(Table table) {
-    // StringBuilder sb = new StringBuilder();
-    // List<List<RectangularTextContainer>> rows = table.getRows();
-
-    // if (rows.isEmpty())
-    // return "";
-
-    // for (int i = 0; i < rows.size(); i++) {
-    // List<RectangularTextContainer> row = rows.get(i);
-
-    // sb.append("| ");
-    // for (RectangularTextContainer cell : row) {
-    // String cellText = cell.getText()
-    // .trim()
-    // .replace("\n", " ") // Gộp multi-line cell
-    // .replace("|", "\\|"); // Escape ký tự | trong nội dung
-    // sb.append(cellText).append(" | ");
-    // }
-    // sb.append("\n");
-
-    // // Thêm dòng separator sau header (dòng đầu tiên)
-    // if (i == 0) {
-    // sb.append("| ");
-    // for (int j = 0; j < row.size(); j++) {
-    // sb.append("--- | ");
-    // }
-    // sb.append("\n");
-    // }
-    // }
-    // return sb.toString();
-    // }
-    // Thêm một biến static hoặc instance để lưu Header của bảng hiện tại
+}
+   
     // 2. Cập nhật hàm convertTableToMarkdown: Nhận diện và chèn Header cũ
     private String convertTableToMarkdown(Table table, String[] currentHeader) {
         StringBuilder sb = new StringBuilder();
@@ -168,28 +133,46 @@ public class DocumentParserService {
     }
 
     // Hàm phán đoán xem một dòng có phải là dòng chứa dữ liệu (Data) hay không
+    // private boolean isDataRow(List<RectangularTextContainer> row) {
+    //     if (row == null || row.isEmpty()) {
+    //         return false;
+    //     }
+
+    //     int numericCellCount = 0;
+
+    //     for (RectangularTextContainer cell : row) {
+    //         String text = cell.getText().trim();
+    //         // Kiểm tra xem nội dung ô có chứa chữ số nào không (ví dụ: "100g", "208 cal",
+    //         // "13")
+    //         if (text.matches(".*\\d+.*")) {
+    //             numericCellCount++;
+    //         }
+    //     }
+
+    //     // Logic (Heuristic):
+    //     // Tiêu đề (Header) thường toàn chữ (Ví dụ: "Món Ăn", "Calo", "Protein").
+    //     // Nếu dòng có từ 1-2 ô trở lên chứa chữ số, khả năng rất cao nó là Data Row.
+    //     // Bạn có thể chỉnh sửa số "1" này tùy theo đặc thù tài liệu của bạn.
+    //     return numericCellCount >= 1;
+    // }
+
     private boolean isDataRow(List<RectangularTextContainer> row) {
-        if (row == null || row.isEmpty()) {
-            return false;
+    if (row == null || row.isEmpty()) return false;
+
+    int numericOnlyCellCount = 0;
+
+    for (RectangularTextContainer cell : row) {
+        String text = cell.getText().trim();
+        // ✅ Chỉ tính là data nếu ô TOÀN SỐ hoặc số + đơn vị (100g, 7h, 12h)
+        // Header thường là text dài hơn như "Thời Điểm", "Đồ Ăn Đề Nghị"
+        if (text.matches("^[\\d\\s:h.,]+$") || text.matches("^\\d+[a-zA-Z]*$")) {
+            numericOnlyCellCount++;
         }
-
-        int numericCellCount = 0;
-
-        for (RectangularTextContainer cell : row) {
-            String text = cell.getText().trim();
-            // Kiểm tra xem nội dung ô có chứa chữ số nào không (ví dụ: "100g", "208 cal",
-            // "13")
-            if (text.matches(".*\\d+.*")) {
-                numericCellCount++;
-            }
-        }
-
-        // Logic (Heuristic):
-        // Tiêu đề (Header) thường toàn chữ (Ví dụ: "Món Ăn", "Calo", "Protein").
-        // Nếu dòng có từ 1-2 ô trở lên chứa chữ số, khả năng rất cao nó là Data Row.
-        // Bạn có thể chỉnh sửa số "1" này tùy theo đặc thù tài liệu của bạn.
-        return numericCellCount >= 1;
     }
+
+    // Chỉ là data row nếu PHẦN LỚN ô là số thuần
+    return numericOnlyCellCount >= (row.size() / 2.0);
+}
 
     private String parseTxt(MultipartFile file) throws IOException {
         byte[] bytes = file.getBytes();

@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const API_URL = import.meta.env.VITE_API_URL;
+const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
 
 const getSessionId = () => {
   const stored = localStorage.getItem("widget_session_id");
@@ -14,6 +15,17 @@ const getSessionId = () => {
 };
 
 export default function WidgetChatPage() {
+  const params = new URLSearchParams(window.location.search);
+  const queryWidgetKey = params.get("widgetKey") || params.get("apiKey");
+  const widgetKey =
+    queryWidgetKey || localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY;
+
+  useEffect(() => {
+    if (queryWidgetKey) {
+      localStorage.setItem("widget_api_key", queryWidgetKey);
+    }
+  }, [queryWidgetKey]);
+
   const [messages, setMessages] = useState([
     {
       id: "welcome",
@@ -32,6 +44,21 @@ export default function WidgetChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    if (!widgetKey) {
+      setMessages((prev) => [
+        ...prev,
+        { id: uuidv4(), role: "user", content: input.trim() },
+        {
+          id: uuidv4(),
+          role: "assistant",
+          content:
+            "Thiếu widget key. Truyền `widgetKey` khi nhúng widget hoặc cấu hình `window.RagChatbotConfig.apiKey`.",
+          streaming: false,
+        },
+      ]);
+      setInput("");
+      return;
+    }
 
     const userMessage = {
       id: uuidv4(),
@@ -53,13 +80,19 @@ export default function WidgetChatPage() {
     setLoading(true);
 
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (widgetKey) headers["X-Widget-Key"] = widgetKey;
+
       const response = await fetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ sessionId, message: userMessage.content }),
       });
 
-      if (!response.ok) throw new Error("Lỗi kết nối");
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Lỗi kết nối");
+      }
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
@@ -121,7 +154,7 @@ export default function WidgetChatPage() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === botMessageId
-            ? { ...msg, content: "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
+            ? { ...msg, content: error.message || "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
             : msg
         )
       );

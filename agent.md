@@ -1,3 +1,27 @@
+# AGENT DOCS - CHATBOT_RAG
+
+Tài liệu agent được tách nhỏ để dễ bảo trì. Đây là trang điều hướng chính.
+
+## Mục lục
+- `agent/01-overview.md`: mục tiêu, phạm vi, trạng thái dự án.
+- `agent/02-architecture.md`: kiến trúc tổng thể và các module chính.
+- `agent/03-backend.md`: chi tiết backend Spring Boot và RAG pipeline.
+- `agent/04-frontend.md`: luồng frontend, widget và streaming.
+- `agent/05-api.md`: tài liệu API tham chiếu nhanh.
+- `agent/06-operations.md`: vận hành, rủi ro kỹ thuật và roadmap.
+
+## Snapshot nhanh
+- Dự án gồm `Backend` (Spring Boot) và `Frontend` (React + Vite).
+- RAG pipeline đã chạy end-to-end: upload -> parse/chunk/embed -> retrieve -> chat.
+- Vector store: Qdrant, transactional store: MySQL.
+- LLM hiện dùng Groq, embedding provider dùng Nomic.
+- Có hỗ trợ widget nhúng bằng bundle IIFE.
+
+## Cách sử dụng tài liệu này
+- Nếu cần hiểu tổng thể: đọc từ `01-overview` -> `02-architecture`.
+- Nếu triển khai API/logic: đọc `03-backend` + `05-api`.
+- Nếu tích hợp UI/widget: đọc `04-frontend`.
+- Nếu chuẩn bị production: đọc `06-operations`.
 # 🧠 PROJECT OVERVIEW
 - Tên dự án: `CHATBOT_RAG` (Backend artifact: `RAG_CHATBOT_BE`, Frontend package: `rag-chatbot-fe`).
 - Mục tiêu hệ thống: Xây dựng chatbot RAG hỗ trợ hỏi đáp dựa trên tài liệu nội bộ (PDF/TXT), có giao diện web quản trị và widget nhúng.

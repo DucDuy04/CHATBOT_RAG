@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const API_URL = import.meta.env.VITE_API_URL;
+const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
 
 const getSessionId = () => {
   const stored = localStorage.getItem("chat_session_id");
@@ -23,6 +24,10 @@ export default function ChatPage() {
   ]);
   const [input, setInput]     = useState("");
   const [loading, setLoading] = useState(false);
+  const [widgetKey, setWidgetKey] = useState(
+    localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY || ""
+  );
+  const [widgetKeyInput, setWidgetKeyInput] = useState(widgetKey);
   const bottomRef             = useRef(null);
   const sessionId             = getSessionId();
 
@@ -32,6 +37,21 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    if (!widgetKey) {
+      setMessages((prev) => [
+        ...prev,
+        { id: uuidv4(), role: "user", content: input.trim() },
+        {
+          id: uuidv4(),
+          role: "assistant",
+          content:
+            "Thiếu widget key. Hãy cấu hình `VITE_WIDGET_API_KEY` hoặc lưu `widget_api_key` vào localStorage.",
+          streaming: false,
+        },
+      ]);
+      setInput("");
+      return;
+    }
 
     const userMessage = {
       id: uuidv4(),
@@ -53,16 +73,22 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (widgetKey) headers["X-Widget-Key"] = widgetKey;
+
       const response = await fetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           sessionId,
           message: userMessage.content,
         }),
       });
 
-      if (!response.ok) throw new Error("Lỗi kết nối server");
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Lỗi kết nối server");
+      }
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
@@ -132,7 +158,7 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === botMessageId
-            ? { ...msg, content: "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
+            ? { ...msg, content: error.message || "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
             : msg
         )
       );
@@ -148,6 +174,21 @@ export default function ChatPage() {
     }
   };
 
+  const handleSaveWidgetKey = () => {
+    const normalized = widgetKeyInput.trim();
+    if (!normalized) return;
+    localStorage.setItem("widget_api_key", normalized);
+    setWidgetKey(normalized);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uuidv4(),
+        role: "assistant",
+        content: "Đã lưu widget_api_key. Bạn có thể gửi câu hỏi lại.",
+      },
+    ]);
+  };
+
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto">
 
@@ -155,6 +196,29 @@ export default function ChatPage() {
       <div className="p-4 text-lg font-semibold bg-white border-b">
         RAG Chatbot
       </div>
+
+      {!widgetKey && (
+        <div className="p-3 border-b bg-amber-50">
+          <p className="text-xs text-amber-800 mb-2">
+            Thiếu widget key. Dán `apiKey` từ API tạo widget để bật chat.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={widgetKeyInput}
+              onChange={(e) => setWidgetKeyInput(e.target.value)}
+              placeholder="widget api key (UUID)"
+              className="flex-1 px-3 py-2 text-xs border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+            />
+            <button
+              onClick={handleSaveWidgetKey}
+              className="px-3 py-2 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700"
+            >
+              Lưu key
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Danh sách tin nhắn */}
       <div className="flex-1 p-4 space-y-4 overflow-y-auto bg-gray-50">

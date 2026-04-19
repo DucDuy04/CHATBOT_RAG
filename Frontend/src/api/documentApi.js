@@ -1,11 +1,14 @@
 import axiosInstance from "./axiosInstance";
 
 // Upload file PDF hoặc TXT
-export const uploadDocument = async (file) => {
+export const uploadDocument = async (file, widgetConfigId) => {
+  if (!widgetConfigId) {
+    throw new Error("Thiếu widgetConfigId.");
+  }
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await axiosInstance.post("/api/documents/upload", formData, {
+  const response = await axiosInstance.post(`/api/documents/upload/${widgetConfigId}`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

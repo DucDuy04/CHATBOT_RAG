@@ -35,6 +35,9 @@ public class EmbeddingService {
     @Value("${qdrant.collection-name:documents}")
     private String collectionName;
 
+    @Value("${rag.min-score:0.45}")
+    private double minScore;
+
     // --- CẬP NHẬT 1: THÊM WIDGET ID VÀO METADATA KHI LƯU ---
     // Lưu ý: Nhớ sửa chỗ gọi hàm này (VD: DocumentService/VectorStoreService) để truyền thêm widgetId vào nhé!
     public void embedAndStore(List<String> chunks, UUID documentId, String fileName, UUID widgetId) {
@@ -61,6 +64,7 @@ public class EmbeddingService {
 
     // --- CẬP NHẬT 2: THÊM BỘ LỌC BẰNG JSON KHI SEARCH REST API ---
     public List<TextSegment> search(String query, int topK, UUID widgetId) {
+         log.info("[Search] widgetId={}, query={}", widgetId, query); 
         Embedding queryEmbedding = embeddingModel.embed(TextSegment.from(query)).content();
         log.info("Query embedding size: {}", queryEmbedding.vectorAsList().size());
 
@@ -101,11 +105,19 @@ public class EmbeddingService {
 
         List<Map<String, Object>> results = (List<Map<String, Object>>) response.getBody().get("result");
 
+        log.info("[Search] Qdrant trả về {} điểm, sau filter score >= {}", results == null ? 0 : results.size(), minScore);
         if (results == null || results.isEmpty()) {
             return List.of();
         }
 
         return results.stream()
+                .filter(point -> {
+                    Object scoreObj = point.get("score");
+                    if (!(scoreObj instanceof Number scoreNumber)) {
+                        return false;
+                    }
+                    return scoreNumber.doubleValue() >= minScore;
+                })
                 .map(point -> {
                     Map<String, Object> payload = (Map<String, Object>) point.get("payload");
                     String text = (String) payload.getOrDefault("text_segment", "");
