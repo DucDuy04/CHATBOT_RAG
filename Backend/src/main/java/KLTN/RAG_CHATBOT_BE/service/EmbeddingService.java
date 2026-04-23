@@ -12,6 +12,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +20,9 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import dev.langchain4j.data.document.Metadata;
+import KLTN.RAG_CHATBOT_BE.record.DocumentChunk;
+
+
 
 @Slf4j
 @Service
@@ -40,26 +44,48 @@ public class EmbeddingService {
 
     // --- CẬP NHẬT 1: THÊM WIDGET ID VÀO METADATA KHI LƯU ---
     // Lưu ý: Nhớ sửa chỗ gọi hàm này (VD: DocumentService/VectorStoreService) để truyền thêm widgetId vào nhé!
-    public void embedAndStore(List<String> chunks, UUID documentId, String fileName, UUID widgetId) {
-        log.info("Bắt đầu embed {} chunks cho document id={}, widgetId={}", chunks.size(), documentId, widgetId);
+     public void embedAndStore(List<DocumentChunk> chunks, UUID documentId, String fileName, UUID widgetId) {
+        log.info("Bắt đầu chuẩn bị {} chunks cho document id={}, widgetId={}", chunks.size(), documentId, widgetId);
 
-        for (int i = 0; i < chunks.size(); i++) {
-            String chunk = chunks.get(i);
-            Embedding embedding = embeddingModel.embed(TextSegment.from(chunk)).content();
-
-            Metadata metadata = new Metadata();
-            metadata.put("documentId", documentId.toString());
-            metadata.put("fileName", fileName);
-            metadata.put("chunkIndex", String.valueOf(i));
-            metadata.put("text_segment", chunk);
-            // GẮN NHÃN WIDGET_ID CHO CHUNK NÀY
-            metadata.put("widgetId", widgetId.toString()); 
-
-            TextSegment segment = TextSegment.from(chunk, metadata);
-            qdrantEmbeddingStore.add(embedding, segment);
+        if (chunks == null || chunks.isEmpty()) {
+            log.warn("Không có chunk nào để embed cho document id={}", documentId);
+            return;
         }
 
-        log.info("Hoàn thành embed {} chunks cho document id={}", chunks.size(), documentId);
+        // BƯỚC 1: Chuyển đổi toàn bộ DocumentChunk thành TextSegment (Chuẩn của LangChain4j)
+        List<TextSegment> segments = new ArrayList<>();
+        
+        for (int i = 0; i < chunks.size(); i++) {
+            DocumentChunk chunk = chunks.get(i);
+            
+            // Đưa tất cả thông tin vào Metadata để Qdrant lưu trữ dưới dạng Payload
+            Metadata metadata = new Metadata()
+                .put("documentId", documentId.toString())
+                .put("fileName", fileName)
+                .put("widgetId", widgetId.toString())
+                .put("chunkIndex", i)
+                // 👇 THÊM CÁC METADATA QUÝ GIÁ TỪ DOCUMENT CHUNK VÀO ĐÂY
+                .put("header", chunk.header())
+                .put("startPage", chunk.startPage())
+                .put("endPage", chunk.endPage());
+
+            // Lưu ý: Đưa chunk.content() (chính là String) vào TextSegment
+            TextSegment segment = TextSegment.from(chunk.content(), metadata);
+            segments.add(segment);
+        }
+
+        log.info("Bắt đầu nhúng (embed) {} segments...", segments.size());
+
+        // BƯỚC 2: Gọi Embedding Model xử lý BATCH (Hàng loạt). 
+        // Cách này cực kỳ nhanh và tối ưu so với việc gọi từng cái trong vòng lặp for.
+        List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
+
+        log.info("Lưu {} vector embeddings vào Qdrant...", embeddings.size());
+
+        // BƯỚC 3: Lưu toàn bộ danh sách Vector và TextSegment vào Qdrant trong 1 lần gọi (Batch Insert)
+        qdrantEmbeddingStore.addAll(embeddings, segments);
+
+        log.info("Hoàn thành embed và lưu {} chunks cho document id={}", chunks.size(), documentId);
     }
 
     // --- CẬP NHẬT 2: THÊM BỘ LỌC BẰNG JSON KHI SEARCH REST API ---

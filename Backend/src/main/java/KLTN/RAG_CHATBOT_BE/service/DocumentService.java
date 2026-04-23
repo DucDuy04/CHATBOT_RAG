@@ -1,23 +1,29 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
-import KLTN.RAG_CHATBOT_BE.domain.document.Document;
-import KLTN.RAG_CHATBOT_BE.domain.document.DocumentRepository;
-import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig; // Import Entity Widget (Ngày 1)
-import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository; // Import Repository Widget (Ngày 1)
-import KLTN.RAG_CHATBOT_BE.domain.enums.DocumentStatus; // Đảm bảo dùng đúng Enum trạng thái
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path; // Import Entity Widget (Ngày 1)
+import java.nio.file.Paths; // Import Repository Widget (Ngày 1)
+import java.nio.file.StandardCopyOption; // Đảm bảo dùng đúng Enum trạng thái
+import java.util.List;
+import java.util.UUID;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.util.List;
-import java.util.UUID;
+
+import KLTN.RAG_CHATBOT_BE.domain.document.Document;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentRepository;
+import KLTN.RAG_CHATBOT_BE.domain.enums.DocumentStatus;
+import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig;
+import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
+// import KLTN.RAG_CHATBOT_BE.preprocess.model.ParsedDocument;
+// import KLTN.RAG_CHATBOT_BE.preprocess.service.PreprocessingPipelineService;
+import KLTN.RAG_CHATBOT_BE.record.DocumentChunk;
+import KLTN.RAG_CHATBOT_BE.record.Section;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
@@ -26,9 +32,11 @@ public class DocumentService {
 
     private final DocumentRepository documentRepository;
     private final WidgetConfigRepository widgetConfigRepository; // Inject thêm Repository này
-    private final DocumentParserService documentParserService;
-    private final ChunkingService chunkingService;
+    // private final PreprocessingPipelineService preprocessingPipelineService;
+    // private final ChunkingService chunkingService;
     private final EmbeddingService embeddingService;
+    private final ChunkingService2 chunkingService2; // Nếu bạn muốn dùng ChunkingService2 thay vì ChunkingService, hãy inject nó vào đây và gọi nó trong hàm uploadAndProcess nhé.
+    private final DocumentParserService documentParserService; // Inject thêm DocumentParserService để parse file thành Sections trước khi chunking.
 
     @Value("${app.upload-dir}")
     private String uploadDir;
@@ -58,14 +66,23 @@ public class DocumentService {
         try {
             document.setStatus(DocumentStatus.PROCESSING);
             documentRepository.save(document);
+            
+                // Parse + clean với pipeline mới, sau đó flatten để tái sử dụng ChunkingService hiện tại.
+                // ParsedDocument parsedDocument = preprocessingPipelineService.preprocess(file);
+                // String text = preprocessingPipelineService.toFlatText(parsedDocument);
+                // log.info(
+                //     "Preprocess xong: {} ký tự, {} trang, metadata={}",
+                //     text.length(),
+                //     parsedDocument.pages() == null ? 0 : parsedDocument.pages().size(),
+                //     parsedDocument.metadata());
 
-            // Parse
-            String text = documentParserService.parse(file);
-            log.info("Parse xong: {} ký tự", text.length());
+            List<Section> sections = documentParserService.parse(file);
+            List<DocumentChunk> chunks = chunkingService2.processSections2(sections);
+            log.info("Chunk xong: {} chunks", chunks.size());
 
             // Chunk
-            List<String> chunks = chunkingService.chunk(text);
-            log.info("Chunk xong: {} chunks", chunks.size());
+            // List<String> chunks = chunkingService.chunk(text);
+            // log.info("Chunk xong: {} chunks", chunks.size());
 
             // Embed + lưu Qdrant (ĐÃ SỬA LỖI SYNTAX VÀ THÊM WIDGET_ID)
             // (Lưu ý: Nếu document.getId() của bạn là UUID, mà hàm bên EmbeddingService đang nhận Long thì bạn cần đổi bên EmbeddingService thành UUID nhé)

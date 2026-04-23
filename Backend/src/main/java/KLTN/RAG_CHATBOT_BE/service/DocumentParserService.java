@@ -1,5 +1,14 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -12,21 +21,25 @@ import technology.tabula.RectangularTextContainer;
 import technology.tabula.Table;
 import technology.tabula.extractors.SpreadsheetExtractionAlgorithm;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
+import KLTN.RAG_CHATBOT_BE.record.Section;
 
 @Service
 public class DocumentParserService {
 
-    // Đọc nội dung file, trả về chuỗi text thuần
-    public String parse(MultipartFile file) throws IOException {
+    private static final Pattern SECTION_HEADER_PATTERN = 
+        Pattern.compile("^(\\d+(?:\\.\\d+)*)\\.?\\h+(.+)$", Pattern.MULTILINE);
+    
+    // ==========================================
+    // 1. ENTRY POINT (HÀM GỌI CHÍNH)
+    // ==========================================
+    public List<Section> parse(MultipartFile file) throws IOException {
         String fileName = file.getOriginalFilename();
 
         if (fileName == null) {
             throw new IllegalArgumentException("Tên file không hợp lệ");
         }
 
+        // Dù là định dạng gì thì Output cuối cùng luôn là List<Section>
         if (fileName.toLowerCase().endsWith(".pdf")) {
             return parsePdf(file);
         } else if (fileName.toLowerCase().endsWith(".txt")) {
@@ -37,66 +50,157 @@ public class DocumentParserService {
         }
     }
 
-    // 1. Cập nhật hàm parsePdf: Thêm biến currentHeader để lưu trạng thái qua từng
-    // trang
-  private String parsePdf(MultipartFile file) throws IOException {
-    byte[] bytes = file.getBytes();
+    // ==========================================
+    // 2. PARSE PDF
+    // ==========================================
+    private List<Section> parsePdf(MultipartFile file) throws IOException {
+        byte[] bytes = file.getBytes();
 
-    try (PDDocument document = Loader.loadPDF(bytes)) {
-        StringBuilder fullContent = new StringBuilder();
-        ObjectExtractor extractor = new ObjectExtractor(document);
-        SpreadsheetExtractionAlgorithm sea = new SpreadsheetExtractionAlgorithm();
-        int totalPages = document.getNumberOfPages();
-        String[] currentHeader = { "" };
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            ObjectExtractor extractor = new ObjectExtractor(document);
+            SpreadsheetExtractionAlgorithm sea = new SpreadsheetExtractionAlgorithm();
+            int totalPages = document.getNumberOfPages();
+            String[] currentHeader = { "" };
+            
+            Map<Integer, String> pageContents = new java.util.HashMap<>();
 
-        for (int pageNum = 1; pageNum <= totalPages; pageNum++) {
+            for (int pageNum = 1; pageNum <= totalPages; pageNum++) {
+                StringBuilder pageBuilder = new StringBuilder();
 
-            // 1. Extract text thường
-            PDFTextStripper stripper = new PDFTextStripper();
-            stripper.setSortByPosition(true);
-            stripper.setWordSeparator(" ");
-            stripper.setLineSeparator("\n");
-            stripper.setStartPage(pageNum);
-            stripper.setEndPage(pageNum);
-            String pageText = stripper.getText(document);
-            fullContent.append(cleanText(pageText)).append("\n");
+                // 1. Extract text thường
+                PDFTextStripper stripper = new PDFTextStripper();
+                stripper.setSortByPosition(true);
+                stripper.setWordSeparator(" ");
+                stripper.setLineSeparator("\n");
+                stripper.setStartPage(pageNum);
+                stripper.setEndPage(pageNum);
+                
+                String pageText = stripper.getText(document);
+                pageBuilder.append(cleanText(pageText)).append("\n");
 
-            // 2. Extract table
-            try {
-                Page page = extractor.extract(pageNum);
-                List<Table> tables = sea.extract(page);
-                for (Table table : tables) {
-                    fullContent.append("\n[TABLE_START]\n");
-                    fullContent.append(convertTableToMarkdown(table, currentHeader));
-                    fullContent.append("[TABLE_END]\n");
+                // 2. Extract table (Gắn thẳng table vào nội dung của trang hiện tại)
+                try {
+                    Page page = extractor.extract(pageNum);
+                    List<Table> tables = sea.extract(page);
+                    for (Table table : tables) {
+                        pageBuilder.append("\n[TABLE_START]\n");
+                        pageBuilder.append(convertTableToMarkdown(table, currentHeader));
+                        pageBuilder.append("[TABLE_END]\n");
+                    }
+                } catch (Exception e) {
+                    // bỏ qua nếu không có table
                 }
-            } catch (Exception e) {
-                // bỏ qua nếu không có table
+
+                // Lưu nội dung hoàn chỉnh của trang (gồm cả Text + Table) vào Map
+                pageContents.put(pageNum, pageBuilder.toString());
+            }
+            
+            // Xử lý chia Section
+            return parseSections(pageContents); 
+        }
+    }
+
+    // ==========================================
+    // 3. PARSE TXT
+    // ==========================================
+    private List<Section> parseTxt(MultipartFile file) throws IOException {
+        byte[] bytes = file.getBytes();
+        String text = new String(bytes, StandardCharsets.UTF_8);
+        String cleanedText = cleanText(text);
+
+        // Quy ước toàn bộ file TXT là Trang 1
+        Map<Integer, String> pageContents = Map.of(1, cleanedText);
+
+        // Đưa cho hàm Regex phân tích như bình thường
+        return parseSections(pageContents);
+    }
+
+    // ==========================================
+    // 4. CORE LOGIC: CHIA SECTION TỪ MAP THEO TRANG
+    // ==========================================
+    public List<Section> parseSections(Map<Integer, String> pageContents) {
+        List<Section> sections = new ArrayList<>();
+        TreeMap<Integer, String> sortedPages = new TreeMap<>(pageContents);
+        
+        // Mặc định tên Header là General đề phòng file (như TXT) không có Header nào
+        String currentHeader = "General"; 
+        StringBuilder currentContent = new StringBuilder();
+        int startPage = 1;
+
+        for (Map.Entry<Integer, String> entry : sortedPages.entrySet()) {
+            int currentPage = entry.getKey();
+            String pageText = entry.getValue();
+            
+            Matcher matcher = SECTION_HEADER_PATTERN.matcher(pageText);
+            int lastEndIndex = 0;
+
+            while (matcher.find()) {
+                // Lưu content cũ vào trước khi chuyển sang header mới
+                if (currentContent.length() > 0 || lastEndIndex > 0) {
+                    currentContent.append(pageText, lastEndIndex, matcher.start());
+                    
+                    String finalizedContent = currentContent.toString().trim();
+                    if (!finalizedContent.isEmpty()) {
+                        sections.add(new Section(currentHeader, startPage, currentPage, finalizedContent));
+                    }
+                    currentContent.setLength(0); 
+                }
+
+                currentHeader = matcher.group(0).trim();
+                startPage = currentPage;
+                lastEndIndex = matcher.end();
+            }
+
+            // Text còn lại của trang
+            currentContent.append(pageText.substring(lastEndIndex)).append("\n");
+        }
+
+        // Lưu chunk cuối cùng
+        String finalChunkContent = currentContent.toString().trim();
+        if (!finalChunkContent.isEmpty()) {
+            sections.add(new Section(currentHeader, startPage, sortedPages.lastKey(), finalChunkContent));
+        }
+
+        // Gộp các Section quá nhỏ (< 1200 chars) để tối ưu VectorDB
+        return mergeSmallSections(sections, 1200); 
+    }
+
+    // ==========================================
+    // 5. HELPER METHODS (MERGE, TABLE, CLEAN TEXT)
+    // ==========================================
+    public List<Section> mergeSmallSections(List<Section> originalSections, int minCharLength) {
+        if (originalSections == null || originalSections.isEmpty()) return new ArrayList<>();
+
+        List<Section> mergedSections = new ArrayList<>();
+        Section currentMerge = originalSections.get(0);
+
+        for (int i = 1; i < originalSections.size(); i++) {
+            Section nextSec = originalSections.get(i);
+
+            if (currentMerge.content().length() < minCharLength) {
+                String mergedHeader = currentMerge.header() + " & " + nextSec.header();
+                String mergedContent = currentMerge.content() + "\n\n[" + nextSec.header() + "]\n" + nextSec.content();
+                
+                currentMerge = new Section(mergedHeader, currentMerge.startPage(), nextSec.endPage(), mergedContent);
+            } else {
+                mergedSections.add(currentMerge);
+                currentMerge = nextSec;
             }
         }
-        return fullContent.toString();
+        mergedSections.add(currentMerge);
+        return mergedSections;
     }
-}
-   
-    // 2. Cập nhật hàm convertTableToMarkdown: Nhận diện và chèn Header cũ
+
     private String convertTableToMarkdown(Table table, String[] currentHeader) {
         StringBuilder sb = new StringBuilder();
         List<List<RectangularTextContainer>> rows = table.getRows();
 
-        if (rows.isEmpty())
-            return "";
+        if (rows.isEmpty()) return "";
 
         List<RectangularTextContainer> firstRow = rows.get(0);
 
-        // Kiểm tra xem dòng đầu tiên là Dữ liệu (Data) hay Tiêu đề (Header)
         if (isDataRow(firstRow)) {
-            // LÀ DỮ LIỆU: Có nghĩa đây là phần tiếp nối của bảng từ trang trước!
-            // Chèn Header cũ vào trước
-            if (!currentHeader[0].isEmpty()) {
-                sb.append(currentHeader[0]).append("\n");
-            }
-
-            // In dữ liệu ra như bình thường
+            if (!currentHeader[0].isEmpty()) sb.append(currentHeader[0]).append("\n");
             for (List<RectangularTextContainer> row : rows) {
                 sb.append("| ");
                 for (RectangularTextContainer cell : row) {
@@ -105,7 +209,6 @@ public class DocumentParserService {
                 sb.append("\n");
             }
         } else {
-            // LÀ TIÊU ĐỀ: Đây là một bảng mới. Cần tạo Header và lưu lại.
             StringBuilder headerSb = new StringBuilder("| ");
             StringBuilder separatorSb = new StringBuilder("| ");
 
@@ -114,13 +217,9 @@ public class DocumentParserService {
                 separatorSb.append("--- | ");
             }
 
-            // Cập nhật lại Header hiện tại để dành cho trang sau
             currentHeader[0] = headerSb.toString() + "\n" + separatorSb.toString();
-
-            // Ghi Header vào chuỗi kết quả
             sb.append(currentHeader[0]).append("\n");
 
-            // In các dòng dữ liệu còn lại (bỏ qua dòng 0 vì đã là Header)
             for (int i = 1; i < rows.size(); i++) {
                 sb.append("| ");
                 for (RectangularTextContainer cell : rows.get(i)) {
@@ -132,72 +231,32 @@ public class DocumentParserService {
         return sb.toString();
     }
 
-    // Hàm phán đoán xem một dòng có phải là dòng chứa dữ liệu (Data) hay không
-    // private boolean isDataRow(List<RectangularTextContainer> row) {
-    //     if (row == null || row.isEmpty()) {
-    //         return false;
-    //     }
-
-    //     int numericCellCount = 0;
-
-    //     for (RectangularTextContainer cell : row) {
-    //         String text = cell.getText().trim();
-    //         // Kiểm tra xem nội dung ô có chứa chữ số nào không (ví dụ: "100g", "208 cal",
-    //         // "13")
-    //         if (text.matches(".*\\d+.*")) {
-    //             numericCellCount++;
-    //         }
-    //     }
-
-    //     // Logic (Heuristic):
-    //     // Tiêu đề (Header) thường toàn chữ (Ví dụ: "Món Ăn", "Calo", "Protein").
-    //     // Nếu dòng có từ 1-2 ô trở lên chứa chữ số, khả năng rất cao nó là Data Row.
-    //     // Bạn có thể chỉnh sửa số "1" này tùy theo đặc thù tài liệu của bạn.
-    //     return numericCellCount >= 1;
-    // }
-
     private boolean isDataRow(List<RectangularTextContainer> row) {
-    if (row == null || row.isEmpty()) return false;
-
-    int numericOnlyCellCount = 0;
-
-    for (RectangularTextContainer cell : row) {
-        String text = cell.getText().trim();
-        // ✅ Chỉ tính là data nếu ô TOÀN SỐ hoặc số + đơn vị (100g, 7h, 12h)
-        // Header thường là text dài hơn như "Thời Điểm", "Đồ Ăn Đề Nghị"
-        if (text.matches("^[\\d\\s:h.,]+$") || text.matches("^\\d+[a-zA-Z]*$")) {
-            numericOnlyCellCount++;
+        if (row == null || row.isEmpty()) return false;
+        int numericOnlyCellCount = 0;
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText().trim();
+            if (text.matches("^[\\d\\s:h.,]+$") || text.matches("^\\d+[a-zA-Z]*$")) {
+                numericOnlyCellCount++;
+            }
         }
-    }
-
-    // Chỉ là data row nếu PHẦN LỚN ô là số thuần
-    return numericOnlyCellCount >= (row.size() / 2.0);
-}
-
-    private String parseTxt(MultipartFile file) throws IOException {
-        byte[] bytes = file.getBytes();
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        return cleanText(text);
+        return numericOnlyCellCount >= (row.size() / 2.0);
     }
 
     private String cleanText(String text) {
-        if (text == null) {
-            return "";
-        }
-
+        if (text == null) return "";
         return text
-                .replace('\u00A0', ' ') // Non-breaking space
-                .replace('\u2007', ' ') // Figure space
-                .replace('\u202F', ' ') // Narrow no-break space
-                .replace("\u200B", "") // Zero-width space
-                .replace("\u200C", "") // Zero-width non-joiner
-                .replace("\u200D", "") // Zero-width joiner
-                .replace("\uFEFF", "") // BOM / zero-width no-break space
-                .replaceAll("\\r\\n", "\n") // Chuẩn hóa xuống dòng
-                .replaceAll("\\r", "\n")
-                .replaceAll("[ \\t]+", " ") // Nhiều khoảng trắng → 1
-                .replaceAll("([,.;:!?])(\\S)", "$1 $2") // Đảm bảo có khoảng trắng sau dấu câu
-                .replaceAll("\\n{3,}", "\n\n") // Nhiều dòng trống → tối đa 2
+                .replace('\u00A0', ' ').replace('\u2007', ' ').replace('\u202F', ' ')
+                .replace("\u200B", "").replace("\u200C", "").replace("\u200D", "").replace("\uFEFF", "")
+                .replaceAll("\\r\\n", "\n").replaceAll("\\r", "\n")
+                .replaceAll("[ \\t]+", " ")
+                .replaceAll("(?<=[,;:!?])(?=\\\\S)", "$1 $2")
+                .replaceAll("\\n{3,}", "\n\n")
+                .replaceAll("(?<!\\n)\\n(?!\\n)", " ")
+                .replaceAll("\\.{2,}", ".")
                 .trim();
     }
+
 }
+
+// record Section(String header, int startPage, int endPage, String content) {}

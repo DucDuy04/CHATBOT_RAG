@@ -20,3 +20,15 @@ server:
 #   api-key: GEMINI_API_KEY_PLACEHOLDER
 groq:
   api-key: ${GROQ_API_KEY}
+app:
+  upload-dir: ./uploads
+  preprocessing:
+    cleaner:
+      enable-noise-removal: true
+      enable-line-unbreak: true
+      enable-whitespace-normalization: true
+      line-join-separator: " "
+      noise-regex:
+        - "(?i)^page\\s+\\d+(\\s+of\\s+\\d+)?$"
+        - "(?i)^confidential$"
+        - "(?i)^draft$"

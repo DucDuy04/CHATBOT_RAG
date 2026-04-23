@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = (import.meta.env.VITE_API_URL || "").trim();
 const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
 
 const getSessionId = () => {
