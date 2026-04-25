@@ -33,7 +33,8 @@ public class PromptBuilderService {
         5. Khi tài liệu có bảng Markdown (| Cột 1 | Cột 2 |), đọc đúng từng hàng và cột, không nhầm lẫn dữ liệu giữa các hàng.
         6. Nếu câu trả lời chứa nhiều mục hoặc số liệu, trình bày lại dưới dạng bảng Markdown.
         7. Nếu dữ liệu bảng nằm rải rác nhiều chunks, BẮT BUỘC gộp tất cả hàng thành MỘT bảng duy nhất, KHÔNG bỏ sót hàng nào.
-        8. Nếu câu hỏi hỏi về danh sách, liệt kê ĐẦY ĐỦ tất cả các mục có trong tài liệu, KHÔNG được bỏ sót.
+        8. Nếu câu hỏi hỏi về danh sách/toàn bộ/bảng/header, hãy tổng hợp tất cả Source cùng section/table trước khi trả lời.
+        9. Luôn trích nguồn ở cuối câu trả lời theo dạng: Nguồn: Document, Section, Pages.
         """;
         public String getSystemPrompt() {
         return SYSTEM_PROMPT;
@@ -74,4 +75,45 @@ public class PromptBuilderService {
 
         return prompt.toString();
     }
+
+    public String buildUserPromptFromRetrievedContexts(
+        String question,
+        List<KLTN.RAG_CHATBOT_BE.dto.RetrievedContext> contexts,
+        List<ChatMessage> chatHistory
+) {
+    StringBuilder prompt = new StringBuilder();
+
+    prompt.append("[TÀI LIỆU THAM KHẢO]\n");
+
+    for (int i = 0; i < contexts.size(); i++) {
+        KLTN.RAG_CHATBOT_BE.dto.RetrievedContext ctx = contexts.get(i);
+
+        prompt.append("[Source ").append(i + 1).append("]\n");
+        prompt.append("Document: ").append(nullSafe(ctx.getFileName())).append("\n");
+        prompt.append("Section: ").append(nullSafe(ctx.getHeadingPathText())).append("\n");
+        prompt.append("Pages: ").append(ctx.getPageStart()).append("-").append(ctx.getPageEnd()).append("\n");
+        prompt.append("Type: ").append(nullSafe(ctx.getChunkType())).append("\n\n");
+        prompt.append("Content:\n");
+        prompt.append(ctx.getContent()).append("\n\n");
+    }
+
+    if (!chatHistory.isEmpty()) {
+        prompt.append("[LỊCH SỬ HỘI THOẠI]\n");
+        for (ChatMessage msg : chatHistory) {
+            String role = "USER".equals(msg.getRole().name().toUpperCase(Locale.ROOT))
+                    ? "Người dùng" : "Trợ lý";
+            prompt.append(role).append(": ").append(msg.getContent()).append("\n");
+        }
+        prompt.append("\n");
+    }
+
+    prompt.append("[CÂU HỎI HIỆN TẠI]\n");
+    prompt.append(question);
+
+    return prompt.toString();
+}
+
+private String nullSafe(String value) {
+    return value == null ? "" : value;
+}
 }

@@ -13,7 +13,12 @@ import java.util.UUID;
 import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig;
 
 @Entity
-@Table(name = "chat_sessions")
+@Table(
+        name = "chat_sessions",
+        uniqueConstraints = {
+                @UniqueConstraint(columnNames = {"widget_config_id", "session_key"})
+        }
+)
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor @Builder
 @SQLRestriction("deleted_at IS NULL")
@@ -27,7 +32,7 @@ public class ChatSession {
     @JoinColumn(name = "widget_config_id", nullable = false)
     private WidgetConfig widgetConfig;
 
-    @Column(name = "session_key", unique = true, nullable = false, updatable = false)
+    @Column(name = "session_key", nullable = false, updatable = false)
     private UUID sessionKey; // Được gửi từ trình duyệt người dùng để phân biệt các người chat ẩn danh
 
     private String title;

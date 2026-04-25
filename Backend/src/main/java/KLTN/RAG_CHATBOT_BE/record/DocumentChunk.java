@@ -1,8 +1,15 @@
 package KLTN.RAG_CHATBOT_BE.record;
 
 public record DocumentChunk(
-    String content,     // Nội dung đã được nhúng thêm Header
-    String header,      // Metadata: Mục lục
-    int startPage,      // Metadata: Trang bắt đầu
-    int endPage         // Metadata: Trang kết thúc
+    String content,
+    String header,
+    int startPage,
+    int endPage,
+    String chunkType,
+    String sectionId,
+    String parentId,
+    String tableId,
+    String headingPathText,
+    int orderIndex,
+    int tokenCount
 ) {}

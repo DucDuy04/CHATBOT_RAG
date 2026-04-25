@@ -1,29 +1,31 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path; // Import Entity Widget (Ngày 1)
-import java.nio.file.Paths; // Import Repository Widget (Ngày 1)
-import java.nio.file.StandardCopyOption; // Đảm bảo dùng đúng Enum trạng thái
-import java.util.List;
-import java.util.UUID;
-
+import KLTN.RAG_CHATBOT_BE.domain.document.Document;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunkRepository;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentRepository;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentSection;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentSectionRepository;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentTable;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentTableRepository;
+import KLTN.RAG_CHATBOT_BE.domain.enums.DocumentStatus;
+import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig;
+import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
+import KLTN.RAG_CHATBOT_BE.record.Section;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import KLTN.RAG_CHATBOT_BE.domain.document.Document;
-import KLTN.RAG_CHATBOT_BE.domain.document.DocumentRepository;
-import KLTN.RAG_CHATBOT_BE.domain.enums.DocumentStatus;
-import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig;
-import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
-// import KLTN.RAG_CHATBOT_BE.preprocess.model.ParsedDocument;
-// import KLTN.RAG_CHATBOT_BE.preprocess.service.PreprocessingPipelineService;
-import KLTN.RAG_CHATBOT_BE.record.DocumentChunk;
-import KLTN.RAG_CHATBOT_BE.record.Section;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -31,86 +33,256 @@ import lombok.extern.slf4j.Slf4j;
 public class DocumentService {
 
     private final DocumentRepository documentRepository;
-    private final WidgetConfigRepository widgetConfigRepository; // Inject thêm Repository này
-    // private final PreprocessingPipelineService preprocessingPipelineService;
-    // private final ChunkingService chunkingService;
+    private final WidgetConfigRepository widgetConfigRepository;
+
+    private final DocumentParserService documentParserService;
+    private final ChunkingService2 chunkingService2;
     private final EmbeddingService embeddingService;
-    private final ChunkingService2 chunkingService2; // Nếu bạn muốn dùng ChunkingService2 thay vì ChunkingService, hãy inject nó vào đây và gọi nó trong hàm uploadAndProcess nhé.
-    private final DocumentParserService documentParserService; // Inject thêm DocumentParserService để parse file thành Sections trước khi chunking.
+
+    private final DocumentChunkRepository documentChunkRepository;
+    private final DocumentSectionRepository documentSectionRepository;
+    private final DocumentTableRepository documentTableRepository;
 
     @Value("${app.upload-dir}")
     private String uploadDir;
 
-    // NHẬN THÊM widgetId TỪ CONTROLLER
     public Document uploadAndProcess(MultipartFile file, UUID widgetId) throws IOException {
-        
-        // 1. Kiểm tra xem Widget có tồn tại không
         WidgetConfig widgetConfig = widgetConfigRepository.findById(widgetId)
                 .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy Widget với ID: " + widgetId));
 
-        // 2. Lưu file vào thư mục uploads/
         String savedPath = saveFile(file);
 
-        // 3. Tạo bản ghi trong database với trạng thái PENDING và GẮN WIDGET
         Document document = Document.builder()
-                .widgetConfig(widgetConfig) // QUAN TRỌNG: Gắn tài liệu này cho Widget nào
+                .widgetConfig(widgetConfig)
                 .fileName(file.getOriginalFilename())
                 .filePath(savedPath)
                 .fileType(getFileType(file.getOriginalFilename()))
                 .fileSize(file.getSize())
-                .status(DocumentStatus.PENDING) // Sửa lại cách gọi Enum cho chuẩn Java
+                .status(DocumentStatus.PENDING)
                 .build();
+
         document = documentRepository.save(document);
 
-        // 4. Xử lý document (parse → chunk → embed → lưu Qdrant)
         try {
             document.setStatus(DocumentStatus.PROCESSING);
             documentRepository.save(document);
-            
-                // Parse + clean với pipeline mới, sau đó flatten để tái sử dụng ChunkingService hiện tại.
-                // ParsedDocument parsedDocument = preprocessingPipelineService.preprocess(file);
-                // String text = preprocessingPipelineService.toFlatText(parsedDocument);
-                // log.info(
-                //     "Preprocess xong: {} ký tự, {} trang, metadata={}",
-                //     text.length(),
-                //     parsedDocument.pages() == null ? 0 : parsedDocument.pages().size(),
-                //     parsedDocument.metadata());
 
             List<Section> sections = documentParserService.parse(file);
-            List<DocumentChunk> chunks = chunkingService2.processSections2(sections);
-            log.info("Chunk xong: {} chunks", chunks.size());
+            List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks =
+                    chunkingService2.processSections2(sections);
 
-            // Chunk
-            // List<String> chunks = chunkingService.chunk(text);
-            // log.info("Chunk xong: {} chunks", chunks.size());
+            log.info(
+                    "Parse document={} được {} sections, chunk được {} chunks",
+                    document.getFileName(),
+                    sections.size(),
+                    chunks.size()
+            );
 
-            // Embed + lưu Qdrant (ĐÃ SỬA LỖI SYNTAX VÀ THÊM WIDGET_ID)
-            // (Lưu ý: Nếu document.getId() của bạn là UUID, mà hàm bên EmbeddingService đang nhận Long thì bạn cần đổi bên EmbeddingService thành UUID nhé)
-            embeddingService.embedAndStore(chunks, document.getId(), document.getFileName(), widgetId);
+            Map<String, DocumentSection> sectionMap = saveSections(
+                    sections,
+                    document,
+                    widgetConfig
+            );
 
-            // Cập nhật trạng thái COMPLETED
+            Map<String, DocumentTable> tableMap = saveTables(
+                    chunks,
+                    sectionMap,
+                    document,
+                    widgetConfig
+            );
+
+            List<KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk> savedChunks =
+                    saveChunks(
+                            chunks,
+                            sectionMap,
+                            tableMap,
+                            document,
+                            widgetConfig
+                    );
+
+            linkPrevNextChunks(savedChunks);
+
+            embeddingService.embedAndStore(
+                    savedChunks,
+                    document.getId(),
+                    document.getFileName(),
+                    widgetId
+            );
+
             document.setStatus(DocumentStatus.COMPLETED);
-            document.setChunkCount(chunks.size());
-            // document.setProcessedAt(LocalDateTime.now()); // Entity Ngày 1 dùng updatedAt tự động cập nhật, bạn có thể bỏ dòng này.
+            document.setChunkCount(savedChunks.size());
             documentRepository.save(document);
 
-            log.info("Xử lý xong document: {}", document.getFileName());
+            log.info(
+                    "Xử lý xong document={}, sections={}, tables={}, chunks={}",
+                    document.getFileName(),
+                    sectionMap.size(),
+                    tableMap.size(),
+                    savedChunks.size()
+            );
 
         } catch (Exception e) {
-            // Nếu có lỗi, đánh dấu FAILED
             document.setStatus(DocumentStatus.FAILED);
             documentRepository.save(document);
-            log.error("Lỗi xử lý document {}: {}", document.getFileName(), e.getMessage());
-            throw e; // Ném lỗi ra để Controller biết
+
+            log.error(
+                    "Lỗi xử lý document={}, error={}",
+                    document.getFileName(),
+                    e.getMessage(),
+                    e
+            );
+
+            throw e;
         }
 
         return document;
     }
 
-    // MULTI-TENANT: Không nên lấy "Tất cả", mà chỉ lấy tài liệu của Widget đó thôi
+    private Map<String, DocumentSection> saveSections(
+            List<Section> sections,
+            Document document,
+            WidgetConfig widgetConfig
+    ) {
+        Map<String, DocumentSection> sectionMap = new LinkedHashMap<>();
+
+        for (int i = 0; i < sections.size(); i++) {
+            Section section = sections.get(i);
+
+            String sectionKey = "sec_" + i;
+            String title = safeText(section.header(), "Untitled Section");
+
+            DocumentSection sectionEntity = DocumentSection.builder()
+                    .document(document)
+                    .widgetConfig(widgetConfig)
+                    .sectionKey(sectionKey)
+                    .parentSectionKey(null)
+                    .title(title)
+                    .headingPathText(title)
+                    .pageStart(section.startPage())
+                    .pageEnd(section.endPage())
+                    .orderIndex(i)
+                    .build();
+
+            sectionEntity = documentSectionRepository.save(sectionEntity);
+            sectionMap.put(sectionKey, sectionEntity);
+        }
+
+        return sectionMap;
+    }
+
+    private Map<String, DocumentTable> saveTables(
+            List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks,
+            Map<String, DocumentSection> sectionMap,
+            Document document,
+            WidgetConfig widgetConfig
+    ) {
+        Map<String, DocumentTable> tableMap = new LinkedHashMap<>();
+
+        for (KLTN.RAG_CHATBOT_BE.record.DocumentChunk chunk : chunks) {
+            if (chunk.tableId() == null || chunk.tableId().isBlank()) {
+                continue;
+            }
+
+            if (tableMap.containsKey(chunk.tableId())) {
+                continue;
+            }
+
+            DocumentSection sectionEntity = sectionMap.get(chunk.sectionId());
+
+            DocumentTable tableEntity = DocumentTable.builder()
+                    .document(document)
+                    .widgetConfig(widgetConfig)
+                    .section(sectionEntity)
+                    .tableKey(chunk.tableId())
+                    .sectionKey(chunk.sectionId())
+                    .title(safeText(chunk.header(), "Table"))
+                    .pageStart(chunk.startPage())
+                    .pageEnd(chunk.endPage())
+                    .orderIndex(chunk.orderIndex())
+                    .markdownContent(chunk.content())
+                    .jsonContent(null)
+                    .build();
+
+            tableEntity = documentTableRepository.save(tableEntity);
+            tableMap.put(chunk.tableId(), tableEntity);
+        }
+
+        return tableMap;
+    }
+
+    private List<KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk> saveChunks(
+            List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks,
+            Map<String, DocumentSection> sectionMap,
+            Map<String, DocumentTable> tableMap,
+            Document document,
+            WidgetConfig widgetConfig
+    ) {
+        List<KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk> entities =
+                new java.util.ArrayList<>();
+
+        for (int i = 0; i < chunks.size(); i++) {
+            KLTN.RAG_CHATBOT_BE.record.DocumentChunk chunk = chunks.get(i);
+
+            DocumentSection sectionEntity = sectionMap.get(chunk.sectionId());
+            DocumentTable tableEntity = chunk.tableId() == null
+                    ? null
+                    : tableMap.get(chunk.tableId());
+
+            KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk chunkEntity =
+                    KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk.builder()
+                            .document(document)
+                            .widgetConfig(widgetConfig)
+                            .section(sectionEntity)
+                            .table(tableEntity)
+                            .chunkIndex(i)
+                            .content(chunk.content())
+                            .chunkType(safeText(chunk.chunkType(), "text"))
+                            .sectionId(chunk.sectionId())
+                            .parentId(chunk.parentId())
+                            .tableId(chunk.tableId())
+                            .sectionTitle(chunk.header())
+                            .headingPathText(chunk.headingPathText())
+                            .pageStart(chunk.startPage())
+                            .pageEnd(chunk.endPage())
+                            .orderIndex(chunk.orderIndex())
+                            .tokenCount(chunk.tokenCount())
+                            .sourceFile(document.getFileName())
+                            .build();
+
+            entities.add(chunkEntity);
+        }
+
+        return documentChunkRepository.saveAll(entities);
+    }
+
+    private void linkPrevNextChunks(
+            List<KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk> savedChunks
+    ) {
+        if (savedChunks == null || savedChunks.isEmpty()) {
+            return;
+        }
+
+        for (int i = 0; i < savedChunks.size(); i++) {
+            KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk current = savedChunks.get(i);
+
+            if (i > 0) {
+                current.setPrevChunk(savedChunks.get(i - 1));
+            }
+
+            if (i < savedChunks.size() - 1) {
+                current.setNextChunk(savedChunks.get(i + 1));
+            }
+        }
+
+        documentChunkRepository.saveAll(savedChunks);
+    }
+
     public List<Document> getDocumentsByWidget(UUID widgetId) {
-        // Đảm bảo bạn đã thêm hàm findByWidgetConfigId(UUID id) vào DocumentRepository ở Ngày 1
         return documentRepository.findByWidgetConfigId(widgetId);
+    }
+
+    public List<Document> getAllDocuments() {
+        return documentRepository.findAll();
     }
 
     private String saveFile(MultipartFile file) throws IOException {
@@ -120,7 +292,12 @@ public class DocumentService {
             Files.createDirectories(uploadPath);
         }
 
-        String fileName = System.currentTimeMillis() + "_" + file.getOriginalFilename();
+        String originalFileName = file.getOriginalFilename();
+        String safeFileName = originalFileName == null || originalFileName.isBlank()
+                ? "uploaded_file"
+                : originalFileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+        String fileName = System.currentTimeMillis() + "_" + safeFileName;
         Path filePath = uploadPath.resolve(fileName);
 
         Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
@@ -129,13 +306,36 @@ public class DocumentService {
     }
 
     private String getFileType(String fileName) {
-        if (fileName == null) return "UNKNOWN";
-        if (fileName.toLowerCase().endsWith(".pdf")) return "PDF";
-        if (fileName.toLowerCase().endsWith(".txt")) return "TXT";
+        if (fileName == null || fileName.isBlank()) {
+            return "UNKNOWN";
+        }
+
+        String lower = fileName.toLowerCase();
+
+        if (lower.endsWith(".pdf")) {
+            return "PDF";
+        }
+
+        if (lower.endsWith(".txt")) {
+            return "TXT";
+        }
+
+        if (lower.endsWith(".docx")) {
+            return "DOCX";
+        }
+
+        if (lower.endsWith(".doc")) {
+            return "DOC";
+        }
+
         return "UNKNOWN";
     }
 
-    public List<Document> getAllDocuments() {
-        return documentRepository.findAll();
+    private String safeText(String value, String defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+
+        return value;
     }
 }

@@ -6,6 +6,18 @@ import remarkGfm from "remark-gfm";
 const API_URL = (import.meta.env.VITE_API_URL || "").trim();
 const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
 
+const readErrorMessage = async (response) => {
+  const text = await response.text();
+  if (!text) return "Loi ket noi server";
+
+  try {
+    const data = JSON.parse(text);
+    return data.error || data.message || text;
+  } catch {
+    return text;
+  }
+};
+
 const getSessionId = () => {
   const stored = localStorage.getItem("chat_session_id");
   if (stored) return stored;
@@ -28,6 +40,7 @@ export default function ChatPage() {
     localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY || ""
   );
   const [widgetKeyInput, setWidgetKeyInput] = useState(widgetKey);
+  const [authError, setAuthError] = useState("");
   const bottomRef             = useRef(null);
   const sessionId             = getSessionId();
 
@@ -86,8 +99,14 @@ export default function ChatPage() {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Lỗi kết nối server");
+        const errorMessage = await readErrorMessage(response);
+        if (response.status === 401) {
+          localStorage.removeItem("widget_api_key");
+          setWidgetKey("");
+          setWidgetKeyInput("");
+          setAuthError("Widget key khong hop le hoac da bi tat. Hay tao/lap lai apiKey hop le trong tab Tai lieu.");
+        }
+        throw new Error(errorMessage);
       }
 
       const reader  = response.body.getReader();
@@ -179,6 +198,7 @@ export default function ChatPage() {
     if (!normalized) return;
     localStorage.setItem("widget_api_key", normalized);
     setWidgetKey(normalized);
+    setAuthError("");
     setMessages((prev) => [
       ...prev,
       {
@@ -197,10 +217,10 @@ export default function ChatPage() {
         RAG Chatbot
       </div>
 
-      {!widgetKey && (
+      {(!widgetKey || authError) && (
         <div className="p-3 border-b bg-amber-50">
           <p className="text-xs text-amber-800 mb-2">
-            Thiếu widget key. Dán `apiKey` từ API tạo widget để bật chat.
+            {authError || "Thieu widget key. Dan apiKey tu API tao widget de bat chat."}
           </p>
           <div className="flex gap-2">
             <input
@@ -272,16 +292,15 @@ export default function ChatPage() {
                   <div className="mt-1 space-y-1">
                     {msg.sources.map((src, i) => (
                       <div key={i} className="p-2 border rounded bg-gray-50">
-                        <p
-                          className="font-medium text-gray-600 break-words"
-                          style={{ overflowWrap: "anywhere" }}
-                        >
+                        <p className="font-medium text-gray-600 truncate">
                           {src.fileName}
                         </p>
-                        <p
-                          className="mt-1 break-words line-clamp-2"
-                          style={{ overflowWrap: "anywhere" }}
-                        >
+                        <p className="text-gray-500 mt-0.5">
+                          {src.sectionTitle || "Không rõ section"}
+                          {src.pages ? ` · Trang ${src.pages}` : ""}
+                          {src.chunkType ? ` · ${src.chunkType}` : ""}
+                        </p>
+                        <p className="line-clamp-2 text-gray-400 mt-0.5">
                           {src.chunkText}
                         </p>
                       </div>
@@ -317,3 +336,4 @@ export default function ChatPage() {
     </div>
   );
 }
+

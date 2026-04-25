@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { uploadDocument, getDocuments } from "../api/documentApi";
+import { createWidget } from "../api/widgetApi";
 
 export default function DocumentPage() {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [creatingWidget, setCreatingWidget] = useState(false);
   const [message, setMessage]     = useState("");
   const [widgetConfigId, setWidgetConfigId] = useState(
     localStorage.getItem("widget_config_id") || ""
@@ -66,6 +68,33 @@ export default function DocumentPage() {
     setMessage("Đã lưu widget config vào localStorage.");
   };
 
+  const handleCreateWidget = async () => {
+    setCreatingWidget(true);
+    setMessage("");
+
+    try {
+      const result = await createWidget({
+        name: `Local widget ${new Date().toISOString()}`,
+        allowedOrigin: [window.location.origin],
+        uiConfig: {},
+      });
+
+      const newWidgetConfigId = result.widgetConfigId || "";
+      const newWidgetApiKey = result.apiKey || "";
+
+      localStorage.setItem("widget_config_id", newWidgetConfigId);
+      localStorage.setItem("widget_api_key", newWidgetApiKey);
+      setWidgetConfigId(newWidgetConfigId);
+      setWidgetApiKey(newWidgetApiKey);
+      setMessage("Da tao widget moi va luu cau hinh. Ban co the upload tai lieu va chat ngay.");
+    } catch (error) {
+      console.error("Khong tao duoc widget:", error);
+      setMessage(error?.response?.data?.message || error?.message || "Tao widget that bai, vui long thu lai.");
+    } finally {
+      setCreatingWidget(false);
+    }
+  };
+
   const statusColor = (status) => {
     switch (status) {
       case "COMPLETED":  return "text-green-600 bg-green-50";
@@ -106,6 +135,14 @@ export default function DocumentPage() {
           className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
         >
           Lưu cấu hình widget
+        </button>
+        <button
+          type="button"
+          onClick={handleCreateWidget}
+          disabled={creatingWidget}
+          className="ml-2 px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {creatingWidget ? "Dang tao widget..." : "Tao widget moi"}
         </button>
       </div>
 

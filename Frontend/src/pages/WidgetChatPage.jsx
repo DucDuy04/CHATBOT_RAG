@@ -6,6 +6,18 @@ import remarkGfm from "remark-gfm";
 const API_URL = (import.meta.env.VITE_API_URL || "").trim();
 const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
 
+const readErrorMessage = async (response) => {
+  const text = await response.text();
+  if (!text) return "Loi ket noi";
+
+  try {
+    const data = JSON.parse(text);
+    return data.error || data.message || text;
+  } catch {
+    return text;
+  }
+};
+
 const getSessionId = () => {
   const stored = localStorage.getItem("widget_session_id");
   if (stored) return stored;
@@ -90,8 +102,11 @@ export default function WidgetChatPage() {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Lỗi kết nối");
+        const errorMessage = await readErrorMessage(response);
+        if (response.status === 401 && !queryWidgetKey) {
+          localStorage.removeItem("widget_api_key");
+        }
+        throw new Error(errorMessage);
       }
 
       const reader  = response.body.getReader();
@@ -223,8 +238,17 @@ export default function WidgetChatPage() {
                   <div className="mt-1 space-y-1">
                     {msg.sources.map((src, i) => (
                       <div key={i} className="p-1 text-xs border rounded bg-gray-50">
-                        <p className="font-medium text-gray-500 truncate">{src.fileName}</p>
-                        <p className="line-clamp-2 text-gray-400 mt-0.5">{src.chunkText}</p>
+                        <p className="font-medium text-gray-600 truncate">
+                          {src.fileName}
+                        </p>
+                        <p className="text-gray-500 mt-0.5">
+                          {src.sectionTitle || "Không rõ section"}
+                          {src.pages ? ` · Trang ${src.pages}` : ""}
+                          {src.chunkType ? ` · ${src.chunkType}` : ""}
+                        </p>
+                        <p className="line-clamp-2 text-gray-400 mt-0.5">
+                          {src.chunkText}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -258,3 +282,4 @@ export default function WidgetChatPage() {
     </div>
   );
 }
+

@@ -26,8 +26,11 @@ import KLTN.RAG_CHATBOT_BE.record.Section;
 @Service
 public class DocumentParserService {
 
-    private static final Pattern SECTION_HEADER_PATTERN = 
-        Pattern.compile("^(\\d+(?:\\.\\d+)*)\\.?\\h+(.+)$", Pattern.MULTILINE);
+    private static final Pattern SECTION_HEADER_PATTERN =
+        Pattern.compile("^(\\d+(?:\\.\\d+)*)\\.?[ \\t]+([^\\n]{3,120})$", Pattern.MULTILINE);
+
+    private static final Pattern SECTION_NUMBER_PATTERN =
+        Pattern.compile("^(\\d+(?:\\.\\d+)*)[.\\s]");
     
     // ==========================================
     // 1. ENTRY POINT (HÀM GỌI CHÍNH)
@@ -83,8 +86,13 @@ public class DocumentParserService {
                     Page page = extractor.extract(pageNum);
                     List<Table> tables = sea.extract(page);
                     for (Table table : tables) {
+                        String tableMarkdown = convertTableToMarkdown(table, currentHeader);
+                        if (!isUsableTable(table, tableMarkdown)) {
+                            continue;
+                        }
+
                         pageBuilder.append("\n[TABLE_START]\n");
-                        pageBuilder.append(convertTableToMarkdown(table, currentHeader));
+                        pageBuilder.append(tableMarkdown);
                         pageBuilder.append("[TABLE_END]\n");
                     }
                 } catch (Exception e) {
@@ -177,11 +185,16 @@ public class DocumentParserService {
         for (int i = 1; i < originalSections.size(); i++) {
             Section nextSec = originalSections.get(i);
 
-            if (currentMerge.content().length() < minCharLength) {
-                String mergedHeader = currentMerge.header() + " & " + nextSec.header();
-                String mergedContent = currentMerge.content() + "\n\n[" + nextSec.header() + "]\n" + nextSec.content();
-                
-                currentMerge = new Section(mergedHeader, currentMerge.startPage(), nextSec.endPage(), mergedContent);
+            boolean tooSmall = currentMerge.content().length() < minCharLength;
+            // Chỉ gộp khi cùng section cha (ví dụ 10.1 + 10.2 → ok, 10.x + 11.x → không)
+            boolean sameParent = isSameParentSection(currentMerge.header(), nextSec.header());
+
+            if (tooSmall && sameParent) {
+                // Giữ header của section chính (section đầu), embed nội dung section tiếp theo
+                String mergedContent = currentMerge.content()
+                        + "\n\n[" + nextSec.header() + "]\n" + nextSec.content();
+                currentMerge = new Section(currentMerge.header(), currentMerge.startPage(),
+                        nextSec.endPage(), mergedContent);
             } else {
                 mergedSections.add(currentMerge);
                 currentMerge = nextSec;
@@ -231,6 +244,39 @@ public class DocumentParserService {
         return sb.toString();
     }
 
+    private boolean isUsableTable(Table table, String markdown) {
+        if (table == null || markdown == null || markdown.isBlank()) {
+            return false;
+        }
+
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null || rows.size() < 3) {
+            return false;
+        }
+
+        int maxColumns = rows.stream()
+                .mapToInt(List::size)
+                .max()
+                .orElse(0);
+        if (maxColumns < 3) {
+            return false;
+        }
+
+        int nonEmptyCells = 0;
+        int textChars = 0;
+        for (List<RectangularTextContainer> row : rows) {
+            for (RectangularTextContainer cell : row) {
+                String text = cell.getText() == null ? "" : cell.getText().trim();
+                if (!text.isBlank()) {
+                    nonEmptyCells++;
+                    textChars += text.length();
+                }
+            }
+        }
+
+        return nonEmptyCells >= 6 && textChars >= 80;
+    }
+
     private boolean isDataRow(List<RectangularTextContainer> row) {
         if (row == null || row.isEmpty()) return false;
         int numericOnlyCellCount = 0;
@@ -250,11 +296,47 @@ public class DocumentParserService {
                 .replace("\u200B", "").replace("\u200C", "").replace("\u200D", "").replace("\uFEFF", "")
                 .replaceAll("\\r\\n", "\n").replaceAll("\\r", "\n")
                 .replaceAll("[ \\t]+", " ")
-                .replaceAll("(?<=[,;:!?])(?=\\\\S)", "$1 $2")
                 .replaceAll("\\n{3,}", "\n\n")
-                .replaceAll("(?<!\\n)\\n(?!\\n)", " ")
+                // Chỉ gộp newline thành space khi ký tự tiếp theo KHÔNG phải:
+                // - \n (dòng trắng)  - \d (đầu heading số như "10.1")  - [ (marker TABLE_START)
+                .replaceAll("(?<!\\n)\\n(?![\\n\\d\\[])", " ")
                 .replaceAll("\\.{2,}", ".")
                 .trim();
+    }
+
+    // ==========================================
+    // 6. SECTION UTILITY
+    // ==========================================
+    /**
+     * Trích xuất số section từ header (ví dụ "10.1 Tên mục" → "10.1").
+     * Trả về null nếu header không bắt đầu bằng pattern số.
+     */
+    public String extractSectionNumber(String header) {
+        if (header == null || header.isBlank()) return null;
+        java.util.regex.Matcher m = SECTION_NUMBER_PATTERN.matcher(header.trim());
+        return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * Trích xuất số section cha (ví dụ "10.1" → "10", "3.2.1" → "3.2").
+     * Với section cấp 1 (ví dụ "10") trả về chính nó.
+     */
+    public String extractParentSectionNumber(String sectionNumber) {
+        if (sectionNumber == null || sectionNumber.isBlank()) return "";
+        int lastDot = sectionNumber.lastIndexOf('.');
+        return lastDot > 0 ? sectionNumber.substring(0, lastDot) : sectionNumber;
+    }
+
+    /**
+     * Kiểm tra hai header có cùng section cha không (ví dụ "10.1" và "10.2" đều thuộc "10").
+     */
+    public boolean isSameParentSection(String header1, String header2) {
+        String n1 = extractSectionNumber(header1);
+        String n2 = extractSectionNumber(header2);
+        if (n1 == null || n2 == null) return false;
+        String p1 = extractParentSectionNumber(n1);
+        String p2 = extractParentSectionNumber(n2);
+        return !p1.isBlank() && p1.equals(p2);
     }
 
 }

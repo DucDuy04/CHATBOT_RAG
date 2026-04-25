@@ -23,6 +23,7 @@ groq:
   api-key: ${GROQ_API_KEY}
   chat-model: llama-3.3-70b-versatile
   base-url: https://api.groq.com/openai/v1
+  fallback-models: "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
 
 nomic:
   api-key: ${NOMIC_API_KEY}

@@ -9,5 +9,7 @@ import java.util.UUID;
 @Repository
 public interface ChatSessionRepository extends JpaRepository<ChatSession, UUID> {
     Optional<ChatSession> findBySessionKey(UUID sessionKey);
+
+    Optional<ChatSession> findBySessionKeyAndWidgetConfigId(UUID sessionKey, UUID widgetConfigId);
 }
 
