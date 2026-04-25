@@ -15,14 +15,13 @@ CREATE TABLE document_sections (
 
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP(6),
+  deleted_at DATETIME(6) NULL,
 
   CONSTRAINT fk_document_sections_document
-    FOREIGN KEY (document_id) REFERENCES documents(id)
-    ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(id),
 
   CONSTRAINT fk_document_sections_widget
-    FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id)
-    ON DELETE CASCADE,
+    FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id),
 
   CONSTRAINT uq_document_sections_doc_section_key
     UNIQUE (document_id, section_key)
@@ -56,18 +55,16 @@ CREATE TABLE document_tables (
 
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP(6),
+  deleted_at DATETIME(6) NULL,
 
   CONSTRAINT fk_document_tables_document
-    FOREIGN KEY (document_id) REFERENCES documents(id)
-    ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(id),
 
   CONSTRAINT fk_document_tables_widget
-    FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id)
-    ON DELETE CASCADE,
+    FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id),
 
   CONSTRAINT fk_document_tables_section
-    FOREIGN KEY (section_id) REFERENCES document_sections(id)
-    ON DELETE SET NULL,
+    FOREIGN KEY (section_id) REFERENCES document_sections(id),
 
   CONSTRAINT uq_document_tables_doc_table_key
     UNIQUE (document_id, table_key)
@@ -114,32 +111,24 @@ SET dc.widget_config_id = d.widget_config_id
 WHERE dc.widget_config_id IS NULL;
 
 ALTER TABLE document_chunks
-  MODIFY COLUMN widget_config_id BINARY(16) NOT NULL;
-
-ALTER TABLE document_chunks
   ADD CONSTRAINT fk_document_chunks_widget_config
-  FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id)
-  ON DELETE CASCADE;
+  FOREIGN KEY (widget_config_id) REFERENCES widget_configs(id);
 
 ALTER TABLE document_chunks
   ADD CONSTRAINT fk_document_chunks_section_db
-  FOREIGN KEY (section_db_id) REFERENCES document_sections(id)
-  ON DELETE SET NULL;
+  FOREIGN KEY (section_db_id) REFERENCES document_sections(id);
 
 ALTER TABLE document_chunks
   ADD CONSTRAINT fk_document_chunks_table_db
-  FOREIGN KEY (table_db_id) REFERENCES document_tables(id)
-  ON DELETE SET NULL;
+  FOREIGN KEY (table_db_id) REFERENCES document_tables(id);
 
 ALTER TABLE document_chunks
   ADD CONSTRAINT fk_document_chunks_prev
-  FOREIGN KEY (prev_chunk_id) REFERENCES document_chunks(id)
-  ON DELETE SET NULL;
+  FOREIGN KEY (prev_chunk_id) REFERENCES document_chunks(id);
 
 ALTER TABLE document_chunks
   ADD CONSTRAINT fk_document_chunks_next
-  FOREIGN KEY (next_chunk_id) REFERENCES document_chunks(id)
-  ON DELETE SET NULL;
+  FOREIGN KEY (next_chunk_id) REFERENCES document_chunks(id);
 
 CREATE INDEX idx_document_chunks_widget_section
   ON document_chunks(widget_config_id, section_id);
