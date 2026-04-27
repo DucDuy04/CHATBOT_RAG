@@ -40,7 +40,7 @@ public class RagRetrievalService {
     private final QueryAnalyzerService queryAnalyzerService;
 
     public List<RetrievedContext> retrieve(String question, UUID widgetId) {
-        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question);
+        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
         boolean isExpandedQuery = queryType == QueryAnalyzerService.QueryType.LIST_ALL
                 || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
                 || queryType == QueryAnalyzerService.QueryType.SECTION_SUMMARY;
@@ -380,13 +380,19 @@ public class RagRetrievalService {
             return List.of();
         }
 
+        // Normalize để lexical anchor match được tiếng Việt có dấu/không dấu
+        String normalizedQuestion = normalizeForSearch(question);
+
+        // Stopwords phải ở dạng đã normalize (không dấu) vì normalizedQuestion cũng đã normalize
         Set<String> stopWords = Set.of(
-                "gom", "gồm", "nhung", "những", "buoc", "bước", "nao", "nào",
-                "liet", "liệt", "ke", "kê", "cac", "các", "va", "và", "cua", "của",
-                "tung", "từng", "chinh", "chính"
+                "gom", "nhung", "buoc", "nao",
+                "liet", "ke", "cac", "va", "cua",
+                "tung", "chinh",
+                "trinh", "bay", "bao", "tom", "tat", "tong", "hop",
+                "he", "thong", "tai", "lieu", "noi", "dung", "phan", "muc", "chuong"
         );
 
-        return Arrays.stream(question.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+"))
+        return Arrays.stream(normalizedQuestion.split("[^\\p{L}\\p{N}]+"))
                 .map(String::trim)
                 .filter(term -> term.length() >= 3)
                 .filter(term -> !stopWords.contains(term))
@@ -409,10 +415,16 @@ public class RagRetrievalService {
     }
 
     private int lexicalScore(DocumentChunk chunk, List<String> terms) {
-        String content = Optional.ofNullable(chunk.getContent()).orElse("").toLowerCase(Locale.ROOT);
+        // Tổng quát: chấm điểm dựa trên cả content + heading/section title
+        // để các câu hỏi theo "tiêu đề mục" vẫn match tốt cho nhiều loại tài liệu khác nhau.
+        String content = normalizeForSearch(Optional.ofNullable(chunk.getContent()).orElse(""));
+        String heading = normalizeForSearch(Optional.ofNullable(chunk.getHeadingPathText()).orElse(""));
+        String sectionTitle = normalizeForSearch(Optional.ofNullable(chunk.getSectionTitle()).orElse(""));
+        String haystack = (heading + " " + sectionTitle + " " + content).trim();
         int score = 0;
         for (String term : terms) {
-            if (content.contains(term)) {
+            String t = normalizeForSearch(term);
+            if (!t.isBlank() && haystack.contains(t)) {
                 score++;
             }
         }

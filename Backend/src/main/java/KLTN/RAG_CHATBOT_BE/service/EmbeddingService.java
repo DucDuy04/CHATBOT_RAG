@@ -80,7 +80,10 @@ public class EmbeddingService {
                 metadata.put("next_chunk_id", chunk.getNextChunk().getId().toString());
             }
 
-            segments.add(TextSegment.from(chunk.getContent(), metadata));
+            // Quan trọng: embed kèm heading/section để query theo "tiêu đề mục" (vd: "Nền tảng & kiến trúc")
+            // vẫn match tốt ngay cả khi content không lặp lại tiêu đề.
+            String embedText = buildEmbeddingText(chunk);
+            segments.add(TextSegment.from(embedText, metadata));
         }
 
         List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
@@ -88,6 +91,29 @@ public class EmbeddingService {
         qdrantEmbeddingStore.addAll(embeddings, segments);
 
         log.info("Đã lưu {} vectors vào Qdrant cho document={}", embeddings.size(), documentId);
+    }
+
+    private String buildEmbeddingText(KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk chunk) {
+        if (chunk == null) {
+            return "";
+        }
+
+        String heading = safeString(chunk.getHeadingPathText()).trim();
+        String sectionTitle = safeString(chunk.getSectionTitle()).trim();
+        String type = safeString(chunk.getChunkType()).trim();
+        String content = safeString(chunk.getContent()).trim();
+
+        StringBuilder sb = new StringBuilder();
+        if (!heading.isBlank()) {
+            sb.append(heading).append("\n");
+        } else if (!sectionTitle.isBlank()) {
+            sb.append(sectionTitle).append("\n");
+        }
+        if (!type.isBlank()) {
+            sb.append("Type: ").append(type).append("\n");
+        }
+        sb.append(content);
+        return sb.toString().trim();
     }
 
     public List<TextSegment> search(String query, int topK, UUID widgetId) {

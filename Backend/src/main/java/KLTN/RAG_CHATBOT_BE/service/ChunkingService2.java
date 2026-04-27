@@ -2,6 +2,7 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.record.DocumentChunk;
 import KLTN.RAG_CHATBOT_BE.record.Section;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -10,6 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 public class ChunkingService2 {
 
     private static final int MAX_CHARS_PER_TEXT_CHUNK = 2200;
@@ -28,6 +30,7 @@ public class ChunkingService2 {
         }
 
         int globalOrder = 0;
+        List<HeadingNode> headingStack = new ArrayList<>();
 
         for (int sectionIndex = 0; sectionIndex < sections.size(); sectionIndex++) {
             Section section = sections.get(sectionIndex);
@@ -41,7 +44,9 @@ public class ChunkingService2 {
             String parentId = sectionNumber != null
                     ? "parent_" + extractParentSectionNumber(sectionNumber)
                     : "parent_idx_" + sectionIndex;
-            String headingPathText = safeText(section.header(), "Untitled Section");
+            String headingPathText = buildHeadingPathText(headingStack, section.header(), sectionNumber, sectionIndex);
+            log.debug("[Chunking] sectionIndex={}, sectionId={}, parentId={}, header='{}', headingPath='{}'",
+                    sectionIndex, sectionId, parentId, safeText(section.header(), ""), headingPathText);
 
             List<String> segments = splitByTableBlocks(section.content());
 
@@ -255,19 +260,14 @@ public class ChunkingService2 {
         String safeRawContent = safeText(rawContent, "");
         String safeHeading = safeText(headingPathText, safeText(section.header(), "Untitled Section"));
 
-        String enrichedContent = String.format(
-                "Document Section: %s%nType: %s%nPages: %d-%d%n%nContent:%n%s",
-                safeHeading,
-                chunkType,
-                section.startPage(),
-                section.endPage(),
-                safeRawContent
-        );
-
-        int tokenEstimate = Math.max(1, enrichedContent.length() / 4);
+        // Giữ content "thuần" để tránh phình prompt:
+        // - Metadata (Document/Section/Pages/Type) đã có trong DB fields và PromptBuilder sẽ in riêng.
+        // - Nếu nhồi metadata vào content mỗi chunk sẽ làm tăng token rất mạnh và dễ vượt TPM limit.
+        String content = safeRawContent.trim();
+        int tokenEstimate = Math.max(1, content.length() / 4);
 
         return new DocumentChunk(
-                enrichedContent,
+                content,
                 safeText(section.header(), "Untitled Section"),
                 section.startPage(),
                 section.endPage(),
@@ -339,4 +339,46 @@ public class ChunkingService2 {
         int lastDot = sectionNumber.lastIndexOf('.');
         return lastDot > 0 ? sectionNumber.substring(0, lastDot) : sectionNumber;
     }
+
+    private String buildHeadingPathText(List<HeadingNode> stack, String header, String sectionNumber, int sectionIndex) {
+        String safeHeader = safeText(header, "Untitled Section");
+        if (sectionNumber == null || sectionNumber.isBlank()) {
+            // Không có số heading → không xây hierarchy, tránh suy diễn sai.
+            return safeHeader;
+        }
+
+        int level = sectionNumber.split("\\.").length;
+        String titleOnly = extractTitleOnly(safeHeader, sectionNumber);
+
+        while (stack.size() >= level) {
+            stack.remove(stack.size() - 1);
+        }
+        stack.add(new HeadingNode(sectionNumber, titleOnly));
+
+        // heading_path_text chỉ lấy từ hierarchy thật, không lấy từ content.
+        // Format: "2. Mục tiêu hệ thống > 2.1 Mục tiêu nghiệp vụ"
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < stack.size(); i++) {
+            HeadingNode node = stack.get(i);
+            if (i > 0) sb.append(" > ");
+            sb.append(node.number()).append(" ").append(node.title());
+        }
+        return sb.toString();
+    }
+
+    private String extractTitleOnly(String header, String sectionNumber) {
+        if (header == null) return "";
+        String h = header.trim();
+        // remove leading "2.1" or "2.1." from header
+        String prefix = sectionNumber;
+        if (h.startsWith(prefix)) {
+            h = h.substring(prefix.length()).trim();
+        }
+        if (h.startsWith(".")) {
+            h = h.substring(1).trim();
+        }
+        return safeText(h, header).trim();
+    }
+
+    private record HeadingNode(String number, String title) {}
 }

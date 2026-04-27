@@ -60,10 +60,16 @@ public class LlmFallbackService {
                 if (isModelDecommissioned(e)) {
                     log.warn("[LLM] Model '{}' đã bị decommission. Bỏ qua.", modelName);
                 } else if (isTpmException(e)) {
-                    int waitSeconds = parseRetryAfterSeconds(e.getMessage(), 15);
-                    log.warn("[LLM] Model '{}' bị TPM. Đợi {}s...", modelName, waitSeconds);
-                    sleepQuietly(waitSeconds);
-                    i--; // retry cùng model
+                    // "Request too large for model ... (TPM)" không phải TPM tạm thời để đợi,
+                    // mà là prompt quá lớn so với TPM limit của model đó → retry vô ích, cần đổi model.
+                    if (isTpmRequestTooLarge(e)) {
+                        log.warn("[LLM] Model '{}' bị TPM do request quá lớn. Chuyển model tiếp theo.", modelName);
+                    } else {
+                        int waitSeconds = parseRetryAfterSeconds(e.getMessage(), 15);
+                        log.warn("[LLM] Model '{}' bị TPM. Đợi {}s...", modelName, waitSeconds);
+                        sleepQuietly(waitSeconds);
+                        i--; // retry cùng model
+                    }
                 } else if (isRateLimitException(e)) {
                     log.warn("[LLM] Model '{}' bị TPD (hết quota ngày). Chuyển model tiếp theo.", modelName);
                 } else {
@@ -131,11 +137,16 @@ public class LlmFallbackService {
                     log.warn("[LLM-Fallback] Model '{}' đã bị decommission. Bỏ qua.", modelName);
                 } else if (isTpmException(e)) {
                     // TPM (tokens per minute) → đợi rồi retry CÙNG model (không skip)
-                    int waitSeconds = parseRetryAfterSeconds(e.getMessage(), 15);
-                    log.warn("[LLM-Fallback] Model '{}' bị TPM rate limit. Đợi {}s rồi thử lại...",
-                            modelName, waitSeconds);
-                    sleepQuietly(waitSeconds);
-                    i--; // Giữ nguyên index để retry cùng model
+                    // Nhưng nếu là "Request too large ... (TPM)" thì retry vô ích → skip model tiếp theo.
+                    if (isTpmRequestTooLarge(e)) {
+                        log.warn("[LLM-Fallback] Model '{}' bị TPM do request quá lớn. Chuyển sang model tiếp theo.", modelName);
+                    } else {
+                        int waitSeconds = parseRetryAfterSeconds(e.getMessage(), 15);
+                        log.warn("[LLM-Fallback] Model '{}' bị TPM rate limit. Đợi {}s rồi thử lại...",
+                                modelName, waitSeconds);
+                        sleepQuietly(waitSeconds);
+                        i--; // Giữ nguyên index để retry cùng model
+                    }
                 } else if (isRateLimitException(e)) {
                     // TPD (tokens per day) → hết quota ngày → skip sang model khác
                     log.warn("[LLM-Fallback] Model '{}' bị TPD rate limit (hết quota ngày). Chuyển sang model tiếp theo.", modelName);
@@ -195,6 +206,16 @@ public class LlmFallbackService {
      */
     private boolean isTpmException(Throwable e) {
         return containsInChain(e, "tokens per minute") || containsInChain(e, "TPM");
+    }
+
+    /**
+     * Groq đôi khi trả về rate_limit_exceeded với message dạng:
+     * "Request too large for model ... on tokens per minute (TPM): Limit X, Requested Y"
+     * Trường hợp này đợi rồi retry vẫn fail → cần giảm prompt hoặc đổi model.
+     */
+    private boolean isTpmRequestTooLarge(Throwable e) {
+        return containsInChain(e, "Request too large for model")
+                && (containsInChain(e, "tokens per minute") || containsInChain(e, "(TPM)"));
     }
 
     /**

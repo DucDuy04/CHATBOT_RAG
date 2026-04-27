@@ -32,3 +32,8 @@ app:
         - "(?i)^page\\s+\\d+(\\s+of\\s+\\d+)?$"
         - "(?i)^confidential$"
         - "(?i)^draft$"
+
+logging:
+  level:
+    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG

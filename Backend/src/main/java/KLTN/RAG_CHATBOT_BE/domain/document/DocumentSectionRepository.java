@@ -22,4 +22,6 @@ public interface DocumentSectionRepository extends JpaRepository<DocumentSection
             UUID documentId,
             String sectionKey
     );
+
+    List<DocumentSection> findTop200ByWidgetConfigIdOrderByOrderIndexAsc(UUID widgetConfigId);
 }

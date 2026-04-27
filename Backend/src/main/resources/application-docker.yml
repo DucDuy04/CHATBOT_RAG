@@ -34,3 +34,9 @@ app:
 
 server:
   port: 8080
+
+logging:
+  level:
+    # Bật debug để thấy log parse/chunk trong docker logs
+    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG

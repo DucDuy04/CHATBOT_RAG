@@ -144,20 +144,32 @@ public class DocumentService {
             WidgetConfig widgetConfig
     ) {
         Map<String, DocumentSection> sectionMap = new LinkedHashMap<>();
+        List<HeadingNode> headingStack = new java.util.ArrayList<>();
+        Map<String, Integer> keyCounts = new java.util.HashMap<>();
 
         for (int i = 0; i < sections.size(); i++) {
             Section section = sections.get(i);
 
-            String sectionKey = "sec_" + i;
             String title = safeText(section.header(), "Untitled Section");
+            String sectionNumber = documentParserService.extractSectionNumber(title);
+            String baseKey = sectionNumber != null
+                    ? "sec_" + sectionNumber
+                    : "sec_idx_" + i;
+            int seen = keyCounts.getOrDefault(baseKey, 0);
+            keyCounts.put(baseKey, seen + 1);
+            String sectionKey = seen == 0 ? baseKey : (baseKey + "__dup" + (seen + 1));
+            String parentSectionKey = sectionNumber != null
+                    ? "parent_" + extractParentSectionNumber(sectionNumber)
+                    : "parent_idx_" + i;
+            String headingPathText = buildHeadingPathText(headingStack, title, sectionNumber);
 
             DocumentSection sectionEntity = DocumentSection.builder()
                     .document(document)
                     .widgetConfig(widgetConfig)
                     .sectionKey(sectionKey)
-                    .parentSectionKey(null)
+                    .parentSectionKey(parentSectionKey)
                     .title(title)
-                    .headingPathText(title)
+                    .headingPathText(headingPathText)
                     .pageStart(section.startPage())
                     .pageEnd(section.endPage())
                     .orderIndex(i)
@@ -169,6 +181,49 @@ public class DocumentService {
 
         return sectionMap;
     }
+
+    private String extractParentSectionNumber(String sectionNumber) {
+        if (sectionNumber == null || sectionNumber.isBlank()) return "root";
+        int lastDot = sectionNumber.lastIndexOf('.');
+        return lastDot > 0 ? sectionNumber.substring(0, lastDot) : sectionNumber;
+    }
+
+    private String buildHeadingPathText(List<HeadingNode> stack, String header, String sectionNumber) {
+        String safeHeader = safeText(header, "Untitled Section");
+        if (sectionNumber == null || sectionNumber.isBlank()) {
+            return safeHeader;
+        }
+
+        int level = sectionNumber.split("\\.").length;
+        String titleOnly = extractTitleOnly(safeHeader, sectionNumber);
+
+        while (stack.size() >= level) {
+            stack.remove(stack.size() - 1);
+        }
+        stack.add(new HeadingNode(sectionNumber, titleOnly));
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < stack.size(); i++) {
+            HeadingNode node = stack.get(i);
+            if (i > 0) sb.append(" > ");
+            sb.append(node.number()).append(" ").append(node.title());
+        }
+        return sb.toString();
+    }
+
+    private String extractTitleOnly(String header, String sectionNumber) {
+        if (header == null) return "";
+        String h = header.trim();
+        if (h.startsWith(sectionNumber)) {
+            h = h.substring(sectionNumber.length()).trim();
+        }
+        if (h.startsWith(".")) {
+            h = h.substring(1).trim();
+        }
+        return safeText(h, header).trim();
+    }
+
+    private record HeadingNode(String number, String title) {}
 
     private Map<String, DocumentTable> saveTables(
             List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks,

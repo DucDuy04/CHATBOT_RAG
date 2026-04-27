@@ -31,9 +31,9 @@ public class PromptBuilderService {
 
         XỬ LÝ BẢNG VÀ DANH SÁCH:
         5. Khi tài liệu có bảng Markdown (| Cột 1 | Cột 2 |), đọc đúng từng hàng và cột, không nhầm lẫn dữ liệu giữa các hàng.
-        6. Nếu câu trả lời chứa nhiều mục hoặc số liệu, trình bày lại dưới dạng bảng Markdown.
-        7. Nếu dữ liệu bảng nằm rải rác nhiều chunks, BẮT BUỘC gộp tất cả hàng thành MỘT bảng duy nhất, KHÔNG bỏ sót hàng nào.
-        8. Nếu câu hỏi hỏi về danh sách/toàn bộ/bảng/header, hãy tổng hợp tất cả Source cùng section/table trước khi trả lời.
+        6. Nếu BẤT KỲ Source nào có Type là table_summary hoặc table_row_group, hoặc Content có chứa ký tự '|' theo định dạng bảng Markdown, thì câu trả lời BẮT BUỘC trình bày bằng bảng Markdown.
+        7. Nếu dữ liệu bảng nằm rải rác nhiều Source/chunks, BẮT BUỘC gộp tất cả hàng thành MỘT bảng duy nhất, KHÔNG bỏ sót hàng nào.
+        8. Nếu câu hỏi hỏi về danh sách/toàn bộ/bao gồm/trình bày, hãy tổng hợp đầy đủ tất cả mục liên quan trong Source cùng section/table trước khi trả lời (không được tự ý lược bớt).
         9. Luôn trích nguồn ở cuối câu trả lời theo dạng: Nguồn: Document, Section, Pages.
         """;
         public String getSystemPrompt() {

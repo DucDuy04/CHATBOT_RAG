@@ -74,7 +74,8 @@ public class ChatService {
         String answer;
 
         if (contexts.isEmpty()) {
-            answer = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu đã cung cấp.";
+            // Đồng bộ đúng câu trả lời "không tìm thấy" theo system prompt để tránh lệch format
+            answer = "Tôi không tìm thấy thông tin này trong tài liệu.";
         } else {
             List<ChatMessage> chatHistory =
                     chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
@@ -122,7 +123,7 @@ public class ChatService {
                 List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
                 if (contexts.isEmpty()) {
-                    String noContext = "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu đã cung cấp.";
+                    String noContext = "Tôi không tìm thấy thông tin này trong tài liệu.";
 
                     emitter.send(
                             SseEmitter.event()
