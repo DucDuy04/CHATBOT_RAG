@@ -2,6 +2,8 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk;
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunkRepository;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentSection;
+import KLTN.RAG_CHATBOT_BE.domain.document.DocumentSectionRepository;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import dev.langchain4j.data.segment.TextSegment;
 import lombok.RequiredArgsConstructor;
@@ -10,9 +12,9 @@ import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
 import java.util.*;
-import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -20,172 +22,458 @@ import java.util.regex.Pattern;
 public class RagRetrievalService {
 
     private static final int ANCHOR_TOP_K = 30;
+
     // --- Giới hạn cho query thông thường ---
-    private static final int FINAL_LIMIT = 10;              // 12 → 10: tiết kiệm ~2 chunk (~350 token)
-    private static final int MAX_CONTEXT_CHARS = 18_000;    // 24k → 18k: tiết kiệm ~1,500 token
-    // --- Giới hạn cho query LIST_ALL / TABLE / SECTION_SUMMARY ---
-    private static final int FINAL_LIMIT_EXPANDED = 18;     // 25 → 18: tiết kiệm ~1,200 token
-    private static final int MAX_CONTEXT_CHARS_EXPANDED = 28_000; // 45k → 28k: tiết kiệm ~4,300 token
+    private static final int FINAL_LIMIT = 10;
+    private static final int MAX_CONTEXT_CHARS = 18_000;
+
+    // --- Giới hạn cho query LIST_ALL / TABLE / SECTION_SUMMARY / COUNT_QUERY ---
+    private static final int FINAL_LIMIT_EXPANDED = 20;
+    private static final int MAX_CONTEXT_CHARS_EXPANDED = 32_000;
+
+    // --- Giới hạn khi scope đã lock vào heading cụ thể (ưu tiên toàn bộ section) ---
+    private static final int FINAL_LIMIT_LOCKED = 60;
+    private static final int MAX_CONTEXT_CHARS_LOCKED = 64_000;
+
     // --- Window mở rộng quanh anchor ---
     private static final int WINDOW_BEFORE = 1;
     private static final int WINDOW_AFTER = 2;
-    // --- Giới hạn expansion theo section (chỉ ảnh hưởng pool, không tốn LLM token trực tiếp) ---
+
+    // --- Giới hạn expansion theo section ---
     private static final int SECTION_EXPANSION_MAX_CHUNKS = 12;
-    private static final int SECTION_EXPANSION_MAX_CHUNKS_EXPANDED = 25; // 30 → 25
+    private static final int SECTION_EXPANSION_MAX_CHUNKS_EXPANDED = 30;
+
+    // Ngưỡng titleHits để kích hoạt heading lock
+    private static final int HEADING_LOCK_MIN_TITLE_HITS = 2;
+
     private static final Pattern HEADING_PATTERN =
             Pattern.compile("(?<!\\d)(\\d+(?:\\.\\d+)*)\\.?\\s+([\\p{L}][\\p{L}\\p{N}\\s/&+\\-()]{3,120})");
 
     private final EmbeddingService embeddingService;
     private final DocumentChunkRepository documentChunkRepository;
+    private final DocumentSectionRepository documentSectionRepository;
     private final QueryAnalyzerService queryAnalyzerService;
 
+    // ================================================================
+    // RESULT WRAPPER
+    // ================================================================
+
+    /**
+     * Bao gồm danh sách context và metadata về scope được lock (nếu có).
+     *
+     * @param contexts         Danh sách chunk context cuối cùng.
+     * @param lockedScopeLabel Nhãn mô tả scope đã lock (null nếu không lock).
+     *                         Ví dụ: "'6.2 Kiến trúc' [sec_6.2]"
+     */
+    public record RetrievalResult(List<RetrievedContext> contexts, String lockedScopeLabel) {}
+
+    // ================================================================
+    // PUBLIC ENTRY POINT
+    // ================================================================
+
+    /** Backward-compatible entry point — returns only the context list. */
     public List<RetrievedContext> retrieve(String question, UUID widgetId) {
+        return retrieveWithMetadata(question, widgetId).contexts();
+    }
+
+    /** Full entry point — returns contexts + locked scope label for prompt enrichment. */
+    public RetrievalResult retrieveWithMetadata(String question, UUID widgetId) {
+
+        // ── STEP 0: Intent detection ───────────────────────────────────
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
-        boolean isExpandedQuery = queryType == QueryAnalyzerService.QueryType.LIST_ALL
-                || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
-                || queryType == QueryAnalyzerService.QueryType.SECTION_SUMMARY;
+        boolean isExpandedQuery = isExpanded(queryType);
+        log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
 
-        log.info("[RAG] question='{}', queryType={}, widgetId={}", question, queryType, widgetId);
+        // ── STEP 1: Fetch all sections once (shared by heading match + scope expansion) ──
+        List<DocumentSection> allSections =
+                documentSectionRepository.findByWidgetConfigIdOrderByOrderIndexAsc(widgetId);
 
-        List<TextSegment> anchors;
-        try {
-            anchors = embeddingService.search(question, ANCHOR_TOP_K, widgetId);
-        } catch (Exception e) {
-            log.error("[RAG] Qdrant timeout/error: {}", e.getMessage(), e);
-            return List.of();
+        // ── STEP 2: Heading-first match ────────────────────────────────
+        // Pass pre-fetched sections to avoid a second DB round-trip.
+        // findMatchedSections() returns matches sorted BEST-FIRST (highest score at index 0).
+        List<QueryAnalyzerService.HeadingMatch> headingMatches =
+                queryAnalyzerService.findMatchedSections(question, allSections);
+
+        // Among qualified matches, pick the most specific section for scope locking.
+        // When a child and its parent both qualify, the child is preferred because:
+        //   (a) the new scoring penalises missed terms — child with more specific title has higher score,
+        //   (b) the depth tiebreaker in sorting pushes deeper sections above shallow ones on ties.
+        // selectMostSpecificMatch() handles any residual ambiguity.
+        QueryAnalyzerService.HeadingMatch selectedMatch = selectMostSpecificMatch(headingMatches);
+
+        String lockedSectionKey   = null;
+        String lockedSectionLabel = null;
+        Set<String> lockedSectionIds = Set.of();
+
+        if (selectedMatch != null && selectedMatch.titleHits() >= HEADING_LOCK_MIN_TITLE_HITS) {
+            lockedSectionKey  = selectedMatch.sectionKey();
+            lockedSectionLabel = "'" + selectedMatch.title() + "' [" + selectedMatch.sectionKey() + "]";
+
+            // Expand scope to all descendants of the selected section.
+            // For a leaf child → only that section. For a parent → all children too.
+            lockedSectionIds = expandDescendantSectionIds(lockedSectionKey, allSections);
+
+            log.info("[RAG] Selected section: {} | Locked scope: {} section(s): {}",
+                    lockedSectionLabel, lockedSectionIds.size(), lockedSectionIds);
+        } else {
+            log.info("[RAG] No heading lock applied (best titleHits={}, threshold={})",
+                    selectedMatch == null ? 0 : selectedMatch.titleHits(), HEADING_LOCK_MIN_TITLE_HITS);
         }
 
-        if (anchors.isEmpty()) {
-            log.warn("[RAG] Qdrant returned 0 anchors for widgetId={}", widgetId);
-            return List.of();
-        }
+        // ── STEP 2: Query rewriting for semantic search ────────────────
+        List<String> queryVariants = queryAnalyzerService.rewriteQuery(question);
+        log.info("[RAG] Query variants: {}", queryVariants);
 
+        // ── STEP 3: Vector search (all variants) ──────────────────────
         Set<UUID> anchorChunkIds = new LinkedHashSet<>();
         Set<String> sectionIds = new LinkedHashSet<>();
         Set<String> tableIds = new LinkedHashSet<>();
+        Set<UUID> vectorDocumentIds = new LinkedHashSet<>();
+        int excludedByScope = 0;
 
-        for (TextSegment seg : anchors) {
-            String chunkId = seg.metadata().getString("chunk_id");
-            if (chunkId != null && !chunkId.isBlank()) {
-                try {
-                    anchorChunkIds.add(UUID.fromString(chunkId));
-                } catch (IllegalArgumentException ignored) {
+        for (String variant : queryVariants) {
+            List<TextSegment> anchors;
+            try {
+                anchors = embeddingService.search(variant, ANCHOR_TOP_K, widgetId);
+            } catch (Exception e) {
+                log.error("[RAG] Qdrant error for variant='{}': {}", variant, e.getMessage());
+                continue;
+            }
+
+            for (TextSegment seg : anchors) {
+                String chunkSectionId = seg.metadata().getString("section_id");
+
+                // When scope is locked, filter vector results to only chunks inside scope.
+                // Semantic search is supplementary — it cannot override a heading match.
+                if (!lockedSectionIds.isEmpty() && chunkSectionId != null
+                        && !lockedSectionIds.contains(chunkSectionId)) {
+                    excludedByScope++;
+                    log.debug("[RAG] EXCLUDED (out-of-scope): sectionId='{}' not in lockedScope", chunkSectionId);
+                    continue;
                 }
-            }
 
-            String sectionId = seg.metadata().getString("section_id");
-            if (sectionId != null && !sectionId.isBlank()) {
-                sectionIds.add(sectionId);
-            }
+                extractIds(seg, anchorChunkIds, sectionIds, tableIds, vectorDocumentIds);
 
-            String tableId = seg.metadata().getString("table_id");
-            if (tableId != null && !tableId.isBlank()) {
-                tableIds.add(tableId);
+                // Auto-expand from parent_section_summary → all child sections
+                String chunkType = seg.metadata().getString("chunk_type");
+                String childSectionIdsStr = seg.metadata().getString("child_section_ids");
+                if ("parent_section_summary".equals(chunkType)
+                        && childSectionIdsStr != null && !childSectionIdsStr.isBlank()) {
+                    Arrays.stream(childSectionIdsStr.split(","))
+                            .map(String::trim).filter(s -> !s.isBlank())
+                            .forEach(sectionIds::add);
+                    log.info("[RAG] parent_section_summary matched → expanding to children: [{}]",
+                            childSectionIdsStr);
+                }
             }
         }
 
-        log.info("[RAG] Vector anchors: chunks={}, sections={}, tables={}",
-                anchorChunkIds.size(), sectionIds.size(), tableIds.size());
+        if (excludedByScope > 0) {
+            log.info("[RAG] Semantic results excluded (out of locked scope): {} segments", excludedByScope);
+        }
 
+        log.info("[RAG] Vector anchors: chunks={} sections={} tables={} docs={}",
+                anchorChunkIds.size(), sectionIds.size(), tableIds.size(), vectorDocumentIds.size());
+
+        // ── STEP 4: Build context pool ─────────────────────────────────
         List<DocumentChunk> expanded = new ArrayList<>();
-        List<DocumentChunk> lexicalAnchors = findLexicalAnchors(question, widgetId);
-        log.info("[RAG] Lexical anchors found: {}", lexicalAnchors.size());
 
-        List<DocumentChunk> sectionExpansion = expandSectionRanges(lexicalAnchors, widgetId, isExpandedQuery);
-        log.info("[RAG] Section range expansion: {} chunks", sectionExpansion.size());
-        expanded.addAll(sectionExpansion);
-        expanded.addAll(expandAroundAnchors(lexicalAnchors, widgetId));
+        if (!lockedSectionIds.isEmpty()) {
+            // ── LOCKED-SCOPE MODE ──
+            // Fetch ALL chunks from the locked section tree directly from DB.
+            // This guarantees completeness for list/count/overview queries.
+            List<DocumentChunk> lockedChunks = documentChunkRepository
+                    .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                            widgetId, lockedSectionIds);
+            log.info("[RAG] Locked scope: {} chunks fetched from DB for sectionIds={}",
+                    lockedChunks.size(), lockedSectionIds);
 
-        if (isExpandedQuery) {
-            // LIST_ALL / TABLE_LOOKUP / SECTION_SUMMARY: lấy toàn bộ chunk của section/table liên quan
-            if (!sectionIds.isEmpty()) {
-                List<DocumentChunk> sectionChunks = documentChunkRepository
-                        .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(widgetId, sectionIds);
-                log.info("[RAG] Section expansion by sectionId: {} chunks from {} sections",
-                        sectionChunks.size(), sectionIds.size());
-                expanded.addAll(sectionChunks);
+            // ── GUARDRAIL: if locked scope found 0 chunks, the heading match may be stale ──
+            // (e.g. section exists in DocumentSection but no chunks indexed yet, or key mismatch)
+            // Fall back to semantic mode and clear the lock so the prompt is not mis-scoped.
+            if (lockedChunks.isEmpty()) {
+                log.warn("[RAG] GUARDRAIL: locked scope {} returned 0 chunks — " +
+                        "falling back to semantic retrieval. Possible cause: section key mismatch " +
+                        "or section not yet indexed. lockedSectionIds={}", lockedSectionKey, lockedSectionIds);
+                lockedSectionKey   = null;
+                lockedSectionLabel = null;
+                lockedSectionIds   = Set.of();
+                // Fall through to the semantic path below (expanded is still empty)
+            } else {
+                expanded.addAll(lockedChunks);
 
-                // Sibling expansion: từ sectionIds tìm parentIds → lấy toàn bộ sibling sections
-                // Ví dụ: sectionId="sec_6.2" → parentId="parent_6" → lấy cả 6.1, 6.3, 6.4, 6.5
-                Set<String> parentIds = deriveParentIds(sectionIds);
-                if (!parentIds.isEmpty()) {
-                    List<DocumentChunk> siblingChunks = documentChunkRepository
-                            .findByWidgetConfigIdAndParentIdInOrderByDocumentIdAscOrderIndexAsc(widgetId, parentIds);
-                    log.info("[RAG] Sibling expansion by parentId: {} chunks from {} parents",
-                            siblingChunks.size(), parentIds.size());
-                    expanded.addAll(siblingChunks);
+                // Also pull any table chunks that vector search found within scope
+                if (!tableIds.isEmpty()) {
+                    List<DocumentChunk> tableChunks = documentChunkRepository
+                            .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
+                                    widgetId, tableIds);
+                    log.info("[RAG] Table expansion (locked mode): {} chunks from {} tableIds",
+                            tableChunks.size(), tableIds.size());
+                    expanded.addAll(tableChunks);
                 }
-            }
-
-            if (!tableIds.isEmpty()) {
-                List<DocumentChunk> tableChunks = documentChunkRepository
-                        .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(widgetId, tableIds);
-                log.info("[RAG] Table expansion by tableId: {} chunks from {} tables",
-                        tableChunks.size(), tableIds.size());
-                expanded.addAll(tableChunks);
-            }
-        } else {
-            List<DocumentChunk> anchorChunks =
-                    documentChunkRepository.findByWidgetConfigIdAndIdIn(widgetId, anchorChunkIds);
-
-            for (DocumentChunk anchor : anchorChunks) {
-                int from = Math.max(0, anchor.getOrderIndex() - WINDOW_BEFORE);
-                int to = anchor.getOrderIndex() + WINDOW_AFTER;
-
-                expanded.addAll(documentChunkRepository
-                        .findByWidgetConfigIdAndDocumentIdAndOrderIndexBetweenOrderByOrderIndexAsc(
-                                widgetId,
-                                anchor.getDocument().getId(),
-                                from,
-                                to
-                        ));
             }
         }
 
-        List<RetrievedContext> result = dedupeSortBudget(expanded, queryType);
-        log.info("[RAG] Final context: {} chunks, queryType={}", result.size(), queryType);
+        // ── POST-GUARDRAIL CHECK: verify no context chunk comes from outside the locked scope ──
+        if (lockedSectionKey != null && !expanded.isEmpty()) {
+            final Set<String> finalLockedIds = lockedSectionIds;
+            long outOfScopeCount = expanded.stream()
+                    .filter(c -> c.getSectionId() != null
+                            && !finalLockedIds.contains(c.getSectionId()))
+                    .count();
+            if (outOfScopeCount > 0) {
+                log.warn("[RAG] GUARDRAIL: {} chunk(s) in expanded pool are outside locked scope {} — " +
+                        "will be excluded by dedupeSortBudget scope filter.",
+                        outOfScopeCount, lockedSectionKey);
+            }
+        }
+
+        if (expanded.isEmpty() && vectorDocumentIds.isEmpty() && anchorChunkIds.isEmpty()) {
+            log.warn("[RAG] Qdrant returned 0 anchors and locked scope empty for widgetId={}", widgetId);
+            return new RetrievalResult(List.of(), null);
+        }
+
+        if (expanded.isEmpty()) {
+            // ── FALLBACK/SEMANTIC MODE ──
+            // Reached when: (a) no heading lock, or (b) locked scope guardrail cleared the lock.
+            List<DocumentChunk> lexicalAnchors = findLexicalAnchors(question, widgetId, vectorDocumentIds);
+            log.info("[RAG] Lexical anchors found: {}", lexicalAnchors.size());
+
+            List<DocumentChunk> sectionExpansion = expandSectionRanges(
+                    lexicalAnchors, widgetId, isExpandedQuery, vectorDocumentIds);
+            log.info("[RAG] Section range expansion: {} chunks", sectionExpansion.size());
+            expanded.addAll(sectionExpansion);
+            expanded.addAll(expandAroundAnchors(lexicalAnchors, widgetId));
+
+            if (isExpandedQuery) {
+                if (!sectionIds.isEmpty()) {
+                    List<DocumentChunk> sectionChunks = documentChunkRepository
+                            .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                                    widgetId, sectionIds);
+                    log.info("[RAG] Section expansion by sectionId: {} chunks from {} sections",
+                            sectionChunks.size(), sectionIds.size());
+                    expanded.addAll(sectionChunks);
+
+                    // Sibling expansion: find parentIds → pull sibling sections
+                    Set<String> parentIds = deriveParentIds(sectionIds);
+                    if (!parentIds.isEmpty()) {
+                        List<DocumentChunk> siblingChunks = documentChunkRepository
+                                .findByWidgetConfigIdAndParentIdInOrderByDocumentIdAscOrderIndexAsc(
+                                        widgetId, parentIds);
+                        log.info("[RAG] Sibling expansion by parentId: {} chunks from {} parents",
+                                siblingChunks.size(), parentIds.size());
+                        expanded.addAll(siblingChunks);
+                    }
+
+                    // Parent section summaries
+                    if (!vectorDocumentIds.isEmpty()) {
+                        List<DocumentChunk> parentSummaryChunks =
+                                findParentSectionSummaries(sectionIds, widgetId, vectorDocumentIds);
+                        log.info("[RAG] Parent section summaries: {} chunks", parentSummaryChunks.size());
+                        expanded.addAll(parentSummaryChunks);
+                    }
+                }
+
+                if (!tableIds.isEmpty()) {
+                    List<DocumentChunk> tableChunks = documentChunkRepository
+                            .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
+                                    widgetId, tableIds);
+                    log.info("[RAG] Table expansion by tableId: {} chunks from {} tables",
+                            tableChunks.size(), tableIds.size());
+                    expanded.addAll(tableChunks);
+                }
+            } else {
+                // Normal query: window expansion around vector anchors
+                List<DocumentChunk> anchorChunks =
+                        documentChunkRepository.findByWidgetConfigIdAndIdIn(widgetId, anchorChunkIds);
+
+                for (DocumentChunk anchor : anchorChunks) {
+                    int from = Math.max(0, anchor.getOrderIndex() - WINDOW_BEFORE);
+                    int to = anchor.getOrderIndex() + WINDOW_AFTER;
+                    expanded.addAll(documentChunkRepository
+                            .findByWidgetConfigIdAndDocumentIdAndOrderIndexBetweenOrderByOrderIndexAsc(
+                                    widgetId, anchor.getDocument().getId(), from, to));
+                }
+            }
+        }
+
+        // ── STEP 5: Dedup, sort, apply budget ─────────────────────────
+        boolean isLockedScope = !lockedSectionIds.isEmpty();
+        List<RetrievedContext> result = dedupeSortBudget(expanded, queryType, isLockedScope);
+
+        // ── STEP 6: Final context log ──────────────────────────────────
+        log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
+                result.size(), queryType, lockedSectionKey != null ? lockedSectionKey : "none");
+        if (!result.isEmpty()) {
+            log.info("[RAG] Context chunk list: {}",
+                    result.stream()
+                            .map(r -> r.getSectionId() + "[" + r.getChunkType() + "]")
+                            .toList());
+        }
+
+        return new RetrievalResult(result, lockedSectionLabel);
+    }
+
+    // ================================================================
+    // HEADING LOCK HELPERS
+    // ================================================================
+
+    /**
+     * Chọn section cụ thể nhất (most-specific) trong danh sách candidates đã sắp xếp.
+     *
+     * Quy tắc:
+     * 1. Bắt đầu từ best = candidates.get(0) (match tốt nhất theo score).
+     * 2. Duyệt các candidates còn lại — nếu tìm thấy một child section của best
+     *    có score gần bằng best (trong khoảng SPECIFICITY_SCORE_TOLERANCE điểm) → chọn child đó.
+     *    Tức là: nếu parent và child đều match tốt, ưu tiên child cụ thể hơn.
+     * 3. Nếu score chênh lệch nhiều → không can thiệp, giữ best từ sorting.
+     *
+     * Lý do cần hàm này (dù đã có depth tiebreaker trong sort):
+     * Trường hợp edge: parent có exact phrase bonus rất cao nhưng child thực sự match tốt hơn —
+     * hàm này bắt trường hợp đó và ưu tiên child nếu score không chênh quá nhiều.
+     */
+    private QueryAnalyzerService.HeadingMatch selectMostSpecificMatch(
+            List<QueryAnalyzerService.HeadingMatch> candidates) {
+        if (candidates == null || candidates.isEmpty()) return null;
+
+        QueryAnalyzerService.HeadingMatch best = candidates.get(0);
+        final int SPECIFICITY_SCORE_TOLERANCE = 3; // nếu child kém hơn <= 3 điểm → vẫn ưu tiên child
+
+        for (int i = 1; i < candidates.size(); i++) {
+            QueryAnalyzerService.HeadingMatch candidate = candidates.get(i);
+
+            // Score của candidate không được kém quá xa so với best
+            if (best.totalScore() - candidate.totalScore() > SPECIFICITY_SCORE_TOLERANCE) break;
+
+            // candidate phải là CHILD (descendant) của best: sectionKey bắt đầu bằng best.sectionKey() + "."
+            boolean isChildOfBest = candidate.sectionKey().startsWith(best.sectionKey() + ".");
+
+            if (isChildOfBest) {
+                log.info("[RAG] selectMostSpecificMatch: preferring child '{}' [{}] (score={}) " +
+                                "over parent '{}' [{}] (score={}) — child is more specific",
+                        candidate.title(), candidate.sectionKey(), candidate.totalScore(),
+                        best.title(), best.sectionKey(), best.totalScore());
+                best = candidate;
+            }
+        }
+
+        return best;
+    }
+
+    /**
+     * Mở rộng sectionKey gốc sang toàn bộ section con (descendants).
+     *
+     * Ví dụ: rootSectionKey="sec_6" → kết quả = {"sec_6", "sec_6.1", "sec_6.2", "sec_6.1.1", …}
+     * Dựa trên quy ước sectionKey = "sec_" + sectionNumber (ví dụ "sec_6.1.2").
+     */
+    private Set<String> expandDescendantSectionIds(String rootSectionKey,
+                                                    List<DocumentSection> allSections) {
+        Set<String> result = new LinkedHashSet<>();
+        String prefix = rootSectionKey + ".";     // ví dụ: "sec_6."
+
+        for (DocumentSection sec : allSections) {
+            String key = sec.getSectionKey();
+            if (key == null) continue;
+            if (key.equals(rootSectionKey) || key.startsWith(prefix)) {
+                result.add(key);
+            }
+        }
+
+        log.debug("[RAG] expandDescendantSectionIds('{}') → {} sections: {}",
+                rootSectionKey, result.size(), result);
         return result;
     }
 
-    private List<DocumentChunk> findLexicalAnchors(String question, UUID widgetId) {
+    // ================================================================
+    // PARENT SECTION SUMMARIES
+    // ================================================================
+
+    /**
+     * Tìm section_summary chunk của section cha cho các leaf sectionIds.
+     * Ví dụ: sectionIds chứa "sec_6.2" → tìm chunk có sectionId="sec_6" và chunkType="section_summary".
+     */
+    private List<DocumentChunk> findParentSectionSummaries(Set<String> sectionIds,
+                                                            UUID widgetId,
+                                                            Set<UUID> vectorDocumentIds) {
+        Set<String> parentSectionIds = new LinkedHashSet<>();
+        for (String sid : sectionIds) {
+            if (sid == null || !sid.startsWith("sec_")) continue;
+            String number = sid.substring("sec_".length());
+            if (number.startsWith("idx_")) continue;
+            int lastDot = number.lastIndexOf('.');
+            if (lastDot > 0) {
+                parentSectionIds.add("sec_" + number.substring(0, lastDot));
+            }
+        }
+
+        if (parentSectionIds.isEmpty()) return List.of();
+
+        List<DocumentChunk> candidates = documentChunkRepository
+                .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                        widgetId, parentSectionIds);
+
+        return candidates.stream()
+                .filter(c -> "section_summary".equals(c.getChunkType())
+                        || "text".equals(c.getChunkType()))
+                .limit(6)
+                .toList();
+    }
+
+    // ================================================================
+    // LEXICAL ANCHORS
+    // ================================================================
+
+    private List<DocumentChunk> findLexicalAnchors(String question, UUID widgetId,
+                                                    Set<UUID> vectorDocumentIds) {
         List<String> terms = extractSearchTerms(question);
-        if (terms.isEmpty()) {
+        if (terms.isEmpty() || vectorDocumentIds.isEmpty()) {
             return List.of();
         }
 
-        return documentChunkRepository.findByWidgetConfigIdOrderByDocumentIdAscOrderIndexAsc(widgetId)
+        return documentChunkRepository
+                .findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
+                        widgetId, vectorDocumentIds)
                 .stream()
                 .map(chunk -> Map.entry(chunk, lexicalScore(chunk, terms)))
                 .filter(entry -> entry.getValue() > 0)
                 .sorted(Map.Entry.<DocumentChunk, Integer>comparingByValue().reversed()
-                        .thenComparing(entry -> Optional.ofNullable(entry.getKey().getOrderIndex()).orElse(0)))
+                        .thenComparing(entry ->
+                                Optional.ofNullable(entry.getKey().getOrderIndex()).orElse(0)))
                 .limit(8)
                 .map(Map.Entry::getKey)
                 .toList();
     }
 
+    // ================================================================
+    // SECTION RANGE EXPANSION
+    // ================================================================
+
     private List<DocumentChunk> expandSectionRanges(List<DocumentChunk> anchors, UUID widgetId,
-                                                     boolean isExpandedQuery) {
-        if (anchors == null || anchors.isEmpty()) {
-            return List.of();
+                                                     boolean isExpandedQuery,
+                                                     Set<UUID> vectorDocumentIds) {
+        if (anchors == null || anchors.isEmpty()) return List.of();
+
+        Set<UUID> scopedDocIds = new LinkedHashSet<>(vectorDocumentIds);
+        for (DocumentChunk anchor : anchors) {
+            if (anchor.getDocument() != null && anchor.getDocument().getId() != null) {
+                scopedDocIds.add(anchor.getDocument().getId());
+            }
         }
 
+        if (scopedDocIds.isEmpty()) return List.of();
+
         List<DocumentChunk> allChunks =
-                documentChunkRepository.findByWidgetConfigIdOrderByDocumentIdAscOrderIndexAsc(widgetId);
-        if (allChunks.isEmpty()) {
-            return List.of();
-        }
+                documentChunkRepository.findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
+                        widgetId, scopedDocIds);
+        if (allChunks.isEmpty()) return List.of();
 
         Map<UUID, List<DocumentChunk>> byDocument = allChunks.stream()
                 .filter(chunk -> chunk.getDocument() != null && chunk.getDocument().getId() != null)
                 .collect(Collectors.groupingBy(
                         chunk -> chunk.getDocument().getId(),
                         LinkedHashMap::new,
-                        Collectors.toList()
-                ));
+                        Collectors.toList()));
 
-        // Pre-build index: docId → (sectionId → sorted list of positions trong docChunks)
-        // Tách theo document để tránh nhầm position giữa các document khác nhau
         Map<UUID, Map<String, List<Integer>>> docSectionIndex = new HashMap<>();
         for (Map.Entry<UUID, List<DocumentChunk>> docEntry : byDocument.entrySet()) {
             UUID docId = docEntry.getKey();
@@ -201,22 +489,17 @@ public class RagRetrievalService {
         }
 
         List<DocumentChunk> result = new ArrayList<>();
-        Set<String> expandedSectionKeys = new HashSet<>(); // docId:sectionId
+        Set<String> expandedSectionKeys = new HashSet<>();
         Set<String> expandedRanges = new HashSet<>();
         int maxChunks = isExpandedQuery ? SECTION_EXPANSION_MAX_CHUNKS_EXPANDED : SECTION_EXPANSION_MAX_CHUNKS;
 
         for (DocumentChunk anchor : anchors) {
-            if (anchor.getDocument() == null || anchor.getDocument().getId() == null) {
-                continue;
-            }
+            if (anchor.getDocument() == null || anchor.getDocument().getId() == null) continue;
 
             UUID docId = anchor.getDocument().getId();
             List<DocumentChunk> documentChunks = byDocument.get(docId);
-            if (documentChunks == null || documentChunks.isEmpty()) {
-                continue;
-            }
+            if (documentChunks == null || documentChunks.isEmpty()) continue;
 
-            // Ưu tiên 1: dùng sectionId từ metadata (chính xác, không cần regex)
             String anchorSectionId = anchor.getSectionId();
             String sectionKey = docId + ":" + anchorSectionId;
             if (anchorSectionId != null && !anchorSectionId.isBlank()
@@ -236,16 +519,11 @@ public class RagRetrievalService {
                 }
             }
 
-            // Fallback: regex scan nếu sectionId không có hoặc không tìm được vị trí
             SectionRange range = findContainingSectionRange(documentChunks, anchor, maxChunks);
-            if (range == null) {
-                continue;
-            }
+            if (range == null) continue;
 
             String rangeKey = docId + ":" + range.startIndex + ":" + range.endIndex;
-            if (!expandedRanges.add(rangeKey)) {
-                continue;
-            }
+            if (!expandedRanges.add(rangeKey)) continue;
 
             for (int i = range.startIndex; i <= range.endIndex; i++) {
                 result.add(documentChunks.get(i));
@@ -255,14 +533,11 @@ public class RagRetrievalService {
         return result;
     }
 
-    private SectionRange findContainingSectionRange(List<DocumentChunk> chunks, DocumentChunk anchor,
-                                                    int maxChunks) {
+    private SectionRange findContainingSectionRange(List<DocumentChunk> chunks,
+                                                    DocumentChunk anchor, int maxChunks) {
         int anchorPosition = findChunkPosition(chunks, anchor);
-        if (anchorPosition < 0) {
-            return null;
-        }
+        if (anchorPosition < 0) return null;
 
-        // Bước 1: Tìm heading gần nhất (từ vị trí anchor lùi về trước)
         HeadingInfo anchorHeading = null;
         int start = anchorPosition;
 
@@ -275,30 +550,24 @@ public class RagRetrievalService {
             }
         }
 
-        if (anchorHeading == null) {
-            return null;
-        }
+        if (anchorHeading == null) return null;
 
-        // Bước 2: Nếu anchor là sub-section (6.2, 6.3...), leo lên tìm parent (6)
-        // để mở rộng toàn bộ các sibling (6.1, 6.2, 6.3, 6.4, 6.5)
+        // Leo lên tìm parent nếu anchor là sub-section
         if (anchorHeading.level() >= 2) {
             for (int i = start - 1; i >= 0; i--) {
                 HeadingInfo parentCandidate = firstHeading(chunks.get(i));
                 if (parentCandidate != null && parentCandidate.level() < anchorHeading.level()) {
-                    // Xác nhận đây thực sự là parent (prefix match: "6.2" starts with "6.")
                     if (anchorHeading.number.startsWith(parentCandidate.number + ".")) {
-                        log.debug("[RAG] Section level-up: {} → parent {}", anchorHeading.number, parentCandidate.number);
+                        log.debug("[RAG] Section level-up: {} → parent {}",
+                                anchorHeading.number, parentCandidate.number);
                         anchorHeading = parentCandidate;
                         start = i;
                     }
-                    break; // Dù có match hay không, chỉ leo lên 1 level
+                    break;
                 }
             }
         }
 
-        // Bước 3: Scan forward — dừng khi gặp heading KHÔNG phải con của anchorHeading
-        // Tức là: dừng khi nextHeading KHÔNG bắt đầu bằng "anchorHeading.number."
-        // Ví dụ: anchorHeading = "6" → tiếp tục qua 6.1, 6.2, 6.3... dừng tại "7"
         int end = Math.min(chunks.size() - 1, start + maxChunks - 1);
         for (int i = start + 1; i < chunks.size(); i++) {
             HeadingInfo nextHeading = firstHeading(chunks.get(i));
@@ -306,7 +575,6 @@ public class RagRetrievalService {
                 boolean isChildOrSelf = nextHeading.number.equals(anchorHeading.number)
                         || nextHeading.number.startsWith(anchorHeading.number + ".");
                 if (!isChildOrSelf && nextHeading.level() <= anchorHeading.level()) {
-                    // Gặp section cùng cấp hoặc cao hơn không phải con → kết thúc range
                     end = Math.max(start, i - 1);
                     break;
                 }
@@ -324,9 +592,7 @@ public class RagRetrievalService {
     private int findChunkPosition(List<DocumentChunk> chunks, DocumentChunk target) {
         UUID targetId = target.getId();
         for (int i = 0; i < chunks.size(); i++) {
-            if (Objects.equals(chunks.get(i).getId(), targetId)) {
-                return i;
-            }
+            if (Objects.equals(chunks.get(i).getId(), targetId)) return i;
         }
         return -1;
     }
@@ -337,10 +603,7 @@ public class RagRetrievalService {
         while (matcher.find()) {
             String number = matcher.group(1);
             String title = matcher.group(2).trim();
-            if (!isLikelyHeadingTitle(title)) {
-                continue;
-            }
-
+            if (!isLikelyHeadingTitle(title)) continue;
             return new HeadingInfo(number, title);
         }
         return null;
@@ -348,17 +611,12 @@ public class RagRetrievalService {
 
     private boolean isLikelyHeadingTitle(String title) {
         String normalized = title == null ? "" : title.trim();
-        if (normalized.length() < 4) {
-            return false;
-        }
-
+        if (normalized.length() < 4) return false;
         return !normalized.matches(".*\\b(phut|ngay|request|page|trang)\\b.*");
     }
 
     private List<DocumentChunk> expandAroundAnchors(List<DocumentChunk> anchors, UUID widgetId) {
-        if (anchors == null || anchors.isEmpty()) {
-            return List.of();
-        }
+        if (anchors == null || anchors.isEmpty()) return List.of();
 
         List<DocumentChunk> result = new ArrayList<>();
         for (DocumentChunk anchor : anchors) {
@@ -366,30 +624,27 @@ public class RagRetrievalService {
             int to = anchor.getOrderIndex() + WINDOW_AFTER;
             result.addAll(documentChunkRepository
                     .findByWidgetConfigIdAndDocumentIdAndOrderIndexBetweenOrderByOrderIndexAsc(
-                            widgetId,
-                            anchor.getDocument().getId(),
-                            from,
-                            to
-                    ));
+                            widgetId, anchor.getDocument().getId(), from, to));
         }
         return result;
     }
 
+    // ================================================================
+    // SEARCH TERM EXTRACTION & LEXICAL SCORING
+    // ================================================================
+
     private List<String> extractSearchTerms(String question) {
-        if (question == null || question.isBlank()) {
-            return List.of();
-        }
+        if (question == null || question.isBlank()) return List.of();
 
-        // Normalize để lexical anchor match được tiếng Việt có dấu/không dấu
         String normalizedQuestion = normalizeForSearch(question);
-
-        // Stopwords phải ở dạng đã normalize (không dấu) vì normalizedQuestion cũng đã normalize
         Set<String> stopWords = Set.of(
                 "gom", "nhung", "buoc", "nao",
                 "liet", "ke", "cac", "va", "cua",
                 "tung", "chinh",
                 "trinh", "bay", "bao", "tom", "tat", "tong", "hop",
-                "he", "thong", "tai", "lieu", "noi", "dung", "phan", "muc", "chuong"
+                "he", "thong", "tai", "lieu", "noi", "dung", "phan", "muc", "chuong",
+                "hay", "vui", "long", "cho", "biet", "gi", "sao", "nhu", "the",
+                "duoc", "voi", "trong", "len", "xuong", "khi", "neu"
         );
 
         return Arrays.stream(normalizedQuestion.split("[^\\p{L}\\p{N}]+"))
@@ -401,106 +656,106 @@ public class RagRetrievalService {
     }
 
     private String normalizeForSearch(String value) {
-        if (value == null || value.isBlank()) {
-            return "";
-        }
-
+        if (value == null || value.isBlank()) return "";
         String normalized = Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}", "")
                 .replace('đ', 'd')
                 .replace('Đ', 'D')
                 .toLowerCase(Locale.ROOT);
-
         return normalized.replaceAll("\\s+", " ").trim();
     }
 
     private int lexicalScore(DocumentChunk chunk, List<String> terms) {
-        // Tổng quát: chấm điểm dựa trên cả content + heading/section title
-        // để các câu hỏi theo "tiêu đề mục" vẫn match tốt cho nhiều loại tài liệu khác nhau.
         String content = normalizeForSearch(Optional.ofNullable(chunk.getContent()).orElse(""));
         String heading = normalizeForSearch(Optional.ofNullable(chunk.getHeadingPathText()).orElse(""));
         String sectionTitle = normalizeForSearch(Optional.ofNullable(chunk.getSectionTitle()).orElse(""));
         String haystack = (heading + " " + sectionTitle + " " + content).trim();
+
         int score = 0;
         for (String term : terms) {
             String t = normalizeForSearch(term);
-            if (!t.isBlank() && haystack.contains(t)) {
-                score++;
-            }
+            if (!t.isBlank() && haystack.contains(t)) score++;
         }
 
-        if ("text".equalsIgnoreCase(chunk.getChunkType())) {
+        // Bonus: section_summary và table_summary được ưu tiên cho expanded query
+        String chunkType = chunk.getChunkType();
+        if ("section_summary".equalsIgnoreCase(chunkType)
+                || "table_summary".equalsIgnoreCase(chunkType)) {
+            score += Math.min(score, 3);
+        } else if ("text".equalsIgnoreCase(chunkType)) {
             score += Math.min(score, 2);
         }
 
         return score;
     }
 
+    // ================================================================
+    // DEDUP → SORT → BUDGET
+    // ================================================================
+
     /**
-     * Từ tập sectionIds, suy ra parentIds tương ứng để mở rộng sibling sections.
+     * Dedup → sắp xếp theo thứ tự tài liệu (sectionOrder ASC, orderIndex ASC) → cắt budget.
      *
-     * Logic:
-     *  - "sec_6.2"     → parentId = "parent_6"     (sub-section: bỏ phần sau dấu chấm cuối)
-     *  - "sec_6.1.2"   → parentId = "parent_6.1"
-     *  - "sec_6"       → không có parent (bỏ qua)
-     *  - "sec_idx_5"   → không có parent cấu trúc (bỏ qua)
+     * Quan trọng: phải sắp xếp theo thứ tự tài liệu GỐC trước khi đưa cho LLM,
+     * để LLM đọc context theo đúng trình tự logic, tránh hiểu nhầm do context lộn xộn.
      *
-     * Chỉ trả về parentIds có ý nghĩa cấu trúc (dạng "parent_X.Y" hoặc "parent_X").
+     * @param isLockedScope true nếu retrieval đã lock vào một section cụ thể → budget rộng hơn.
      */
-    private Set<String> deriveParentIds(Set<String> sectionIds) {
-        Set<String> parentIds = new LinkedHashSet<>();
-        for (String sectionId : sectionIds) {
-            if (sectionId == null || !sectionId.startsWith("sec_")) continue;
-            String number = sectionId.substring("sec_".length()); // "6.2"
-            if (number.startsWith("idx_")) continue;              // skip positional ids
-            int lastDot = number.lastIndexOf('.');
-            if (lastDot > 0) {
-                String parentNumber = number.substring(0, lastDot); // "6"
-                parentIds.add("parent_" + parentNumber);            // "parent_6"
-            }
-        }
-        return parentIds;
-    }
-
-    private record HeadingInfo(String number, String title) {
-        int level() {
-            return number.split("\\.").length;
-        }
-    }
-
-    private record SectionRange(int startIndex, int endIndex) {
-    }
-
     private List<RetrievedContext> dedupeSortBudget(List<DocumentChunk> chunks,
-                                                    QueryAnalyzerService.QueryType queryType) {
-        boolean isExpandedQuery = queryType == QueryAnalyzerService.QueryType.LIST_ALL
-                || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
-                || queryType == QueryAnalyzerService.QueryType.SECTION_SUMMARY;
+                                                     QueryAnalyzerService.QueryType queryType,
+                                                     boolean isLockedScope) {
+        boolean isExpandedQuery = isExpanded(queryType);
 
-        int finalLimit = isExpandedQuery ? FINAL_LIMIT_EXPANDED : FINAL_LIMIT;
-        int maxContextChars = isExpandedQuery ? MAX_CONTEXT_CHARS_EXPANDED : MAX_CONTEXT_CHARS;
+        int finalLimit;
+        int maxContextChars;
+        if (isLockedScope) {
+            finalLimit = FINAL_LIMIT_LOCKED;
+            maxContextChars = MAX_CONTEXT_CHARS_LOCKED;
+        } else if (isExpandedQuery) {
+            finalLimit = FINAL_LIMIT_EXPANDED;
+            maxContextChars = MAX_CONTEXT_CHARS_EXPANDED;
+        } else {
+            finalLimit = FINAL_LIMIT;
+            maxContextChars = MAX_CONTEXT_CHARS;
+        }
 
+        // Dedup theo chunk ID
         Map<UUID, DocumentChunk> unique = chunks.stream()
                 .filter(c -> c.getId() != null)
                 .collect(Collectors.toMap(
                         DocumentChunk::getId,
                         c -> c,
                         (a, b) -> a,
-                        LinkedHashMap::new
-                ));
+                        LinkedHashMap::new));
+
+        // Sắp xếp theo thứ tự tài liệu gốc: (documentId, sectionOrder, orderIndex)
+        List<DocumentChunk> sorted = unique.values().stream()
+                .sorted(Comparator
+                        .comparing((DocumentChunk c) -> c.getDocument() != null
+                                ? c.getDocument().getId().toString() : "")
+                        .thenComparingInt(c -> Optional.ofNullable(c.getSectionOrder()).orElse(0))
+                        .thenComparingInt(c -> Optional.ofNullable(c.getOrderIndex()).orElse(0)))
+                .toList();
+
+        // section_summary và table_summary nên được đưa lên đầu trong expanded/locked query
+        if (isExpandedQuery || isLockedScope) {
+            sorted = prioritizeSummaryChunks(sorted);
+        }
 
         List<RetrievedContext> result = new ArrayList<>();
         int totalChars = 0;
 
-        for (DocumentChunk c : unique.values()) {
+        for (DocumentChunk c : sorted) {
             if (result.size() >= finalLimit) {
-                log.debug("[RAG] Budget: reached finalLimit={}", finalLimit);
+                log.info("[RAG] Budget: finalLimit={} reached; {} chunks excluded by count limit",
+                        finalLimit, sorted.size() - result.size());
                 break;
             }
 
             String content = c.getContent() == null ? "" : c.getContent();
             if (totalChars + content.length() > maxContextChars) {
-                log.debug("[RAG] Budget: reached maxContextChars={} at chunk #{}", maxContextChars, result.size());
+                log.info("[RAG] Budget: maxContextChars={} reached at chunk #{}, {} chunks excluded by char limit",
+                        maxContextChars, result.size(), sorted.size() - result.size());
                 break;
             }
 
@@ -520,9 +775,91 @@ public class RagRetrievalService {
                     .build());
         }
 
-        log.info("[RAG] dedupeSortBudget: input={}, unique={}, output={}, totalChars={}, limit={}/{}",
-                chunks.size(), unique.size(), result.size(), totalChars, finalLimit, maxContextChars);
+        log.info("[RAG] dedupeSortBudget: input={} unique={} output={} totalChars={} " +
+                        "limit={}/{} locked={}",
+                chunks.size(), unique.size(), result.size(), totalChars,
+                finalLimit, maxContextChars, isLockedScope);
 
         return result;
     }
+
+    // ================================================================
+    // UTILITIES
+    // ================================================================
+
+    private boolean isExpanded(QueryAnalyzerService.QueryType queryType) {
+        return queryType == QueryAnalyzerService.QueryType.LIST_ALL
+                || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                || queryType == QueryAnalyzerService.QueryType.SECTION_SUMMARY
+                || queryType == QueryAnalyzerService.QueryType.COUNT_QUERY;
+    }
+
+    private void extractIds(TextSegment seg,
+                            Set<UUID> anchorChunkIds,
+                            Set<String> sectionIds,
+                            Set<String> tableIds,
+                            Set<UUID> vectorDocumentIds) {
+        String chunkId = seg.metadata().getString("chunk_id");
+        if (chunkId != null && !chunkId.isBlank()) {
+            try { anchorChunkIds.add(UUID.fromString(chunkId)); } catch (IllegalArgumentException ignored) {}
+        }
+        String sectionId = seg.metadata().getString("section_id");
+        if (sectionId != null && !sectionId.isBlank()) sectionIds.add(sectionId);
+
+        String tableId = seg.metadata().getString("table_id");
+        if (tableId != null && !tableId.isBlank()) tableIds.add(tableId);
+
+        String documentId = seg.metadata().getString("document_id");
+        if (documentId != null && !documentId.isBlank()) {
+            try { vectorDocumentIds.add(UUID.fromString(documentId)); }
+            catch (IllegalArgumentException ignored) {}
+        }
+    }
+
+    private Set<String> deriveParentIds(Set<String> sectionIds) {
+        Set<String> parentIds = new LinkedHashSet<>();
+        for (String sectionId : sectionIds) {
+            if (sectionId == null || !sectionId.startsWith("sec_")) continue;
+            String number = sectionId.substring("sec_".length());
+            if (number.startsWith("idx_")) continue;
+            int lastDot = number.lastIndexOf('.');
+            if (lastDot > 0) {
+                String parentNumber = number.substring(0, lastDot);
+                parentIds.add("parent_" + parentNumber);
+            }
+        }
+        return parentIds;
+    }
+
+    /**
+     * Đặt section_summary và table_summary lên đầu danh sách,
+     * theo sau bởi các chunks còn lại theo thứ tự tài liệu.
+     * Giúp LLM có context tổng quan trước khi đọc detail chunks.
+     */
+    private List<DocumentChunk> prioritizeSummaryChunks(List<DocumentChunk> sorted) {
+        List<DocumentChunk> summaries = sorted.stream()
+                .filter(c -> "section_summary".equals(c.getChunkType())
+                        || "table_summary".equals(c.getChunkType())
+                        || "parent_section_summary".equals(c.getChunkType()))
+                .toList();
+        List<DocumentChunk> others = sorted.stream()
+                .filter(c -> !"section_summary".equals(c.getChunkType())
+                        && !"table_summary".equals(c.getChunkType())
+                        && !"parent_section_summary".equals(c.getChunkType()))
+                .toList();
+
+        List<DocumentChunk> result = new ArrayList<>(summaries);
+        result.addAll(others);
+        return result;
+    }
+
+    // ================================================================
+    // INNER RECORDS
+    // ================================================================
+
+    private record HeadingInfo(String number, String title) {
+        int level() { return number.split("\\.").length; }
+    }
+
+    private record SectionRange(int startIndex, int endIndex) {}
 }

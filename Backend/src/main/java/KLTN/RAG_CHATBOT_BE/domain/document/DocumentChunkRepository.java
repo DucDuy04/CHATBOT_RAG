@@ -46,4 +46,14 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UU
             UUID widgetConfigId,
             Collection<String> parentIds
     );
+
+    /**
+     * Lấy chunk chỉ trong tập document IDs cho trước — dùng để thay thế full-table-scan
+     * trong lexical anchoring và section range expansion.
+     * Giảm từ O(total_chunks_per_widget) xuống O(chunks_in_relevant_docs).
+     */
+    List<DocumentChunk> findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
+            UUID widgetConfigId,
+            Collection<UUID> documentIds
+    );
 }

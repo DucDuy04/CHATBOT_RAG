@@ -10,6 +10,7 @@ import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
 import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
+import KLTN.RAG_CHATBOT_BE.service.QueryAnalyzerService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -19,6 +20,8 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.output.Response;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -30,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
@@ -46,6 +50,11 @@ public class ChatService {
     private final WidgetConfigRepository widgetConfigRepository;
 
     private final RagRetrievalService ragRetrievalService;
+    private final QueryAnalyzerService queryAnalyzerService;
+
+    @Autowired
+    @Qualifier("streamingExecutor")
+    private Executor streamingExecutor;
 
     @Value("${groq.api-key}")
     private String groqApiKey;
@@ -65,16 +74,20 @@ public class ChatService {
 
         saveChatMessage(session, MessageRole.USER, question, null);
 
-        List<RetrievedContext> contexts = ragRetrievalService.retrieve(question, widgetId);
+        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
+        RagRetrievalService.RetrievalResult retrievalResult =
+                ragRetrievalService.retrieveWithMetadata(question, widgetId);
+        List<RetrievedContext> contexts = retrievalResult.contexts();
+        String lockedScopeLabel = retrievalResult.lockedScopeLabel();
 
-        log.info("[Chat] Retrieval expanded được {} contexts cho widgetId={}", contexts.size(), widgetId);
+        log.info("[Chat] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
+                contexts.size(), widgetId, lockedScopeLabel != null ? lockedScopeLabel : "none");
 
         List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
         String answer;
 
         if (contexts.isEmpty()) {
-            // Đồng bộ đúng câu trả lời "không tìm thấy" theo system prompt để tránh lệch format
             answer = "Tôi không tìm thấy thông tin này trong tài liệu.";
         } else {
             List<ChatMessage> chatHistory =
@@ -83,7 +96,9 @@ public class ChatService {
             String userPrompt = promptBuilderService.buildUserPromptFromRetrievedContexts(
                     question,
                     contexts,
-                    chatHistory
+                    chatHistory,
+                    queryType.name(),
+                    lockedScopeLabel
             );
 
             String systemPrompt = promptBuilderService.getSystemPrompt();
@@ -110,15 +125,20 @@ public class ChatService {
 
         ChatSession session = getOrCreateSession(request.getSessionId(), widgetId);
 
-        new Thread(() -> {
+        streamingExecutor.execute(() -> {
             try {
                 log.info("[Stream] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
 
                 saveChatMessage(session, MessageRole.USER, question, null);
 
-                List<RetrievedContext> contexts = ragRetrievalService.retrieve(question, widgetId);
+                QueryAnalyzerService.QueryType streamQueryType = queryAnalyzerService.analyze(question, widgetId);
+                RagRetrievalService.RetrievalResult streamResult =
+                        ragRetrievalService.retrieveWithMetadata(question, widgetId);
+                List<RetrievedContext> contexts = streamResult.contexts();
+                String streamLockedScope = streamResult.lockedScopeLabel();
 
-                log.info("[Stream] Retrieval expanded được {} contexts cho widgetId={}", contexts.size(), widgetId);
+                log.info("[Stream] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
+                        contexts.size(), widgetId, streamLockedScope != null ? streamLockedScope : "none");
 
                 List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
@@ -149,7 +169,9 @@ public class ChatService {
                 String userPrompt = promptBuilderService.buildUserPromptFromRetrievedContexts(
                         question,
                         contexts,
-                        chatHistory
+                        chatHistory,
+                        streamQueryType.name(),
+                        streamLockedScope
                 );
 
                 String systemPrompt = promptBuilderService.getSystemPrompt();
@@ -249,7 +271,7 @@ public class ChatService {
                 log.error("[Stream] Lỗi chatStream: {}", e.getMessage(), e);
                 emitter.completeWithError(e);
             }
-        }).start();
+        });
 
         return emitter;
     }

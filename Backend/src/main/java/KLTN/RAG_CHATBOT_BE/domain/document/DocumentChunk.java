@@ -78,6 +78,28 @@ public class DocumentChunk {
     @Column(name = "order_index")
     private Integer orderIndex;
 
+    /**
+     * Thứ tự section trong tài liệu (0-based).
+     * Cho phép sort lại đúng thứ tự tài liệu gốc khi reconstruct context từ Qdrant.
+     */
+    @Column(name = "section_order")
+    private Integer sectionOrder;
+
+    /**
+     * Cấp độ heading (1=top-level, 2=subsection, 3=sub-subsection, 0=không có số heading).
+     */
+    @Column(name = "heading_level")
+    private Integer headingLevel;
+
+    /**
+     * Comma-separated sectionIds của các subsection trực tiếp.
+     * Chỉ có giá trị khi chunkType="parent_section_summary".
+     * Dùng trong retrieval để tự động expand sang toàn bộ child sections.
+     * Ví dụ: "sec_6.1,sec_6.2,sec_6.3"
+     */
+    @Column(name = "child_section_ids", length = 2000)
+    private String childSectionIds;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "prev_chunk_id")
     private DocumentChunk prevChunk;

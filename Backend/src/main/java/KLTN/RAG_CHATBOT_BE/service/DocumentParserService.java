@@ -96,6 +96,7 @@ public class DocumentParserService {
                     for (Table table : tables) {
                         String tableMarkdown = convertTableToMarkdown(table, currentHeader);
                         if (!isUsableTable(table, tableMarkdown)) {
+                            logRejectedTable(table, tableMarkdown, pageNum);
                             continue;
                         }
                         // Nếu table ở trang hiện tại là continuation (không có header row),
@@ -155,93 +156,179 @@ public class DocumentParserService {
     public List<Section> parseSections(Map<Integer, String> pageContents) {
         List<Section> sections = new ArrayList<>();
         TreeMap<Integer, String> sortedPages = new TreeMap<>(pageContents);
-        
-        // Mặc định tên Header là General đề phòng file (như TXT) không có Header nào
-        String currentHeader = "General"; 
+
+        // Mặc định "General" cho phần intro trước heading đầu tiên
+        String currentHeader = "General";
         StringBuilder currentContent = new StringBuilder();
-        int startPage = 1;
+        int startPage = sortedPages.isEmpty() ? 1 : sortedPages.firstKey();
+        int sectionOrder = 0;
+        boolean firstHeadingFound = false;
+
         java.util.Map<String, Integer> seenSectionNumberCounts = new java.util.HashMap<>();
         String currentSectionNumber = null;
+
+        // --- Counters cho logging ---
+        int totalCandidates = 0;
+        int acceptedHeadings = 0;
 
         for (Map.Entry<Integer, String> entry : sortedPages.entrySet()) {
             int currentPage = entry.getKey();
             String pageText = entry.getValue();
-            
-            // IMPORTANT:
-            // - Không được nhận nhầm heading nằm trong TABLE (markdown rows) thành section heading.
-            // - Vì pageText đã có marker [TABLE_START]/[TABLE_END], ta mask nội dung table để regex không match bên trong.
+
+            // Mask nội dung bảng để regex heading không match bên trong table rows.
             String maskedForHeadingScan = maskTableBlocks(pageText);
             Matcher matcher = SECTION_HEADER_PATTERN.matcher(maskedForHeadingScan);
             int lastEndIndex = 0;
 
             while (matcher.find()) {
+                totalCandidates++;
                 String candidateHeader = matcher.group(0).trim();
-                if (!isLikelySectionHeader(candidateHeader)) {
-                    continue;
-                }
-                log.debug("[Parse] Heading candidate page={}, idx={}, header='{}'",
-                        currentPage, matcher.start(), candidateHeader);
-
-                // Nếu header lặp đúng header hiện tại → coi như page header/footer, không mở section mới.
-                if (candidateHeader.equals(currentHeader)) {
-                    continue;
-                }
-
-                // Nếu section number đã từng xuất hiện trước đó, mà lại xuất hiện ở đầu trang (header/footer) → bỏ qua.
                 String candidateNumber = extractSectionNumber(candidateHeader);
-                if (candidateNumber != null) {
-                    int count = seenSectionNumberCounts.getOrDefault(candidateNumber, 0);
-                    boolean appearsNearTopOfPage = matcher.start() <= 320; // heuristic: vùng header thường nằm rất gần đầu trang
-                    if (count > 0 && appearsNearTopOfPage) {
-                        log.debug("[Parse] Skip repeated section number near page top: page={}, number={}, header='{}'",
-                                currentPage, candidateNumber, candidateHeader);
-                        continue;
-                    }
 
-                    // Reject numbered-list/table-step headings (vd "1. Login", "2. Request") xuất hiện bên trong nội dung:
-                    // Nếu đang ở trong 1 section top-level lớn hơn, không cho phép "tụt" về số nhỏ hơn (đặc biệt 1..9).
-                    if (!isStructurallyConsistentHeading(currentSectionNumber, candidateNumber)) {
-                        log.debug("[Parse] Skip structurally-inconsistent heading: page={}, current={}, candidate={}, header='{}'",
-                                currentPage, currentSectionNumber, candidateNumber, candidateHeader);
-                        continue;
-                    }
-                }
-                // Lưu content cũ vào trước khi chuyển sang header mới
-                if (currentContent.length() > 0 || lastEndIndex > 0) {
-                    currentContent.append(pageText, lastEndIndex, matcher.start());
-                    
-                    String finalizedContent = currentContent.toString().trim();
-                    // Với heading "cha" thường có thể không có content giữa 2 dòng heading liên tiếp (vd "2." ngay trước "2.1").
-                    // Ta vẫn lưu Section nếu currentHeader là heading thật, để giữ đúng hierarchy cho chunk metadata.
-                    if (!finalizedContent.isEmpty() || extractSectionNumber(currentHeader) != null) {
-                        sections.add(new Section(currentHeader, startPage, currentPage, finalizedContent));
-                    }
-                    currentContent.setLength(0); 
+                // --- Bước 1: false-positive filter (với reason log) ---
+                String skipReason = headingSkipReason(
+                        candidateHeader, candidateNumber,
+                        currentHeader, currentSectionNumber,
+                        matcher.start(), seenSectionNumberCounts);
+
+                if (skipReason != null) {
+                    log.debug("[Parse] SKIP [{}] page={} header='{}'", skipReason, currentPage, candidateHeader);
+                    continue;
                 }
 
-                currentHeader = matcher.group(0).trim();
+                // --- Bước 2: Heading được chấp nhận ---
+                acceptedHeadings++;
+                log.debug("[Parse] ACCEPT heading #{}: page={} header='{}' number='{}'",
+                        acceptedHeadings, currentPage, candidateHeader, candidateNumber);
+
+                // --- Bước 3: Lưu section đang xử lý trước khi mở section mới ---
+                currentContent.append(pageText, lastEndIndex, matcher.start());
+                String finalizedContent = currentContent.toString().trim();
+
+                // Lưu section trước nếu:
+                //  - Là heading thật (không phải "General" mặc định trước heading đầu tiên), HOẶC
+                //  - Là "General" nhưng có content (intro text trước heading đầu tiên)
+                boolean isPrevDefaultEmpty = "General".equals(currentHeader) && !firstHeadingFound && finalizedContent.isEmpty();
+                if (!isPrevDefaultEmpty) {
+                    int prevLevel = computeHeadingLevel(currentSectionNumber);
+                    Section saved = new Section(currentHeader, startPage, currentPage, finalizedContent, sectionOrder, prevLevel);
+                    sections.add(saved);
+                    log.debug("[Parse] Section saved: order={} header='{}' pages={}-{} contentLen={}",
+                            sectionOrder, currentHeader, startPage, currentPage, finalizedContent.length());
+                    sectionOrder++;
+                }
+
+                // --- Bước 4: Chuyển sang section mới ---
+                firstHeadingFound = true;
+                currentContent.setLength(0);
+                currentHeader = candidateHeader;
                 startPage = currentPage;
                 lastEndIndex = matcher.end();
 
-                String newNumber = extractSectionNumber(currentHeader);
-                if (newNumber != null) {
-                    seenSectionNumberCounts.put(newNumber, seenSectionNumberCounts.getOrDefault(newNumber, 0) + 1);
-                    currentSectionNumber = newNumber;
+                if (candidateNumber != null) {
+                    seenSectionNumberCounts.merge(candidateNumber, 1, Integer::sum);
+                    currentSectionNumber = candidateNumber;
                 }
             }
 
-            // Text còn lại của trang
-            currentContent.append(pageText.substring(lastEndIndex)).append("\n");
+            // Nội dung còn lại của trang (sau heading cuối trên trang này)
+            currentContent.append(pageText, lastEndIndex, pageText.length()).append("\n");
         }
 
-        // Lưu chunk cuối cùng
-        String finalChunkContent = currentContent.toString().trim();
-        if (!finalChunkContent.isEmpty()) {
-            sections.add(new Section(currentHeader, startPage, sortedPages.lastKey(), finalChunkContent));
+        // --- Lưu section cuối cùng ---
+        String lastContent = currentContent.toString().trim();
+        // Lưu nếu có heading được detect HOẶC file không có heading (document toàn text)
+        if (firstHeadingFound || !lastContent.isEmpty()) {
+            int lastLevel = computeHeadingLevel(currentSectionNumber);
+            Section last = new Section(currentHeader, startPage,
+                    sortedPages.isEmpty() ? startPage : sortedPages.lastKey(),
+                    lastContent, sectionOrder, lastLevel);
+            sections.add(last);
+            log.debug("[Parse] Section saved (last): order={} header='{}' pages={}-{} contentLen={}",
+                    sectionOrder, currentHeader, startPage, last.endPage(), lastContent.length());
         }
 
-        // Gộp các Section quá nhỏ (< 1200 chars) để tối ưu VectorDB
-        return mergeSmallSections(sections, 1200); 
+        // --- Summary log ---
+        log.info("[Parse] Heading detection: totalCandidates={} accepted={} skipped={}",
+                totalCandidates, acceptedHeadings, totalCandidates - acceptedHeadings);
+        log.info("[Parse] Sections created: {} (no merging applied)", sections.size());
+
+        if (sections.isEmpty() && !pageContents.isEmpty()) {
+            log.warn("[Parse] WARNING: 0 sections created from non-empty document. Check heading detection.");
+        }
+
+        return sections;
+    }
+
+    /**
+     * Kiểm tra xem heading candidate có nên bị bỏ qua không.
+     * Trả về null nếu heading hợp lệ, trả về chuỗi mô tả lý do nếu phải bỏ qua.
+     *
+     * Ưu tiên GIỮ LẠI nếu không chắc chắn là false positive.
+     */
+    private String headingSkipReason(
+            String candidateHeader,
+            String candidateNumber,
+            String currentHeader,
+            String currentSectionNumber,
+            int matchStart,
+            java.util.Map<String, Integer> seenSectionNumberCounts) {
+
+        // 1. Kiểm tra false positive cơ bản (format/content)
+        String fpReason = isLikelySectionHeaderSkipReason(candidateHeader);
+        if (fpReason != null) return "false-positive:" + fpReason;
+
+        // 2. Header lặp lại chính xác → là page header/footer lặp
+        if (candidateHeader.equals(currentHeader)) return "repeated-exact-header";
+
+        if (candidateNumber != null) {
+            // 3. Số section đã xuất hiện TRƯỚC và lại xuất hiện gần đầu trang → khả năng header/footer lặp
+            int count = seenSectionNumberCounts.getOrDefault(candidateNumber, 0);
+            boolean nearTopOfPage = matchStart <= 320;
+            if (count > 0 && nearTopOfPage) return "repeated-number-near-page-top";
+
+            // 4. Heading không nhất quán về số thứ tự (vd step "1." xuất hiện sau section "6.4")
+            if (!isStructurallyConsistentHeading(currentSectionNumber, candidateNumber)) {
+                return "structurally-inconsistent(current=" + currentSectionNumber + ",candidate=" + candidateNumber + ")";
+            }
+        }
+
+        return null; // heading hợp lệ
+    }
+
+    /**
+     * Kiểm tra false-positive thuần dựa trên format/nội dung dòng.
+     * Trả về null nếu hợp lệ, trả về lý do nếu là false positive.
+     */
+    private String isLikelySectionHeaderSkipReason(String headerLine) {
+        if (headerLine == null) return "null";
+        String h = headerLine.trim();
+        if (h.isBlank()) return "blank";
+
+        // Flow/instruction: "1. Login → System", "6. Logout -> Done"
+        if (h.contains("→") || h.contains("->") || h.contains("=>")) return "flow-arrow";
+
+        // Markdown table row hoặc marker
+        if (h.contains("|")) return "contains-pipe";
+        if (h.startsWith("[") || h.startsWith("]")) return "bracket-prefix";
+
+        // Bullet list: "• xxx", "- xxx", "* xxx" sau số
+        if (h.matches("^(?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:[-*•]+)\\s+.*$")) return "bullet-list";
+
+        // Numbered list variant: "1) xxx", "1 - xxx"
+        if (h.matches("^\\d+(?:\\.\\d+)*\\)?\\s*[-–—)]\\s+.*$")) return "numbered-list-variant";
+
+        // Title quá ngắn sau số (likely data cell, không phải tiêu đề)
+        String afterNumber = h.replaceFirst("^\\d+(?:\\.\\d+)*\\.?\\s+", "").trim();
+        if (afterNumber.length() < 3) return "title-too-short(<3)";
+
+        // Footer/header artifacts (cụm từ đặc trưng)
+        String lower = afterNumber.toLowerCase();
+        if (lower.matches(".*\\b(trang|page|tai lieu|tài liệu|noi bo|nội bộ|khong phat hanh|không phát hành)\\b.*")) {
+            return "footer-header-artifact";
+        }
+
+        return null; // hợp lệ
     }
 
     /**
@@ -287,6 +374,12 @@ public class DocumentParserService {
     // ==========================================
     // 5. HELPER METHODS (MERGE, TABLE, CLEAN TEXT)
     // ==========================================
+    /**
+     * Gộp các section nhỏ lại với nhau.
+     * NOTE: Hàm này KHÔNG được gọi trong pipeline chính nữa — mỗi heading hợp lệ phải
+     * là một section riêng bất kể độ dài content.
+     * Giữ lại hàm này chỉ để dùng trong test/thử nghiệm nếu cần.
+     */
     public List<Section> mergeSmallSections(List<Section> originalSections, int minCharLength) {
         if (originalSections == null || originalSections.isEmpty()) return new ArrayList<>();
 
@@ -297,17 +390,16 @@ public class DocumentParserService {
             Section nextSec = originalSections.get(i);
 
             boolean tooSmall = currentMerge.content().length() < minCharLength;
-            // Chỉ gộp khi cùng section cha (ví dụ 10.1 + 10.2 → ok, 10.x + 11.x → không)
             boolean sameParent = isSameParentSection(currentMerge.header(), nextSec.header());
-            // KHÔNG gộp khi current là parent của next (vd "2" + "2.1"), vì sẽ làm mất sectionId/headingPath chính xác.
             boolean isParentChild = isParentOf(currentMerge.header(), nextSec.header());
 
             if (tooSmall && sameParent && !isParentChild) {
-                // Giữ header của section chính (section đầu), embed nội dung section tiếp theo
                 String mergedContent = currentMerge.content()
                         + "\n\n[" + nextSec.header() + "]\n" + nextSec.content();
+                // Giữ orderIndex và headingLevel của section đầu khi gộp
                 currentMerge = new Section(currentMerge.header(), currentMerge.startPage(),
-                        nextSec.endPage(), mergedContent);
+                        nextSec.endPage(), mergedContent, currentMerge.orderIndex(),
+                        currentMerge.headingLevel());
             } else {
                 mergedSections.add(currentMerge);
                 currentMerge = nextSec;
@@ -364,6 +456,69 @@ public class DocumentParserService {
         return sb.toString();
     }
 
+    /**
+     * Log chi tiết bảng bị reject để hỗ trợ debug và fallback pseudo-table detection.
+     * Ghi ra: lý do reject, số row/col, preview markdown (tối đa 200 ký tự).
+     */
+    private void logRejectedTable(Table table, String markdown, int pageNum) {
+        if (table == null) {
+            log.info("[Parser] Table REJECTED page={}: reason=null-table", pageNum);
+            return;
+        }
+        String reason = getTableRejectionReason(table, markdown);
+        int rows = table.getRows() == null ? 0 : table.getRows().size();
+        int cols = table.getRows() == null || table.getRows().isEmpty() ? 0
+                : table.getRows().stream().mapToInt(List::size).max().orElse(0);
+        String preview = (markdown == null || markdown.isBlank()) ? "(empty)"
+                : markdown.length() > 200 ? markdown.substring(0, 200).replace("\n", "↵") + "…"
+                : markdown.replace("\n", "↵");
+        log.info("[Parser] Table REJECTED page={}: reason='{}' rows={} cols={} preview='{}'",
+                pageNum, reason, rows, cols, preview);
+    }
+
+    /**
+     * Tính lý do reject của bảng (không thay đổi isUsableTable để tránh side-effects).
+     * Trả về chuỗi mô tả lý do đầu tiên tìm được.
+     */
+    private String getTableRejectionReason(Table table, String markdown) {
+        if (table == null || markdown == null || markdown.isBlank()) return "null-or-blank-markdown";
+
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null || rows.size() < 3) {
+            return "too-few-rows(" + (rows == null ? 0 : rows.size()) + "<3)";
+        }
+
+        int maxColumns = rows.stream().mapToInt(List::size).max().orElse(0);
+        if (maxColumns < 2) return "too-few-columns(" + maxColumns + "<2)";
+
+        int nonEmptyCells = 0, emptyCells = 0, textChars = 0, totalCells = 0;
+        for (List<RectangularTextContainer> row : rows) {
+            for (RectangularTextContainer cell : row) {
+                String text = cell.getText() == null ? "" : cell.getText().trim();
+                totalCells++;
+                if (!text.isBlank()) { nonEmptyCells++; textChars += text.length(); }
+                else emptyCells++;
+            }
+        }
+
+        if (totalCells > 0 && (double) emptyCells / totalCells > 0.6) {
+            return "too-many-empty-cells(" + emptyCells + "/" + totalCells + ">"
+                    + String.format("%.0f", (double) emptyCells / totalCells * 100) + "%)";
+        }
+
+        List<RectangularTextContainer> headerRow = rows.get(0);
+        long headerNonEmpty = headerRow.stream()
+                .filter(c -> c.getText() != null && !c.getText().trim().isBlank()).count();
+        if (headerNonEmpty < 2) {
+            return "header-row-too-sparse(nonEmpty=" + headerNonEmpty + "<2)";
+        }
+
+        if (nonEmptyCells < 4) return "too-few-non-empty-cells(" + nonEmptyCells + "<4)";
+        if (textChars < 40) return "too-little-text(" + textChars + "<40chars)";
+
+        return "unknown";
+    }
+
     private boolean isUsableTable(Table table, String markdown) {
         if (table == null || markdown == null || markdown.isBlank()) {
             return false;
@@ -378,23 +533,44 @@ public class DocumentParserService {
                 .mapToInt(List::size)
                 .max()
                 .orElse(0);
-        if (maxColumns < 3) {
+        if (maxColumns < 2) {
             return false;
         }
 
         int nonEmptyCells = 0;
         int textChars = 0;
+        int emptyCells = 0;
+        int totalCells = 0;
         for (List<RectangularTextContainer> row : rows) {
             for (RectangularTextContainer cell : row) {
                 String text = cell.getText() == null ? "" : cell.getText().trim();
+                totalCells++;
                 if (!text.isBlank()) {
                     nonEmptyCells++;
                     textChars += text.length();
+                } else {
+                    emptyCells++;
                 }
             }
         }
 
-        return nonEmptyCells >= 6 && textChars >= 80;
+        // Bảng có quá nhiều cell rỗng (>60%) → không đáng tin cậy
+        if (totalCells > 0 && (double) emptyCells / totalCells > 0.6) {
+            log.debug("[Parser] Table rejected: too many empty cells ({}/{})", emptyCells, totalCells);
+            return false;
+        }
+
+        // Kiểm tra header row: các cell header không được toàn rỗng
+        List<RectangularTextContainer> headerRow = rows.get(0);
+        long headerNonEmpty = headerRow.stream()
+                .filter(c -> c.getText() != null && !c.getText().trim().isBlank())
+                .count();
+        if (headerNonEmpty < 2) {
+            log.debug("[Parser] Table rejected: header row has too few non-empty cells ({})", headerNonEmpty);
+            return false;
+        }
+
+        return nonEmptyCells >= 4 && textChars >= 40;
     }
 
     private boolean isDataRow(List<RectangularTextContainer> row) {
@@ -501,51 +677,20 @@ public class DocumentParserService {
         return sb.toString();
     }
 
-    /**
-     * Heuristic lọc false positives:
-     * - Không coi table row / bullet / numbered list / footer-header như heading.
-     */
-    private boolean isLikelySectionHeader(String headerLine) {
-        if (headerLine == null) return false;
-        String h = headerLine.trim();
-        if (h.isBlank()) return false;
-
-        // Reject flow/instruction style lines often found in tables/steps (NOT headings)
-        // e.g. "1. Login ... → ...", "6. Logout ... -> ..."
-        if (h.contains("→") || h.contains("->") || h.contains("=>")) {
-            return false;
-        }
-
-        // Reject markdown table rows or lines containing table delimiters
-        if (h.contains("|")) return false;
-        if (h.startsWith("[") || h.startsWith("]")) return false;
-
-        // Reject bullet-like headings: "• xxx", "- xxx", "* xxx"
-        if (h.matches("^(?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:[-*•]+)\\s+.*$")) return false;
-
-        // Reject numbered list variants that often appear in content: "1) xxx", "1 - xxx"
-        if (h.matches("^\\d+(?:\\.\\d+)*\\)?\\s*[-–—)]\\s+.*$")) return false;
-
-        // Reject overly short "titles" (often data cells) after number
-        String afterNumber = h.replaceFirst("^\\d+(?:\\.\\d+)*\\.?\\s+", "").trim();
-        if (afterNumber.length() < 4) return false;
-
-        // Reject "heading" that looks like a long sentence (common in table rows / list items)
-        // Keep it conservative to avoid killing real headings.
-        if (afterNumber.length() > 100) return false;
-
-        // Reject footer/header artifacts
-        String lower = afterNumber.toLowerCase();
-        if (lower.matches(".*\\b(trang|page|tai lieu|tài liệu|noi bo|nội bộ|khong phat hanh|không phát hành)\\b.*")) {
-            return false;
-        }
-
-        return true;
-    }
 
     // ==========================================
     // 6. SECTION UTILITY
     // ==========================================
+
+    /**
+     * Tính cấp độ heading từ số section.
+     * "1" → 1, "1.2" → 2, "1.2.3" → 3, null/"General" → 0
+     */
+    public int computeHeadingLevel(String sectionNumber) {
+        if (sectionNumber == null || sectionNumber.isBlank()) return 0;
+        return sectionNumber.split("\\.").length;
+    }
+
     /**
      * Trích xuất số section từ header (ví dụ "10.1 Tên mục" → "10.1").
      * Trả về null nếu header không bắt đầu bằng pattern số.

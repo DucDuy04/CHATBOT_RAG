@@ -300,7 +300,10 @@ public class DocumentService {
                             .pageStart(chunk.startPage())
                             .pageEnd(chunk.endPage())
                             .orderIndex(chunk.orderIndex())
+                            .sectionOrder(chunk.sectionOrder())
                             .tokenCount(chunk.tokenCount())
+                            .headingLevel(chunk.headingLevel())
+                            .childSectionIds(chunk.childSectionIds())
                             .sourceFile(document.getFileName())
                             .build();
 

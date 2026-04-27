@@ -66,7 +66,16 @@ public class EmbeddingService {
                     .put("heading_path_text", safeString(chunk.getHeadingPathText()))
                     .put("page_start", safeInt(chunk.getPageStart()))
                     .put("page_end", safeInt(chunk.getPageEnd()))
-                    .put("order_index", safeInt(chunk.getOrderIndex()));
+                    .put("order_index", safeInt(chunk.getOrderIndex()))
+                    // section_order: thứ tự section trong tài liệu — cho phép sort lại đúng thứ tự gốc khi reconstruct context
+                    .put("section_order", safeInt(chunk.getSectionOrder()))
+                    // heading_level: cấp độ heading (1=top, 2=sub...) — hỗ trợ parent→child expansion trong retrieval
+                    .put("heading_level", safeInt(chunk.getHeadingLevel()));
+
+            // child_section_ids: chỉ có ở parent_section_summary — dùng để auto-expand retrieval
+            if (chunk.getChildSectionIds() != null && !chunk.getChildSectionIds().isBlank()) {
+                metadata.put("child_section_ids", chunk.getChildSectionIds());
+            }
 
             if (chunk.getTableId() != null && !chunk.getTableId().isBlank()) {
                 metadata.put("table_id", chunk.getTableId());
