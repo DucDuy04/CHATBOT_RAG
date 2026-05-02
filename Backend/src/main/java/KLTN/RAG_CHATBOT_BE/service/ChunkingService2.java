@@ -271,7 +271,11 @@ public class ChunkingService2 {
             if (child.content() != null && !child.content().isBlank()) {
                 String preview = child.content().replaceAll("\\[TABLE_START].*?\\[TABLE_END]", "[bảng]")
                         .replaceAll("\\s+", " ").trim();
-                if (preview.length() > 160) preview = preview.substring(0, 160) + "…";
+                if (preview.length() > 300) {
+                    int cutAt = preview.lastIndexOf(' ', 300);
+                    cutAt = (cutAt >= 50) ? cutAt : 300;
+                    preview = preview.substring(0, cutAt) + "…";
+                }
                 sb.append("  ").append(preview).append("\n");
             }
         }
@@ -279,7 +283,11 @@ public class ChunkingService2 {
         // Nội dung trực tiếp của section cha (nếu không rỗng)
         if (parent.content() != null && !parent.content().isBlank()) {
             String parentContent = parent.content().trim();
-            if (parentContent.length() > 600) parentContent = parentContent.substring(0, 600) + "…";
+            if (parentContent.length() > 800) {
+                int cutAt = parentContent.lastIndexOf(' ', 800);
+                cutAt = (cutAt >= 50) ? cutAt : 800;
+                parentContent = parentContent.substring(0, cutAt) + "…";
+            }
             sb.append("\nNội dung trực tiếp:\n").append(parentContent).append("\n");
         }
 

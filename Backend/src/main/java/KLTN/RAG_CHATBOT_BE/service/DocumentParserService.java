@@ -33,7 +33,7 @@ public class DocumentParserService {
         // - Chỉ match dạng "2.1 Tiêu đề" ở đầu dòng.
         // - Việc lọc false-positive (table rows, bullet/list, footer/header...) được xử lý thêm ở isLikelySectionHeader().
         // PDF thường thụt indent cho subheading (vd "    6.4 API Structure ...") nên phải cho phép leading spaces.
-        Pattern.compile("(?m)^\\s{0,16}(\\d+(?:\\.\\d+)*)\\.?[ \\t]+([^\\n]{3,160})$");
+        Pattern.compile("(?m)^\\s{0,16}(\\d+(?:\\.\\d+)*)(?:\\.[ \\t]*|[ \\t]+)([^\\n]{3,160})$");
 
     private static final Pattern SECTION_NUMBER_PATTERN =
         Pattern.compile("^(\\d+(?:\\.\\d+)*)[.\\s]");
@@ -87,43 +87,98 @@ public class DocumentParserService {
                 stripper.setEndPage(pageNum);
                 
                 String pageText = stripper.getText(document);
-                pageBuilder.append(cleanText(pageText)).append("\n");
 
-                // 2. Extract table (Gắn thẳng table vào nội dung của trang hiện tại)
+                // 2. Tabula extraction — chạy TRƯỚC để quyết định có cần EarlyDetect không
+                List<Table> tabulaTables = new java.util.ArrayList<>();
+                boolean tabulaSpreadsheetFound = false;
+                long usableFromSpreadsheet = 0;
                 try {
                     Page page = extractor.extract(pageNum);
-                    List<Table> tables = sea.extract(page);
-                    for (Table table : tables) {
-                        String tableMarkdown = convertTableToMarkdown(table, currentHeader);
-                        if (!isUsableTable(table, tableMarkdown)) {
-                            logRejectedTable(table, tableMarkdown, pageNum);
-                            continue;
-                        }
-                        // Nếu table ở trang hiện tại là continuation (không có header row),
-                        // và table ngay trước đó có cùng header → ghép rows vào table trước để tránh bị split context.
-                        boolean isContinuation = isContinuationTable(table, currentHeader[0]);
-                        boolean canMergeToPrev =
-                                isContinuation
-                                        && pageNum > 1
-                                        && lastTableHeader != null
-                                        && lastTableHeader.equals(currentHeader[0])
-                                        && lastTableHeaderPage == (pageNum - 1)
-                                        && pageContents.containsKey(pageNum - 1);
 
-                        if (canMergeToPrev) {
-                            String prev = pageContents.get(pageNum - 1);
-                            String rowsOnly = removeMarkdownHeader(tableMarkdown, currentHeader[0]);
-                            pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
-                        } else {
-                            pageBuilder.append("\n[TABLE_START]\n");
-                            pageBuilder.append(tableMarkdown);
-                            pageBuilder.append("[TABLE_END]\n");
-                            lastTableHeader = currentHeader[0];
-                            lastTableHeaderPage = pageNum;
+                    // Ưu tiên SpreadsheetExtractionAlgorithm (bảng có đường kẻ/ruling lines)
+                    List<Table> spreadsheetTables = sea.extract(page);
+                    tabulaSpreadsheetFound = !spreadsheetTables.isEmpty();
+                    tabulaTables.addAll(spreadsheetTables);
+
+                    // Đếm số bảng usable từ SpreadsheetAlgo (quick pre-check, không log)
+                    if (tabulaSpreadsheetFound) {
+                        for (Table t : spreadsheetTables) {
+                            String md = convertTableToMarkdown(t, new String[]{""});
+                            if (isUsableTable(t, md)) {
+                                usableFromSpreadsheet++;
+                                break; // Chỉ cần 1 usable là đủ để giữ SpreadsheetAlgo result
+                            }
+                        }
+                        if (usableFromSpreadsheet == 0) {
+                            log.info("[Parse] Page {}: SpreadsheetAlgo tìm {} tables nhưng 0 usable " +
+                                     "(có thể là micro-table hoặc corrupted) — thử BasicAlgo fallback",
+                                     pageNum, tabulaTables.size());
+                        }
+                    }
+
+                    // Fallback sang BasicAlgo khi SpreadsheetAlgo: không tìm được gì, HOẶC tìm được nhưng 0 usable
+                    if (!tabulaSpreadsheetFound || usableFromSpreadsheet == 0) {
+                        technology.tabula.extractors.BasicExtractionAlgorithm bea =
+                                new technology.tabula.extractors.BasicExtractionAlgorithm();
+                        List<Table> basicTables = bea.extract(page);
+                        if (!basicTables.isEmpty()) {
+                            log.debug("[Parse] Page {}: BasicAlgo={} tables (fallback từ SpreadsheetAlgo={} tables, 0 usable)",
+                                    pageNum, basicTables.size(), tabulaTables.size());
+                            tabulaTables.clear();
+                            tabulaTables.addAll(basicTables);
                         }
                     }
                 } catch (Exception e) {
-                    // bỏ qua nếu không có table
+                    log.debug("[Parse] Page {}: table extraction skipped — {}", pageNum, e.getMessage());
+                }
+
+                // 3. Append text — EarlyDetect chỉ khi SpreadsheetAlgo không có usable table
+                String processedText = (usableFromSpreadsheet > 0)
+                        ? pageText
+                        : detectTablesInRawText(pageText, pageNum);
+                pageBuilder.append(cleanText(processedText)).append("\n");
+
+                // 4. Append Tabula tables vào pageBuilder
+                for (Table table : tabulaTables) {
+                    String tableMarkdown = convertTableToMarkdown(table, currentHeader);
+                    if (!isUsableTable(table, tableMarkdown)) {
+                        logRejectedTable(table, tableMarkdown, pageNum);
+                        continue;
+                    }
+                    int acceptedRows = table.getRows() == null ? 0 : table.getRows().size();
+                    int acceptedCols = table.getRows() == null || table.getRows().isEmpty() ? 0
+                            : table.getRows().stream().mapToInt(List::size).max().orElse(0);
+                    String acceptedPreview = tableMarkdown.length() > 200
+                            ? tableMarkdown.substring(0, 200).replace("\n", "↵") + "…"
+                            : tableMarkdown.replace("\n", "↵");
+                    log.info("[Parse] Table ACCEPTED page={}: rows={} cols={} preview='{}'",
+                            pageNum, acceptedRows, acceptedCols, acceptedPreview);
+                    // Nếu table là continuation, ghép rows vào table trang trước để tránh split context
+                    boolean isContinuation = isContinuationTable(table, currentHeader[0]);
+                    boolean canMergeToPrev =
+                            isContinuation
+                                    && pageNum > 1
+                                    && lastTableHeader != null
+                                    && lastTableHeader.equals(currentHeader[0])
+                                    && lastTableHeaderPage == (pageNum - 1)
+                                    && pageContents.containsKey(pageNum - 1);
+
+                    if (canMergeToPrev) {
+                        String prev = pageContents.get(pageNum - 1);
+                        String rowsOnly = removeMarkdownHeader(tableMarkdown, currentHeader[0]);
+                        pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
+                    } else {
+                        pageBuilder.append("\n[TABLE_START]\n");
+                        pageBuilder.append(tableMarkdown);
+                        pageBuilder.append("[TABLE_END]\n");
+                        lastTableHeader = currentHeader[0];
+                        lastTableHeaderPage = pageNum;
+                    }
+                }
+
+                if (!tabulaTables.isEmpty()) {
+                    log.debug("[Parse] Page {}: {} table(s) extracted (spreadsheet={})",
+                            pageNum, tabulaTables.size(), tabulaSpreadsheetFound);
                 }
 
                 // Lưu nội dung hoàn chỉnh của trang (gồm cả Text + Table) vào Map
@@ -620,23 +675,183 @@ public class DocumentParserService {
         return beforeEnd + "\n" + rowsMarkdown + "\n" + afterEnd;
     }
 
+    private static final java.util.regex.Pattern EARLY_HEADING_PATTERN =
+            java.util.regex.Pattern.compile("^\\d+(\\.\\d+)*\\.?\\s+.{3,}$");
+
+    /**
+     * Phát hiện pseudo-table trong raw text (trước cleanText) và convert sang Markdown.
+     * Chỉ chạy khi Tabula SpreadsheetAlgo không tìm được usable table.
+     *
+     * Tiêu chí nhận biết pseudo-table line:
+     *  - 3+ cột khi split bởi \s{2,}
+     *  - Không phải heading số (^\d+(\.\d+)*\.?\s+.{3,})
+     *  - Không phải bullet (•, -, *)
+     *
+     * Block hợp lệ: >= 3 dòng liên tiếp, >= 70% dòng có số cột trong [headerCols±1].
+     */
+    private String detectTablesInRawText(String rawText, int pageNum) {
+        if (rawText == null || rawText.isBlank()) return rawText == null ? "" : rawText;
+
+        String[] lines = rawText.split("\n", -1);
+        int n = lines.length;
+        boolean[] isPseudo = new boolean[n];
+
+        for (int i = 0; i < n; i++) {
+            String trimmed = lines[i].trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*")) continue;
+            if (trimmed.startsWith("[TABLE_START]") || trimmed.startsWith("[TABLE_END]")) continue;
+            if (EARLY_HEADING_PATTERN.matcher(trimmed).matches()) continue;
+            if (trimmed.split("\\s{2,}").length >= 3) {
+                isPseudo[i] = true;
+            }
+        }
+
+        // Gom block liên tiếp >= 3 dòng
+        java.util.List<int[]> blocks = new java.util.ArrayList<>();
+        int i = 0;
+        while (i < n) {
+            if (isPseudo[i]) {
+                int start = i;
+                while (i < n && isPseudo[i]) i++;
+                if (i - start >= 3) blocks.add(new int[]{start, i - 1});
+            } else {
+                i++;
+            }
+        }
+        if (blocks.isEmpty()) return rawText;
+
+        // Lọc theo column consistency >= 70%
+        java.util.List<int[]> validBlocks = new java.util.ArrayList<>();
+        for (int[] block : blocks) {
+            int headerCols = lines[block[0]].trim().split("\\s{2,}").length;
+            int blockLen = block[1] - block[0] + 1;
+            int consistent = 0;
+            for (int j = block[0]; j <= block[1]; j++) {
+                int c = lines[j].trim().split("\\s{2,}").length;
+                if (c >= headerCols - 1 && c <= headerCols + 1) consistent++;
+            }
+            if ((double) consistent / blockLen >= 0.7) validBlocks.add(block);
+        }
+        if (validBlocks.isEmpty()) return rawText;
+
+        log.info("[Parse] Page {}: EarlyDetect tìm {} table block(s) trong raw text",
+                pageNum, validBlocks.size());
+
+        // Build markdown cho từng block và đánh dấu dòng thuộc block
+        boolean[] inBlock = new boolean[n];
+        java.util.Map<Integer, String> blockMarkdownMap = new java.util.LinkedHashMap<>();
+        int tableIdx = 0;
+        for (int[] block : validBlocks) {
+            int headerCols = lines[block[0]].trim().split("\\s{2,}").length;
+            String[] headerParts = lines[block[0]].trim().split("\\s{2,}", headerCols);
+            int dataRows = block[1] - block[0];
+
+            StringBuilder md = new StringBuilder();
+            md.append("|");
+            for (String col : headerParts) md.append(" ").append(col.trim()).append(" |");
+            md.append("\n|");
+            for (int k = 0; k < headerCols; k++) md.append(" --- |");
+            md.append("\n");
+            for (int j = block[0] + 1; j <= block[1]; j++) {
+                String[] cells = lines[j].trim().split("\\s{2,}", headerCols);
+                md.append("|");
+                for (int k = 0; k < headerCols; k++) {
+                    String val = k < cells.length ? cells[k].trim() : "";
+                    md.append(" ").append(val).append(" |");
+                }
+                md.append("\n");
+            }
+
+            log.info("[Parse] Page {}: EarlyDetect table block {} — {} rows, {} cols",
+                    pageNum, tableIdx, dataRows, headerCols);
+
+            blockMarkdownMap.put(block[0], "\n[TABLE_START]\n" + md + "[TABLE_END]\n");
+            for (int j = block[0]; j <= block[1]; j++) inBlock[j] = true;
+            tableIdx++;
+        }
+
+        // Rebuild text — thay block gốc bằng markdown
+        StringBuilder result = new StringBuilder();
+        for (int j = 0; j < n; j++) {
+            if (inBlock[j]) {
+                if (blockMarkdownMap.containsKey(j)) result.append(blockMarkdownMap.get(j));
+            } else {
+                result.append(lines[j]).append("\n");
+            }
+        }
+        return result.toString();
+    }
+
+    private static final java.util.regex.Pattern PAGE_HEADER_FOOTER_PATTERN =
+            java.util.regex.Pattern.compile(
+                    "(?i)^\\s*(?:" +
+                    "trang\\s+\\d+\\s*/\\s*\\d+" +        // "Trang X / Y" hoặc "Trang X/Y"
+                    "|page\\s+\\d+\\s*(?:of|/)\\s*\\d+" + // "Page X of Y" hoặc "Page X/Y"
+                    "|trang\\s+\\d+.*\\|.*"                // footer dạng "Trang N | ..." (toàn dòng)
+                    + ")\\s*$"
+            );
+
+    private static final java.util.regex.Pattern TABLE_BLOCK_PATTERN =
+            java.util.regex.Pattern.compile("\\[TABLE_START].*?\\[TABLE_END]",
+                    java.util.regex.Pattern.DOTALL);
+
     private String cleanText(String text) {
         if (text == null) return "";
-        return text
+
+        // Tách [TABLE_START]...[TABLE_END] ra ngoài trước khi normalize để tránh bị corrupt
+        java.util.List<String> tableBlocks = new java.util.ArrayList<>();
+        java.util.regex.Matcher tblMatcher = TABLE_BLOCK_PATTERN.matcher(text);
+        StringBuffer tblBuf = new StringBuffer();
+        while (tblMatcher.find()) {
+            tableBlocks.add(tblMatcher.group());
+            // Bọc placeholder bằng \n\n để newline xung quanh không bị gộp bởi regex sau
+            tblMatcher.appendReplacement(tblBuf,
+                    "\n\n[__TBLP_" + (tableBlocks.size() - 1) + "__]\n\n");
+        }
+        tblMatcher.appendTail(tblBuf);
+        String working = tblBuf.toString();
+
+        String normalized = working
                 .replace('\u00A0', ' ').replace('\u2007', ' ').replace('\u202F', ' ')
                 .replace("\u200B", "").replace("\u200C", "").replace("\u200D", "").replace("\uFEFF", "")
                 .replaceAll("\\r\\n", "\n").replaceAll("\\r", "\n")
                 .replaceAll("[ \\t]+", " ")
+                .replaceAll("\\n{3,}", "\n\n");
+
+        // Lọc các dòng header/footer phân trang (giữ lại dòng placeholder)
+        String[] lines = normalized.split("\n", -1);
+        int removedCount = 0;
+        java.util.List<String> filtered = new java.util.ArrayList<>(lines.length);
+        for (String line : lines) {
+            if (line.contains("[__TBLP_")) {
+                filtered.add(line);
+            } else if (PAGE_HEADER_FOOTER_PATTERN.matcher(line).matches()) {
+                removedCount++;
+            } else {
+                filtered.add(line);
+            }
+        }
+        if (removedCount > 0) {
+            log.debug("[cleanText] Đã xóa {} dòng header/footer phân trang", removedCount);
+        }
+
+        String afterNormalize = String.join("\n", filtered)
                 .replaceAll("\\n{3,}", "\n\n")
-                // Giữ nguyên xuống dòng SAU heading để tránh dính heading với paragraph (sẽ làm heading quá dài và bị reject).
-                // Tăng 1 newline sau dòng heading (khi heading line kết thúc bằng '\n' và sau đó là chữ thường).
+                // Giữ nguyên xuống dòng SAU heading để tránh dính heading với paragraph.
                 .replaceAll(
                         "(?m)^(\\s{0,16}\\d+(?:\\.\\d+)*\\.?\\s+[^\\n]{3,160})\\n(?!\\n)",
                         "$1\n\n"
-                )
-                // Chỉ gộp newline thành space khi ký tự tiếp theo KHÔNG phải:
-                // - \n (dòng trắng)  - \d (đầu heading số như "10.1")  - [ (marker TABLE_START)
-                .replaceAll("(?<!\\n)\\n(?![\\n\\d\\[])", " ")
+                );
+
+        // Restore table blocks TRƯỚC bước newline-to-space để bảo toàn cấu trúc markdown
+        for (int i = 0; i < tableBlocks.size(); i++) {
+            afterNormalize = afterNormalize.replace("[__TBLP_" + i + "__]", tableBlocks.get(i));
+        }
+
+        // Gộp newline thành space — loại trừ thêm '|' để giữ nguyên row boundary của markdown table
+        return afterNormalize
+                .replaceAll("(?<!\\n)\\n(?![\\n\\d\\[|])", " ")
                 .replaceAll("\\.{2,}", ".")
                 .trim();
     }

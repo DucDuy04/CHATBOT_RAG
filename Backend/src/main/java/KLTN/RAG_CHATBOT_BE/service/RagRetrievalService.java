@@ -49,10 +49,22 @@ public class RagRetrievalService {
     private static final Pattern HEADING_PATTERN =
             Pattern.compile("(?<!\\d)(\\d+(?:\\.\\d+)*)\\.?\\s+([\\p{L}][\\p{L}\\p{N}\\s/&+\\-()]{3,120})");
 
+    /**
+     * Ngưỡng rerank score tối thiểu để kích hoạt "Rerank-Guided Scope Lock".
+     *
+     * Khi heading match ban đầu thất bại nhưng reranker trả về top chunk với score ≥ ngưỡng này,
+     * hệ thống sẽ tự động lock scope về section đó và re-fetch từ DB.
+     *
+     * Chọn 0.5 vì Cohere cross-encoder score ≥ 0.5 thể hiện độ tin cậy cao
+     * (ví dụ sec_2=0.8658 >> sec_1=0.0497 → sec_2 rõ ràng là đúng).
+     */
+    private static final double RERANK_LOCK_THRESHOLD = 0.5;
+
     private final EmbeddingService embeddingService;
     private final DocumentChunkRepository documentChunkRepository;
     private final DocumentSectionRepository documentSectionRepository;
     private final QueryAnalyzerService queryAnalyzerService;
+    private final RerankService rerankService;
 
     // ================================================================
     // RESULT WRAPPER
@@ -297,11 +309,73 @@ public class RagRetrievalService {
             }
         }
 
-        // ── STEP 5: Dedup, sort, apply budget ─────────────────────────
+        // ── STEP 5: Rerank — chấm điểm lại từng cặp (query, chunk) bằng Cross-Encoder ──
+        // topN = FINAL_LIMIT * 1.3 (buffer nhỏ) để reranker thực sự lọc bớt,
+        // không phải giữ nguyên toàn bộ pool như cũ (topN = FINAL_LIMIT * 2).
         boolean isLockedScope = !lockedSectionIds.isEmpty();
+        if (!isLockedScope && rerankService.isEnabled() && !expanded.isEmpty()) {
+            int baseLimit = isExpandedQuery ? FINAL_LIMIT_EXPANDED : FINAL_LIMIT;
+            int rerankTopN = (int) Math.ceil(baseLimit * 1.3);
+            RerankService.RerankResult rerankResult = rerankService.rerank(question, expanded, rerankTopN);
+            expanded = rerankResult.chunks();
+            log.info("[RAG] Sau rerank: {} chunks (maxScore={}, minScore={})",
+                    expanded.size(),
+                    String.format("%.4f", rerankResult.maxScore()),
+                    String.format("%.4f", rerankResult.minScore()));
+
+            if (rerankResult.maxScore() < RerankService.LOW_CONFIDENCE_THRESHOLD) {
+                log.warn("[RAG] LOW CONFIDENCE: max rerank score={} < threshold={} cho query='{}'. " +
+                        "Có thể query có typo, quá mơ hồ, hoặc tài liệu không chứa thông tin này.",
+                        String.format("%.4f", rerankResult.maxScore()),
+                        RerankService.LOW_CONFIDENCE_THRESHOLD, question);
+            }
+
+            // ── STEP 5.5: Rerank-Guided Scope Lock ────────────────────────
+            // Khi heading match ban đầu thất bại (isLockedScope=false) NHƯNG
+            // reranker tìm thấy top chunk với score rất cao (≥ RERANK_LOCK_THRESHOLD),
+            // đây là tín hiệu rõ ràng về section đúng → lock scope về section đó
+            // và re-fetch toàn bộ chunks từ section tree để context sạch hơn.
+            //
+            // Ví dụ (từ log):
+            //   query: "mục tiêu của hệ thống" → heading match: FAIL
+            //   rerank top: sec_2=0.8658, sec_1=0.0497, sec_7.2=0.0058
+            //   → lock sec_2 → re-fetch [sec_2, sec_2.1, sec_2.2] = 3 chunks
+            //   INSTEAD OF 20 chunks từ 33 sections trên toàn tài liệu.
+            if (rerankResult.maxScore() >= RERANK_LOCK_THRESHOLD && !rerankResult.chunks().isEmpty()) {
+                DocumentChunk topChunk = rerankResult.chunks().get(0);
+                String topSectionId = topChunk.getSectionId();
+
+                if (topSectionId != null && !topSectionId.isBlank()) {
+                    // Leo lên 1 cấp nếu top chunk là leaf (sec_2.1 → sec_2),
+                    // giữ nguyên nếu đã là root (sec_2 → sec_2).
+                    String lockRootId = findReasonableLockRoot(topSectionId, allSections);
+                    Set<String> rerankScope = expandDescendantSectionIds(lockRootId, allSections);
+
+                    List<DocumentChunk> rerankScopeChunks = documentChunkRepository
+                            .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                                    widgetId, rerankScope);
+
+                    if (!rerankScopeChunks.isEmpty()) {
+                        log.info("[RAG] Rerank-Guided Lock ACTIVATED: score={} topSection='{}' " +
+                                "→ lockRoot='{}' scope={} ({} chunks) — replaced {} chunk pool",
+                                String.format("%.4f", rerankResult.maxScore()),
+                                topSectionId, lockRootId, rerankScope,
+                                rerankScopeChunks.size(), expanded.size());
+                        expanded = rerankScopeChunks;
+                        isLockedScope = true;
+                        lockedSectionLabel = "rerank-lock: '" + lockRootId + "'";
+                    } else {
+                        log.warn("[RAG] Rerank-Guided Lock: lockRoot='{}' returned 0 chunks — " +
+                                "keeping reranked pool as-is.", lockRootId);
+                    }
+                }
+            }
+        }
+
+        // ── STEP 6: Dedup, sort, apply budget ─────────────────────────
         List<RetrievedContext> result = dedupeSortBudget(expanded, queryType, isLockedScope);
 
-        // ── STEP 6: Final context log ──────────────────────────────────
+        // ── STEP 7: Final context log ──────────────────────────────────
         log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
                 result.size(), queryType, lockedSectionKey != null ? lockedSectionKey : "none");
         if (!result.isEmpty()) {
@@ -786,6 +860,41 @@ public class RagRetrievalService {
     // ================================================================
     // UTILITIES
     // ================================================================
+
+    /**
+     * Tìm sectionId root hợp lý để lock scope sau khi reranker xác định được top section.
+     *
+     * Chiến lược "leo 1 cấp":
+     *   - "sec_2"   (level 1, root) → trả về "sec_2" (giữ nguyên)
+     *   - "sec_2.1" (level 2, leaf) → kiểm tra "sec_2" có tồn tại không → trả về "sec_2"
+     *   - "sec_2.1.3" (level 3)     → leo lên "sec_2.1" nếu tồn tại
+     *
+     * Không leo quá 1 cấp để tránh bring in quá nhiều context khi root section lớn.
+     * Ví dụ: sec_6.3 → sec_6 (không leo vì sec_6 có 5 children sec_6.1..6.5 = quá nhiều).
+     */
+    private String findReasonableLockRoot(String sectionId, List<DocumentSection> allSections) {
+        if (sectionId == null || !sectionId.startsWith("sec_")) return sectionId;
+
+        String number = sectionId.substring("sec_".length());
+        // Nếu đã là level 1 (không có dấu chấm) → giữ nguyên
+        if (!number.contains(".")) return sectionId;
+
+        // Leo lên 1 cấp: "sec_2.1" → "sec_2", "sec_2.1.3" → "sec_2.1"
+        int lastDot = number.lastIndexOf('.');
+        String parentNumber = number.substring(0, lastDot);
+        String parentSectionId = "sec_" + parentNumber;
+
+        boolean parentExists = allSections.stream()
+                .anyMatch(s -> parentSectionId.equals(s.getSectionKey()));
+
+        if (parentExists) {
+            log.debug("[RAG] findReasonableLockRoot: '{}' → parent '{}' (exists)", sectionId, parentSectionId);
+            return parentSectionId;
+        }
+
+        log.debug("[RAG] findReasonableLockRoot: '{}' → parent '{}' NOT found, using original", sectionId, parentSectionId);
+        return sectionId;
+    }
 
     private boolean isExpanded(QueryAnalyzerService.QueryType queryType) {
         return queryType == QueryAnalyzerService.QueryType.LIST_ALL

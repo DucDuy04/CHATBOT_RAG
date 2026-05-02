@@ -29,6 +29,12 @@ nomic:
   api-key: ${NOMIC_API_KEY}
   embedding-model: nomic-embed-text-v1.5
 
+cohere:
+  api-key: ${COHERE_API_KEY:}
+  rerank:
+    enabled: ${COHERE_RERANK_ENABLED:false}
+    model: rerank-multilingual-v3.0
+
 app:
   upload-dir: ./uploads
 
@@ -40,3 +46,4 @@ logging:
     # Bật debug để thấy log parse/chunk trong docker logs
     KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
     KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG

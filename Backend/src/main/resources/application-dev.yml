@@ -46,12 +46,24 @@ nomic:
   api-key: ${NOMIC_API_KEY}
   embedding-model: nomic-embed-text-v1.5
 
+# Cohere Rerank — chấm điểm lại top-K candidates trước khi đưa vào LLM
+# Đăng ký miễn phí tại https://cohere.com (1000 req/tháng free tier)
+cohere:
+  api-key: ${COHERE_API_KEY:}
+  rerank:
+    enabled: ${COHERE_RERANK_ENABLED:false}
+    model: rerank-multilingual-v3.0
+
 # Thư mục lưu file upload
 app:
   upload-dir: ./uploads
 
 server:
   port: 8080
+
+logging:
+  level:
+    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG
 
 
 

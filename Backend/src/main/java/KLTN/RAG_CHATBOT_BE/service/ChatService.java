@@ -85,6 +85,21 @@ public class ChatService {
 
         List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
+        boolean hasTableLikeChunk = contexts.stream()
+                .anyMatch(ctx -> "text_table_like".equals(ctx.getChunkType()));
+
+        String queryTypeHint;
+        if (hasTableLikeChunk) {
+            if (queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP) {
+                queryTypeHint = "TABLE_LOOKUP";
+            } else {
+                queryTypeHint = "TABLE_LIKE";
+                log.info("[Chat] text_table_like chunk detected → overriding queryTypeHint to TABLE_LIKE");
+            }
+        } else {
+            queryTypeHint = queryType.name();
+        }
+
         String answer;
 
         if (contexts.isEmpty()) {
@@ -97,7 +112,7 @@ public class ChatService {
                     question,
                     contexts,
                     chatHistory,
-                    queryType.name(),
+                    queryTypeHint,
                     lockedScopeLabel
             );
 
@@ -142,6 +157,21 @@ public class ChatService {
 
                 List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
+                boolean streamHasTableLikeChunk = contexts.stream()
+                        .anyMatch(ctx -> "text_table_like".equals(ctx.getChunkType()));
+
+                String streamQueryTypeHint;
+                if (streamHasTableLikeChunk) {
+                    if (streamQueryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP) {
+                        streamQueryTypeHint = "TABLE_LOOKUP";
+                    } else {
+                        streamQueryTypeHint = "TABLE_LIKE";
+                        log.info("[Chat] text_table_like chunk detected → overriding queryTypeHint to TABLE_LIKE");
+                    }
+                } else {
+                    streamQueryTypeHint = streamQueryType.name();
+                }
+
                 if (contexts.isEmpty()) {
                     String noContext = "Tôi không tìm thấy thông tin này trong tài liệu.";
 
@@ -170,7 +200,7 @@ public class ChatService {
                         question,
                         contexts,
                         chatHistory,
-                        streamQueryType.name(),
+                        streamQueryTypeHint,
                         streamLockedScope
                 );
 
