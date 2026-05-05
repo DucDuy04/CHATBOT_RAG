@@ -206,18 +206,18 @@ export default function WidgetChatPage() {
                 remarkPlugins={[remarkGfm]}
                 components={{
                   // Tinh chỉnh cho Widget: Dùng bảng text-xs, margin/padding nhỏ hơn
-                  table: ({ node, ...props }) => (
+                  table: ({ ...props }) => (
                     <div className="my-2 overflow-x-auto custom-scrollbar">
                       <table className="min-w-full text-xs border border-collapse border-gray-300" {...props} />
                     </div>
                   ),
-                  th: ({ node, ...props }) => (
+                  th: ({ ...props }) => (
                     <th className="border border-gray-300 bg-gray-100 px-2 py-1.5 text-left font-semibold text-gray-700" {...props} />
                   ),
-                  td: ({ node, ...props }) => (
+                  td: ({ ...props }) => (
                     <td className="border border-gray-300 px-2 py-1.5 text-gray-600" {...props} />
                   ),
-                  p: ({ node, ...props }) => (
+                  p: ({ ...props }) => (
                     <p className="mb-1.5 last:mb-0 break-words whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }} {...props} />
                   )
                 }}

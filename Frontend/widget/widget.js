@@ -3,8 +3,6 @@ import "./widget.css";
 (function () {
   // Lấy config từ website nhúng
   const config = window.RagChatbotConfig || {};
-  const apiUrl = config.apiUrl || "http://localhost:8080";
-  const title  = config.title  || "Trợ lý AI";
   const widgetKey = config.widgetKey || config.apiKey || "";
 
   // Tạo nút bubble

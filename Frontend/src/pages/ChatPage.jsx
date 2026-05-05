@@ -259,18 +259,18 @@ export default function ChatPage() {
               remarkPlugins={[remarkGfm]}
               components={{
                 // Customize lại thẻ table để hiển thị đẹp bằng Tailwind
-                table: ({ node, ...props }) => (
+                table: ({ ...props }) => (
                   <div className="my-3 overflow-x-auto">
                     <table className="min-w-full text-sm border border-collapse border-gray-300" {...props} />
                   </div>
                 ),
-                th: ({ node, ...props }) => (
+                th: ({ ...props }) => (
                   <th className="px-3 py-2 font-semibold text-left text-gray-700 bg-gray-100 border border-gray-300" {...props} />
                 ),
-                td: ({ node, ...props }) => (
+                td: ({ ...props }) => (
                   <td className="px-3 py-2 text-gray-600 border border-gray-300" {...props} />
                 ),
-                p: ({ node, ...props }) => (
+                p: ({ ...props }) => (
                   <p className="mb-2 break-words whitespace-pre-wrap last:mb-0" style={{ overflowWrap: "anywhere" }} {...props} />
                 )
               }}
