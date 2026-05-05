@@ -1,0 +1,80 @@
+---
+description: Apply when modifying entities, repositories, SQL/schema, MySQL queries, Qdrant config, vector collection, embedding storage, retrieval filters, or data migration.
+globs: schema*.sql,**/*schema*.sql,**/*migration*.sql,Backend/src/main/java/**/domain/**/*,Backend/src/main/java/**/repository/**/*,Backend/src/main/java/**/config/QdrantConfig.java,Backend/src/main/java/**/service/EmbeddingService.java,Backend/src/main/java/**/service/RagRetrievalService.java,Backend/src/main/resources/application*.yml
+alwaysApply: false
+---
+
+# 40 - Database / Qdrant / Vector Rule
+
+Áp dụng khi task liên quan MySQL schema/entity/repository/query hoặc Qdrant/vector/embedding/retrieval.
+
+## File nên đọc
+
+MySQL/DB:
+
+- entity trong `Backend/src/main/java/**/domain/**`
+- repository trong `Backend/src/main/java/**/repository/**`
+- service gọi repository liên quan
+- `schema_update.sql`
+- backup/migration SQL nếu task liên quan dữ liệu
+- application config datasource/JPA
+
+Qdrant/vector:
+
+- `QdrantConfig.java`
+- `EmbeddingService.java`
+- `RagRetrievalService.java`
+- ingestion service gọi upsert vector
+- config collection/vector-size
+- retrieval filter theo document/widget/session nếu có
+
+## Nguyên tắc DB/vector
+
+- Không đổi schema nếu task không yêu cầu.
+- Không đổi entity relationship nếu chưa phân tích query/data cũ.
+- Không dùng `ddl-auto=update` như giải pháp migration production nếu task yêu cầu an toàn dữ liệu.
+- Không xóa/recreate collection Qdrant nếu task không yêu cầu.
+- Không đổi embedding model/vector size nếu chưa có kế hoạch re-embed dữ liệu cũ.
+- Không tăng top-k lớn để “fix chất lượng” nếu không có căn cứ.
+- Không lưu text/payload quá lớn nếu không cần.
+- Không tạo query full scan nếu có thể giới hạn bằng index/where rõ ràng.
+
+## Checklist MySQL
+
+Trong phạm vi task, kiểm tra:
+
+- query có filter đúng tenant/widget/document/session không
+- có nguy cơ N+1 không
+- có cần index không
+- sort/page/limit có hợp lý không
+- dữ liệu null/blank/invalid UUID có được guard không
+- thay đổi có backward compatible với dữ liệu cũ không
+
+## Checklist Qdrant/vector
+
+Trong phạm vi task, kiểm tra:
+
+- collection name đúng không
+- vector size khớp embedding model không
+- upsert/delete có id ổn định không
+- payload có đủ metadata để retrieval/filter không
+- filter widget/document có đúng không
+- top-k/context có phù hợp môi trường yếu không
+- external embedding provider fail thì status/error xử lý thế nào
+
+## Kiểm tra
+
+Tùy scope:
+
+```bash
+cd Backend && ./mvnw -DskipTests compile
+cd Backend && ./mvnw test
+```
+
+Nếu sửa SQL/config deploy:
+
+```bash
+docker compose config
+```
+
+Nếu không chạy DB/Qdrant thật, phải mô tả expected runtime verification trong report.

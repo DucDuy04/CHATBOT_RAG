@@ -1,0 +1,165 @@
+---
+description: Always apply after every code/config/doc change. Enforces detailed markdown report, verification honesty, and final chat summary format.
+globs:
+alwaysApply: true
+---
+
+# 90 - Report / Verification Rule
+
+Sau mỗi task sửa code/config/docs trong `CHATBOT_RAG`, bắt buộc tạo report markdown mới trong:
+
+```text
+docs/<TEN_REPORT_FILE>.md
+```
+
+Nếu thư mục `docs/` chưa tồn tại thì tạo mới.
+
+## Report bắt buộc có các mục
+
+Report phải đủ chi tiết để reviewer chỉ đọc file đó là audit được gần hết thay đổi.
+
+Bắt buộc có:
+
+1. Mức độ hiểu task
+2. Tóm tắt yêu cầu
+3. Hiện trạng trước khi sửa
+4. Nguyên nhân gốc xác nhận từ source
+5. Chiến lược sửa đã chọn
+6. Danh sách file đã đọc
+7. Danh sách file đã sửa
+8. Diff thay đổi của từng file
+9. Ảnh hưởng sau sửa
+10. Edge cases đã xem xét
+11. Kết quả kiểm tra
+12. Rủi ro còn lại
+13. Đề xuất tiếp theo
+
+## Yêu cầu chi tiết từng mục
+
+### 1. Mức độ hiểu task
+
+Phải ghi:
+
+- hiểu task bao nhiêu %
+- phần nào chắc chắn
+- phần nào còn giả định
+- thiếu dữ kiện nào không
+
+### 6. Danh sách file đã đọc
+
+Với mỗi file đã đọc, ghi:
+
+- path
+- đọc để làm gì
+- kết luận chính từ file đó
+
+### 7. Danh sách file đã sửa
+
+Với mỗi file đã sửa, ghi:
+
+- path
+- sửa để làm gì
+- ảnh hưởng lớp nào: api / service / db / qdrant / config / deploy / ui / widget / docs / test
+
+### 8. Diff thay đổi của từng file
+
+Với mỗi file đã sửa, ghi đủ:
+
+- file path
+- hiện trạng cũ liên quan bug
+- đã sửa gì
+- vì sao sửa như vậy
+- ảnh hưởng sau sửa
+- block diff đủ rõ
+
+Format:
+
+```diff
+<diff cụ thể ở đây>
+```
+
+Không ghi chung chung kiểu:
+
+- fixed bug
+- updated config
+- adjusted logic
+
+Nếu file docs cũng sửa thì docs cũng phải có diff riêng.
+Nếu file không sửa thì không đưa vào mục diff.
+
+### 9. Ảnh hưởng sau sửa
+
+Phải ghi rõ:
+
+- behavior nào thay đổi
+- behavior nào giữ nguyên
+- điều gì chỉ bật khi đủ điều kiện
+- fallback nào vẫn giữ
+- ảnh hưởng memory/cpu/disk
+- ảnh hưởng latency/token/API cost nếu có
+- ảnh hưởng dữ liệu MySQL/Qdrant cũ nếu có
+
+### 10. Edge cases đã xem xét
+
+Chỉ nêu edge case liên quan scope, ví dụ:
+
+- thiếu env
+- request null/blank
+- invalid UUID
+- file rỗng/file lớn
+- PDF parse fail
+- embedding provider fail
+- Qdrant unavailable/vector-size mismatch
+- DB connection fail
+- widget thiếu API key
+- CORS fail
+- SSE bị ngắt
+- user spam thao tác đồng thời
+
+### 11. Kết quả kiểm tra
+
+Ghi trung thực:
+
+- command nào đã chạy
+- PASS/FAIL/NOT RUN
+- output chính
+- nếu fail thì fail vì gì
+- nếu không chạy được thì vì sao
+- expected runtime verification nếu không thể verify production thật
+
+Bảng gợi ý:
+
+| Command | Kết quả | Ghi chú |
+|---|---|---|
+| `cd Backend && ./mvnw -DskipTests compile` | PASS/FAIL/NOT RUN | ... |
+| `cd Backend && ./mvnw test` | PASS/FAIL/NOT RUN | ... |
+| `cd Frontend && npm run lint` | PASS/FAIL/NOT RUN | ... |
+| `cd Frontend && npm run build` | PASS/FAIL/NOT RUN | ... |
+| `cd Frontend && npm run build:widget` | PASS/FAIL/NOT RUN | ... |
+| `docker compose config` | PASS/FAIL/NOT RUN | ... |
+
+## Không được claim sai
+
+- Không claim production verified nếu chưa chạy production thật.
+- Không claim test pass nếu chưa chạy.
+- Không giấu command fail.
+- Không bỏ qua lỗi build/test liên quan task.
+
+## Format chat cuối cùng
+
+Sau khi hoàn thành, message cuối trong Cursor chỉ trả lời:
+
+- Hiểu task: `<xx>%`
+- Root cause: `<nguyên nhân gốc>`
+- Đã sửa file:
+  - `<file_1>`
+  - `<file_2>`
+- Đã tạo report: `docs/<TEN_REPORT_FILE>.md`
+- Kết quả kiểm tra:
+  - Backend compile: `PASS/FAIL/NOT RUN`
+  - Backend test: `PASS/FAIL/NOT RUN`
+  - Frontend lint: `PASS/FAIL/NOT RUN`
+  - Frontend build: `PASS/FAIL/NOT RUN`
+  - Widget build: `PASS/FAIL/NOT RUN`
+  - Docker compose config: `PASS/FAIL/NOT RUN`
+- Rủi ro còn lại: `<rủi ro hoặc không có rủi ro lớn trong scope đã sửa>`
