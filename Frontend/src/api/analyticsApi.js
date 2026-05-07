@@ -66,7 +66,20 @@ export const analyticsApi = {
       await mockDelay(400);
       let filtered = [...analyticsSessions];
       if (chatbotId) filtered = filtered.filter((s) => s.chatbotId === chatbotId);
-      if (rating)    filtered = filtered.filter((s) => s.rating === Number(rating));
+      if (rating) {
+        if (rating === "positive") {
+          filtered = filtered.filter((s) => Number(s.rating) >= 4);
+        } else if (rating === "negative") {
+          filtered = filtered.filter((s) => Number(s.rating) <= 2);
+        } else if (rating === "unrated") {
+          filtered = filtered.filter((s) => s.rating == null);
+        } else {
+          const asNumber = Number(rating);
+          if (!Number.isNaN(asNumber)) {
+            filtered = filtered.filter((s) => s.rating === asNumber);
+          }
+        }
+      }
       void from; void to;
       return createPaginatedResponse(filtered, page, size);
     }

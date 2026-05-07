@@ -68,3 +68,52 @@ export const sessionMessages = {
     { id: "am-004", role: "assistant", content: "Đã ghi nhận. Bạn sẽ nhận email xác nhận đổi hàng trong vòng 2 tiếng.",                         rating: 5, sources: [] },
   ],
 };
+
+// Mock-only feedback data for analytics UI (no GET API contract yet)
+export const feedbackMockData = [
+  {
+    id: "fb-001",
+    messageId: "am-002",
+    rating: 1,
+    comment: "Answer is clear and helpful.",
+    chatbotName: "Customer Support Bot",
+    sessionId: "as-001",
+    createdAt: "2026-05-05T08:35:00Z",
+  },
+  {
+    id: "fb-002",
+    messageId: "am-004",
+    rating: 1,
+    comment: "Good follow-up and fast response.",
+    chatbotName: "Customer Support Bot",
+    sessionId: "as-001",
+    createdAt: "2026-05-05T08:36:00Z",
+  },
+  {
+    id: "fb-003",
+    messageId: "msg-003",
+    rating: -1,
+    comment: "The answer did not include pricing details.",
+    chatbotName: "Sales Assistant",
+    sessionId: "as-005",
+    createdAt: "2026-05-04T14:20:00Z",
+  },
+  {
+    id: "fb-004",
+    messageId: "msg-004",
+    rating: -1,
+    comment: "Response referenced outdated policy information.",
+    chatbotName: "HR Helpdesk",
+    sessionId: "as-006",
+    createdAt: "2026-05-04T13:30:00Z",
+  },
+  {
+    id: "fb-005",
+    messageId: "msg-005",
+    rating: 1,
+    comment: "Exactly what I needed.",
+    chatbotName: "FAQ Assistant",
+    sessionId: "as-008",
+    createdAt: "2026-05-03T10:10:00Z",
+  },
+];
