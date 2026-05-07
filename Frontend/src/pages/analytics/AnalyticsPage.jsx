@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { analyticsApi } from "../../api/analyticsApi";
 import { chatbotsApi } from "../../api/chatbotsApi";
@@ -51,7 +51,12 @@ function escapeCsvField(value) {
 export default function AnalyticsPage() {
   const navigate = useNavigate();
   const toast = useToast();
-  const { setPageTitle, setRightSlot, clearRightSlot } = useLayout();
+  const { setRightSlot, clearRightSlot } = useLayout();
+  const toastRef = useRef(toast);
+
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
 
   const initialRange = useMemo(() => getPresetRange("7d"), []);
   const [activeTab, setActiveTab] = useState("usage");
@@ -121,13 +126,13 @@ export default function AnalyticsPage() {
     }
 
     if (failCount > 0) {
-      toast.error(`${failCount} analytics widget(s) failed to load.`);
+      toastRef.current.error(`${failCount} analytics widget(s) failed to load.`);
     }
-  }, [chatbotId, from, invalidRange, to, toast]);
+  }, [chatbotId, from, invalidRange, to]);
 
   const handleExportCsv = useCallback(async () => {
     if (!hasLoadedData) {
-      toast.warning("No analytics data to export yet.");
+      toastRef.current.warning("No analytics data to export yet.");
       return;
     }
 
@@ -173,20 +178,16 @@ export default function AnalyticsPage() {
       document.body.removeChild(anchor);
       URL.revokeObjectURL(url);
 
-      toast.success("CSV exported successfully.");
+      toastRef.current.success("CSV exported successfully.");
     } catch {
-      toast.error("Failed to export CSV.");
+      toastRef.current.error("Failed to export CSV.");
     } finally {
       setIsExporting(false);
     }
-  }, [byChatbotState.data, dailyState.data, from, hasLoadedData, summaryState.data, to, toast, unansweredState.data]);
+  }, [byChatbotState.data, dailyState.data, from, hasLoadedData, summaryState.data, to, unansweredState.data]);
 
-  useEffect(() => {
-    setPageTitle("Analytics");
-  }, [setPageTitle]);
-
-  useEffect(() => {
-    setRightSlot(
+  const exportRightSlot = useMemo(
+    () => (
       <button
         type="button"
         onClick={handleExportCsv}
@@ -195,9 +196,17 @@ export default function AnalyticsPage() {
       >
         {isExporting ? "Exporting..." : "Export CSV"}
       </button>
-    );
+    ),
+    [handleExportCsv, hasLoadedData, isExporting]
+  );
+
+  useEffect(() => {
+    setRightSlot(exportRightSlot);
+  }, [exportRightSlot, setRightSlot]);
+
+  useEffect(() => {
     return () => clearRightSlot();
-  }, [clearRightSlot, handleExportCsv, hasLoadedData, isExporting, setRightSlot]);
+  }, [clearRightSlot]);
 
   useEffect(() => {
     let active = true;
@@ -211,7 +220,7 @@ export default function AnalyticsPage() {
       } catch {
         if (!active) return;
         setChatbotOptions([]);
-        toast.error("Failed to load chatbot filter options.");
+        toastRef.current.error("Failed to load chatbot filter options.");
       } finally {
         if (active) setChatbotsLoading(false);
       }
@@ -221,7 +230,7 @@ export default function AnalyticsPage() {
     return () => {
       active = false;
     };
-  }, [toast]);
+  }, []);
 
   useEffect(() => {
     if (activeTab !== "usage") return;

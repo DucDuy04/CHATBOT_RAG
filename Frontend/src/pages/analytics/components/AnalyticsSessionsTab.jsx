@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EmptyState, SkeletonLoader, useToast } from "../../../components/common";
 import { analyticsApi } from "../../../api/analyticsApi";
 import SessionsTable from "./SessionsTable";
@@ -33,6 +33,7 @@ export default function AnalyticsSessionsTab({
   invalidRange,
 }) {
   const toast = useToast();
+  const toastRef = useRef(toast);
   const [rating, setRating] = useState("");
   const [page, setPage] = useState(0);
   const [selectedSession, setSelectedSession] = useState(null);
@@ -46,6 +47,10 @@ export default function AnalyticsSessionsTab({
     loading: false,
     error: null,
   });
+
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -68,9 +73,9 @@ export default function AnalyticsSessionsTab({
       setState({ ...normalized, loading: false, error: null });
     } catch {
       setState((prev) => ({ ...prev, loading: false, error: "Failed to load sessions." }));
-      toast.error("Failed to load sessions data.");
+      toastRef.current.error("Failed to load sessions data.");
     }
-  }, [active, chatbotId, from, invalidRange, page, rating, to, toast]);
+  }, [active, chatbotId, from, invalidRange, page, rating, to]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -91,11 +96,11 @@ export default function AnalyticsSessionsTab({
       try {
         return await analyticsApi.getSessionMessages(sessionId);
       } catch {
-        toast.error("Failed to load session conversation.");
+        toastRef.current.error("Failed to load session conversation.");
         throw new Error("Failed to load session conversation.");
       }
     },
-    [toast]
+    []
   );
 
   const showEmpty = useMemo(() => !state.loading && !state.error && state.items.length === 0, [state]);

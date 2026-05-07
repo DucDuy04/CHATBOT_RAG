@@ -66,7 +66,7 @@ export default function AppLayout({ pageTitle, rightSlot }) {
         className={`
           flex flex-col flex-1 min-w-0 overflow-hidden
           transition-all duration-200
-          md:${collapsed ? "ml-14" : "ml-[188px]"}
+          ${collapsed ? "md:ml-14" : "md:ml-[188px]"}
         `}
       >
         <Header

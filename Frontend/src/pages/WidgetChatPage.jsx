@@ -5,6 +5,8 @@ import remarkGfm from "remark-gfm";
 
 const API_URL = (import.meta.env.VITE_API_URL || "").trim();
 const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
+const DEFAULT_WIDGET_COLOR = "#2563eb";
+const DEFAULT_WELCOME_MESSAGE = "Xin chào! Tôi có thể giúp gì cho bạn?";
 
 const readErrorMessage = async (response) => {
   const text = await response.text();
@@ -29,8 +31,12 @@ const getSessionId = () => {
 export default function WidgetChatPage() {
   const params = new URLSearchParams(window.location.search);
   const queryWidgetKey = params.get("widgetKey") || params.get("apiKey");
+  const queryWidgetColor = params.get("widgetColor");
+  const queryWelcomeMessage = params.get("welcomeMessage");
   const widgetKey =
     queryWidgetKey || localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY;
+  const widgetColor = isHexColor(queryWidgetColor) ? queryWidgetColor : DEFAULT_WIDGET_COLOR;
+  const welcomeMessage = queryWelcomeMessage?.trim() || DEFAULT_WELCOME_MESSAGE;
 
   useEffect(() => {
     if (queryWidgetKey) {
@@ -42,7 +48,7 @@ export default function WidgetChatPage() {
     {
       id: "welcome",
       role: "assistant",
-      content: "Xin chào! Tôi có thể giúp gì cho bạn?",
+      content: welcomeMessage,
     },
   ]);
   const [input, setInput]     = useState("");
@@ -183,7 +189,7 @@ export default function WidgetChatPage() {
     <div className="flex flex-col h-screen bg-white">
 
       {/* Header nhỏ gọn */}
-      <div className="px-4 py-3 text-sm font-medium text-white bg-blue-600 border-b">
+      <div className="px-4 py-3 text-sm font-medium text-white border-b" style={{ background: widgetColor }}>
         Trợ lý AI
       </div>
 
@@ -197,8 +203,9 @@ export default function WidgetChatPage() {
             <div
               className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm overflow-hidden
                 ${msg.role === "user"
-                  ? "bg-blue-600 text-white rounded-br-sm"
+                  ? "text-white rounded-br-sm"
                   : "bg-white border text-gray-800 rounded-bl-sm"}`}
+              style={msg.role === "user" ? { background: widgetColor } : undefined}
             >
               
             <div className="text-sm prose max-w-none prose-p:leading-relaxed prose-pre:p-0">
@@ -274,12 +281,17 @@ export default function WidgetChatPage() {
         <button
           onClick={handleSend}
           disabled={loading || !input.trim()}
-          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: widgetColor }}
         >
           Gửi
         </button>
       </div>
     </div>
   );
+}
+
+function isHexColor(value) {
+  return typeof value === "string" && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(value);
 }
 

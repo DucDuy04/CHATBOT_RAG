@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { chatbotsApi } from "../../api";
 import { useLayout } from "../../contexts/LayoutContext";
@@ -23,6 +23,7 @@ function buildSnippet({ id, form }) {
     widgetColor: form.widgetColor,
     welcomeMessage: form.welcomeMessage,
     position: form.position,
+    launcherIcon: form.launcherIcon,
     allowedOrigins: form.allowedOrigins,
   };
 
@@ -71,6 +72,11 @@ export default function ChatbotEmbedPage() {
   const { id } = useParams();
   const { setPageTitle, setRightSlot, clearRightSlot } = useLayout();
   const toast = useToast();
+  const toastRef = useRef(toast);
+
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
 
   // ─── Data state ─────────────────────────────────────────────────────────────
   const [chatbot,   setChatbot]   = useState(null);
@@ -145,16 +151,16 @@ export default function ChatbotEmbedPage() {
       if (updated && typeof updated === "object") {
         setForm(toFormState({ ...form, ...updated }));
       }
-      toast.success("Embed config saved!");
+      toastRef.current.success("Embed config saved!");
     } catch (err) {
-      toast.error(err?.message || "Failed to save embed config.");
+      toastRef.current.error(err?.message || "Failed to save embed config.");
     } finally {
       setSaving(false);
     }
-  }, [id, form, saving, toast]);
+  }, [id, form, saving]);
 
-  useEffect(() => {
-    setRightSlot(
+  const saveRightSlot = useMemo(
+    () => (
       <button
         onClick={handleSave}
         disabled={saving || loading}
@@ -171,8 +177,13 @@ export default function ChatbotEmbedPage() {
           "💾 Save"
         )}
       </button>
-    );
-  }, [handleSave, saving, loading, setRightSlot]);
+    ),
+    [handleSave, saving, loading]
+  );
+
+  useEffect(() => {
+    setRightSlot(saveRightSlot);
+  }, [saveRightSlot, setRightSlot]);
 
   useEffect(() => {
     return () => clearRightSlot();
