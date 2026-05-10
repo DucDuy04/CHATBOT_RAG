@@ -51,6 +51,9 @@ export default function DocumentsPage() {
   // ─── Polling ───────────────────────────────────────────────────────────────
   const pollRef = useRef(null);
 
+  // ─── Upload target chatbot (tenant context — required by backend) ───────────
+  const [uploadChatbotId, setUploadChatbotId] = useState("");
+
   // ─── Fetch documents ───────────────────────────────────────────────────────
 
   const fetchDocuments = useCallback(async (page = 0) => {
@@ -181,14 +184,23 @@ export default function DocumentsPage() {
   // ─── Upload ────────────────────────────────────────────────────────────────
 
   async function handleUpload(files) {
+    if (!uploadChatbotId || String(uploadChatbotId).trim() === "") {
+      toast.warning("Chọn chatbot trước khi upload tài liệu.");
+      return;
+    }
     try {
-      const uploaded = await documentsApi.uploadDocuments(files);
+      const uploaded = await documentsApi.uploadDocuments(files, uploadChatbotId.trim());
       const count = Array.isArray(uploaded) ? uploaded.length : 1;
       toast.success(`${count} file${count > 1 ? "s" : ""} uploaded — processing started.`);
       fetchDocuments(0);
     } catch (err) {
-      toast.error(err?.message || "Upload failed.");
-      throw err; // re-throw so UploadZone clears its state
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        err?.message ||
+        "Upload failed.";
+      toast.error(msg);
+      throw err;
     }
   }
 
@@ -258,7 +270,12 @@ export default function DocumentsPage() {
   return (
     <div className="space-y-6">
       {/* Upload zone */}
-      <UploadZone onUpload={handleUpload} />
+      <UploadZone
+        onUpload={handleUpload}
+        chatbots={chatbots}
+        selectedChatbotId={uploadChatbotId}
+        onChatbotChange={setUploadChatbotId}
+      />
 
       {/* Toolbar */}
       <DocumentsToolbar

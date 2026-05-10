@@ -26,17 +26,22 @@ public class WidgetAuthFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
 
-        // CHỈ KIỂM TRA API KEY VỚI ENDPOINT CHAT CỦA WIDGET BÊN NGOÀI
-        if (!path.startsWith("/api/chat")) {
+        // Phải khớp đúng legacy chat (/api/chat, /api/chat/*), không dùng startsWith("/api/chat")
+        // vì sẽ nhầm /api/chatbots với /api/chat + "bots".
+        boolean isChatPath = path.equals("/api/chat") || path.startsWith("/api/chat/");
+        boolean isPublicChatPath = path.startsWith("/api/public/chat");
+
+        // Chỉ kiểm tra API key cho các endpoint chat cần widget context.
+        if (!isChatPath && !isPublicChatPath) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // Lấy API Key từ Header "X-Widget-Key"
-        String apiKeyStr = request.getHeader("X-Widget-Key");
+        // Public chat dùng "x-api-key"; endpoint cũ vẫn dùng "X-Widget-Key".
+        String apiKeyStr = resolveApiKeyHeader(request, isPublicChatPath);
 
         if (apiKeyStr == null || apiKeyStr.isEmpty()) {
-            sendError(response, "Missing X-Widget-Key header.");
+            sendError(response, "Missing API key header.");
             return;
         }
 
@@ -70,5 +75,15 @@ public class WidgetAuthFilter extends OncePerRequestFilter {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");
         response.getWriter().write("{\"error\": \"" + msg + "\"}");
+    }
+
+    private String resolveApiKeyHeader(HttpServletRequest request, boolean isPublicChatPath) {
+        if (isPublicChatPath) {
+            String publicKey = request.getHeader("x-api-key");
+            if (publicKey != null && !publicKey.isBlank()) {
+                return publicKey;
+            }
+        }
+        return request.getHeader("X-Widget-Key");
     }
 }

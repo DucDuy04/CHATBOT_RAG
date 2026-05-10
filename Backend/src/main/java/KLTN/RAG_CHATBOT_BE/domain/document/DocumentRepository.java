@@ -1,6 +1,7 @@
 package KLTN.RAG_CHATBOT_BE.domain.document;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -9,7 +10,9 @@ import java.util.UUID;
 import KLTN.RAG_CHATBOT_BE.domain.enums.DocumentStatus;
 
 @Repository
-public interface DocumentRepository extends JpaRepository<Document, UUID> {
+public interface DocumentRepository extends JpaRepository<Document, UUID>, JpaSpecificationExecutor<Document> {
+
+    long countByWidgetConfig_Id(UUID widgetConfigId);
 
     // Lấy tất cả document đã xử lý xong
     List<Document> findByStatusOrderByCreatedAtDesc(DocumentStatus status);

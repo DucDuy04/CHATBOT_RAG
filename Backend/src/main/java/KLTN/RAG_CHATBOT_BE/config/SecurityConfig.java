@@ -27,7 +27,10 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable()) // Tắt CSRF vì dùng REST API
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/chatbots/**").permitAll() // Canonical FE endpoint cho create chatbot
                         .requestMatchers("/api/widgets/**").permitAll() // Tạm mở cho Admin tạo widget
+                        .requestMatchers("/api/public/**").permitAll()   // Canonical FE endpoint cho public chat
+                        .requestMatchers("/api/playground/**").permitAll() // Canonical FE endpoint cho playground chat
                         .requestMatchers("/api/chat/**").permitAll()    // Cho qua Security, WidgetAuthFilter sẽ lo
                         .anyRequest().permitAll() // Tuần 1: cho phép tất cả, sau thêm auth sau
                 )

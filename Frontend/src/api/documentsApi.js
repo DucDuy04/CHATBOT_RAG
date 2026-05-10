@@ -5,31 +5,55 @@ import { chatbots } from "../mocks/chatbotsMock";
 
 let _nextDocId = 11;
 
-/** Build FormData từ File[] hoặc trả về FormData đã có */
-const toFormData = (filesOrFormData) => {
-  if (filesOrFormData instanceof FormData) return filesOrFormData;
+/** Chuẩn hoá File[] từ tham số upload */
+function normalizeFiles(filesOrFormData) {
+  if (filesOrFormData instanceof FormData) {
+    const out = [];
+    for (const [, v] of filesOrFormData.entries()) {
+      if (v instanceof File) out.push(v);
+    }
+    return out;
+  }
+  return Array.isArray(filesOrFormData) ? filesOrFormData : [filesOrFormData];
+}
+
+/** POST /api/documents/upload — FormData: chatbotId + files[] */
+function buildUploadFormData(files, chatbotId) {
   const fd = new FormData();
-  const files = Array.isArray(filesOrFormData) ? filesOrFormData : [filesOrFormData];
-  files.forEach((f) => fd.append("files", f));
+  fd.append("chatbotId", String(chatbotId));
+  const list = Array.isArray(files) ? files : [files];
+  list.forEach((f) => {
+    if (f instanceof File) fd.append("files", f);
+  });
   return fd;
-};
+}
 
 export const documentsApi = {
-  /** POST /api/documents/upload — multipart/form-data */
-  uploadDocuments: async (filesOrFormData) => {
+  /**
+   * POST /api/documents/upload — multipart/form-data
+   * @param {File[]|File|FormData} filesOrFormData — thường là File[]; FormData (ít dùng) sẽ được merge chatbotId
+   * @param {string} chatbotId — UUID chatbot/widget (bắt buộc khi real API và mock)
+   */
+  uploadDocuments: async (filesOrFormData, chatbotId) => {
+    if (chatbotId == null || String(chatbotId).trim() === "") {
+      throw new Error("chatbotId is required for document upload");
+    }
+    const cid = String(chatbotId).trim();
+
     if (USE_MOCK_API) {
       await mockDelay(600);
-      const fd = toFormData(filesOrFormData);
+      const files = normalizeFiles(filesOrFormData);
       const uploaded = [];
-      for (const [, file] of fd.entries()) {
+      const bot = chatbots.find((c) => c.id === cid);
+      for (const file of files) {
         if (!(file instanceof File)) continue;
         const ext = file.name.split(".").pop().toUpperCase();
         const newDoc = {
           id: `doc-0${_nextDocId++}`,
           filename: file.name,
           type: ["PDF", "TXT"].includes(ext) ? ext : "OTHER",
-          chatbotId: null,
-          chatbotName: null,
+          chatbotId: cid,
+          chatbotName: bot ? bot.name : null,
           chunkCount: 0,
           sizeBytes: file.size,
           status: "PROCESSING",
@@ -42,7 +66,14 @@ export const documentsApi = {
       }
       return uploaded;
     }
-    const fd = toFormData(filesOrFormData);
+
+    let fd;
+    if (filesOrFormData instanceof FormData) {
+      fd = filesOrFormData;
+      fd.set("chatbotId", cid);
+    } else {
+      fd = buildUploadFormData(filesOrFormData, cid);
+    }
     const res = await axiosInstance.post("/api/documents/upload", fd, {
       headers: { "Content-Type": "multipart/form-data" },
     });

@@ -12,6 +12,8 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UU
 
     List<DocumentChunk> findByDocumentId(UUID documentId);
 
+    List<DocumentChunk> findByDocumentIdOrderByChunkIndexAsc(UUID documentId);
+
     List<DocumentChunk> findByDocumentIdOrderByOrderIndexAsc(UUID documentId);
 
     List<DocumentChunk> findByWidgetConfigIdOrderByDocumentIdAscOrderIndexAsc(UUID widgetConfigId);
