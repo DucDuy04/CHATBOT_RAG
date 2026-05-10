@@ -28,7 +28,7 @@ public class WidgetAuthFilter extends OncePerRequestFilter {
 
         // Phải khớp đúng legacy chat (/api/chat, /api/chat/*), không dùng startsWith("/api/chat")
         // vì sẽ nhầm /api/chatbots với /api/chat + "bots".
-        boolean isChatPath = path.equals("/api/chat") || path.startsWith("/api/chat/");
+        boolean isChatPath = path.equals("/api/chat") || path.equals("/api/chat/stream");
         boolean isPublicChatPath = path.startsWith("/api/public/chat");
 
         // Chỉ kiểm tra API key cho các endpoint chat cần widget context.

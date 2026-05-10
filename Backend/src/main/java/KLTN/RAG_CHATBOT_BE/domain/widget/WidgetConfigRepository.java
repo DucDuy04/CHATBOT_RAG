@@ -9,10 +9,13 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 import java.util.UUID;
+import java.util.List;
 
 @Repository
 public interface WidgetConfigRepository extends JpaRepository<WidgetConfig, UUID> {
     Optional<WidgetConfig> findByApiKey(UUID apiKey);
+    long countByIsActiveTrue();
+    List<WidgetConfig> findTop50ByOrderByUpdatedAtDesc();
 
     /**
      * Paginated search for admin chatbot list. Native query so JSON filters work on MySQL;

@@ -18,6 +18,7 @@ public interface DocumentRepository extends JpaRepository<Document, UUID>, JpaSp
     List<Document> findByStatusOrderByCreatedAtDesc(DocumentStatus status);
 
     List<Document> findByWidgetConfigId(UUID widgetConfigId);
+    List<Document> findTop50ByOrderByUpdatedAtDesc();
 
     // tìm kiếm tất cả document của widget có tên file chứa keyword (dùng cho chức năng search document)
     // List<Document> findByWidgetConfigIdAndFileNameContainingIgnoreCaseOrderByCreatedAtDesc(UUID widgetConfigId, String keyword);

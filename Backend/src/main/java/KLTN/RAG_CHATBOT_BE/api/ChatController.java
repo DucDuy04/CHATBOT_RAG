@@ -1,7 +1,10 @@
 package KLTN.RAG_CHATBOT_BE.api;
 
 import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
+import KLTN.RAG_CHATBOT_BE.dto.ChatFeedbackRequest;
+import KLTN.RAG_CHATBOT_BE.dto.ChatFeedbackResponse;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
+import KLTN.RAG_CHATBOT_BE.service.ChatFeedbackService;
 import KLTN.RAG_CHATBOT_BE.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -11,6 +14,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 @RestController
@@ -19,6 +24,7 @@ import java.util.UUID;
 public class ChatController {
 
     private final ChatService chatService;
+    private final ChatFeedbackService chatFeedbackService;
 
     @PostMapping
     public ResponseEntity<ChatResponse> chat(
@@ -49,5 +55,35 @@ public class ChatController {
         }
 
         return chatService.chatStream(request, widgetId);
+    }
+
+    @PostMapping("/feedback")
+    public ResponseEntity<?> submitFeedback(@RequestBody ChatFeedbackRequest request) {
+        if (request.getMessageId() == null || request.getMessageId().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("message", "messageId is required"));
+        }
+        if (request.getRating() == null || (request.getRating() != 1 && request.getRating() != -1)) {
+            return ResponseEntity.badRequest().body(Map.of("message", "rating must be 1 or -1"));
+        }
+
+        final UUID messageId;
+        try {
+            messageId = UUID.fromString(request.getMessageId().trim());
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(Map.of("message", "messageId must be a UUID"));
+        }
+
+        try {
+            ChatFeedbackResponse response = chatFeedbackService.submitFeedback(
+                    messageId,
+                    request.getRating(),
+                    request.getComment()
+            );
+            return ResponseEntity.ok(response);
+        } catch (NoSuchElementException ex) {
+            return ResponseEntity.status(404).body(Map.of("message", "Message not found"));
+        } catch (IllegalStateException ex) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Feedback can only be submitted for assistant messages"));
+        }
     }
 }
