@@ -68,6 +68,44 @@ export const playgroundApi = {
         const decoder = new TextDecoder();
         let   buffer  = "";
 
+        const processEventBlock = (eventStr) => {
+          if (!eventStr || !eventStr.trim()) return;
+          const normalized = eventStr.replace(/\r/g, "");
+          const lines = normalized.split("\n");
+          const eventLine = lines.find((l) => l.startsWith("event:"));
+          const dataLines = lines.filter((l) => l.startsWith("data:"));
+          if (!eventLine || dataLines.length === 0) return;
+
+          const eventName = eventLine.replace("event:", "").trim();
+          const eventData = dataLines
+            .map((line) => (line.startsWith("data: ") ? line.slice(6) : line.slice(5)))
+            .join("\n");
+
+          if (eventName === "token") {
+            let tokenText = eventData;
+            try {
+              const parsed = JSON.parse(eventData);
+              tokenText = typeof parsed?.token === "string" ? parsed.token : eventData;
+            } catch {
+              // Keep raw payload as fallback
+            }
+            onToken?.(tokenText);
+          } else if (eventName === "done") {
+            let result = {};
+            try {
+              result = JSON.parse(eventData);
+            } catch {
+              result = {};
+            }
+            // Backend currently sends done as an array of sources.
+            if (Array.isArray(result)) {
+              onDone?.({ sources: result });
+              return;
+            }
+            onDone?.(result);
+          }
+        };
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -75,29 +113,10 @@ export const playgroundApi = {
           const events = buffer.split("\n\n");
           buffer = events.pop();
 
-          for (const eventStr of events) {
-            if (!eventStr.trim()) continue;
-            const lines     = eventStr.split("\n");
-            const eventLine = lines.find((l) => l.startsWith("event:"));
-            const dataLine  = lines.find((l) => l.startsWith("data:"));
-            if (!eventLine || !dataLine) continue;
-
-            const eventName = eventLine.replace("event:", "").trim();
-            const eventData = dataLine.startsWith("data: ")
-              ? dataLine.slice(6)
-              : dataLine.slice(5);
-
-            if (eventName === "token") {
-              let tokenText = eventData;
-              try { tokenText = JSON.parse(eventData).token; } catch { /* keep raw */ }
-              onToken(tokenText);
-            } else if (eventName === "done") {
-              let result = {};
-              try { result = JSON.parse(eventData); } catch { /* ignore */ }
-              onDone(result);
-            }
-          }
+          for (const eventStr of events) processEventBlock(eventStr);
         }
+        // Flush any trailing event block that may not end with "\n\n".
+        processEventBlock(buffer);
       } catch (err) {
         if (err?.name !== "AbortError") onError(err);
       }
@@ -149,7 +168,7 @@ export const playgroundApi = {
   },
 
   /** GET /api/playground/export/:sessionId — returns exportable data */
-  exportSession: async (sessionId) => {
+  exportSession: async (sessionId, { asBlob = false } = {}) => {
     if (USE_MOCK_API) {
       await mockDelay(400);
       const msgs = messagesBySession[sessionId] || [];
@@ -160,7 +179,7 @@ export const playgroundApi = {
       };
     }
     const res = await axiosInstance.get(`/api/playground/export/${sessionId}`, {
-      responseType: "blob",
+      responseType: asBlob ? "blob" : "json",
     });
     return res.data;
   },

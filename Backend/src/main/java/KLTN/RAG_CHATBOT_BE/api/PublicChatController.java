@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -22,12 +23,12 @@ public class PublicChatController {
     private final ChatService chatService;
 
     @PostMapping("/chat")
-    public ResponseEntity<PublicChatResponse> publicChat(
+    public ResponseEntity<?> publicChat(
             @RequestAttribute("Widget-Id") UUID widgetId,
             @RequestBody ChatRequest request
     ) {
         if (request.getMessage() == null || request.getMessage().isBlank()) {
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.badRequest().body(Map.of("message", "message must not be blank"));
         }
 
         // FE public chat có thể gửi sessionId null/blank.

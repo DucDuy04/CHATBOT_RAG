@@ -24,6 +24,20 @@ const DEFAULT_COMPARE_CONFIG = {
   systemPrompt: "",
 };
 
+function normalizeRestoredMessages(rawMessages) {
+  if (!Array.isArray(rawMessages)) return [];
+  return rawMessages
+    .filter((m) => m && typeof m.content === "string" && m.content.trim() !== "")
+    .map((m) => ({
+      id: m.id || uuidv4(),
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+      streaming: false,
+      sources: Array.isArray(m.sources) ? m.sources : [],
+      latency: m.latency ?? null,
+    }));
+}
+
 /**
  * PlaygroundPage — /playground
  *
@@ -194,20 +208,11 @@ export default function PlaygroundPage() {
     setSelectedSource(null);
 
     try {
-      /* exportSession returns { messages } in mock mode.
-         In real mode the response is a Blob, so result.messages will be
-         undefined — graceful degradation to empty messages. */
-      const result = await playgroundApi.exportSession(session.id);
-      const restoredMsgs = Array.isArray(result?.messages)
-        ? result.messages.map((m) => ({
-            id: m.id || uuidv4(),
-            role: m.role,
-            content: m.content,
-            streaming: false,
-            sources: m.sources || [],
-            latency: m.latency ?? null,
-          }))
-        : [];
+      let restoredMsgs = normalizeRestoredMessages(session?.messages);
+      if (restoredMsgs.length === 0) {
+        const result = await playgroundApi.exportSession(session.id);
+        restoredMsgs = normalizeRestoredMessages(result?.messages);
+      }
       setMessages(restoredMsgs);
 
       // Restore right-panel sources from last assistant message
@@ -215,11 +220,14 @@ export default function PlaygroundPage() {
         .reverse()
         .find((m) => m.role === "assistant" && m.sources?.length > 0);
       if (lastBot?.sources) setLastSources(lastBot.sources);
-    } catch {
-      // Don't crash — just start with empty messages
+    } catch (err) {
+      const msg = err?.message || "Không thể restore session.";
+      toast.error(msg);
       setMessages([]);
+      // Session may be deleted elsewhere; refresh current list.
+      loadSessions(selectedChatbotId);
     }
-  }, [abortStream]);
+  }, [abortStream, loadSessions, selectedChatbotId, toast]);
 
   // ── Session delete ─────────────────────────────────────────────────────────────
   const handleSessionDelete = useCallback(
@@ -367,9 +375,26 @@ export default function PlaygroundPage() {
         configB: build(compareConfigB),
       });
       setCompareResult(data && typeof data === "object" ? data : null);
+      const a = data?.configA?.sources;
+      const b = data?.configB?.sources;
+      const merged =
+        Array.isArray(a) && a.length ? a : Array.isArray(b) && b.length ? b : [];
+      setLastSources(merged);
+      setSelectedSource(null);
+      const latA = data?.configA?.latency;
+      const latB = data?.configB?.latency;
+      setLastLatency(
+        typeof latA === "number" ? latA : typeof latB === "number" ? latB : null
+      );
     } catch (e) {
-      const msg = e?.message || "Compare thất bại.";
+      const msg =
+        e?.response?.data?.message ||
+        e?.response?.data?.error ||
+        e?.message ||
+        "Compare thất bại.";
       setCompareError(msg);
+      setLastSources([]);
+      setLastLatency(null);
       toast.error(msg);
     } finally {
       setCompareLoading(false);
@@ -499,6 +524,7 @@ export default function PlaygroundPage() {
               sources={lastSources}
               selectedSource={selectedSource}
               onSourceSelect={handleSourceClick}
+              compareMode={compareMode}
             />
           </div>
           <div className="border-b">

@@ -185,7 +185,7 @@ export default function DocumentsTable({
                       label="Chunks"
                       title="View chunks"
                       onClick={() => onChunks(doc)}
-                      disabled={!!busy || doc.status !== "INDEXED"}
+                      disabled={!!busy}
                     />
 
                     {/* Assign */}

@@ -21,6 +21,11 @@ export default function CompareConfigPanel({ label, config, onChange }) {
     <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3 space-y-3">
       <p className="text-xs font-semibold text-gray-600">{label}</p>
 
+      <p className="text-[11px] text-gray-500 leading-snug">
+        Temperature: thấp → ổn định/chính xác hơn; cao → đa dạng hơn. Top-K: số chunk retrieval đưa vào context.
+        Max tokens: giới hạn độ dài câu trả lời.
+      </p>
+
       <div>
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-gray-600">Temperature</span>

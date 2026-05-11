@@ -109,48 +109,56 @@ export let chatbots = [
 
 export const embedConfigs = {
   "cb-001": {
+    widgetKey: "11111111-1111-4111-8111-111111111101",
     widgetColor: "#3b82f6",
     welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
     position: "bottom-right",
     allowedOrigins: ["https://example.com", "https://shop.example.com"],
   },
   "cb-002": {
+    widgetKey: "11111111-1111-4111-8111-111111111102",
     widgetColor: "#10b981",
     welcomeMessage: "Bạn có câu hỏi nào không? Tôi sẵn sàng trả lời!",
     position: "bottom-right",
     allowedOrigins: ["https://faq.example.com"],
   },
   "cb-003": {
+    widgetKey: "11111111-1111-4111-8111-111111111103",
     widgetColor: "#6366f1",
     welcomeMessage: "Chào mừng đến với Technical Support!",
     position: "bottom-left",
     allowedOrigins: ["https://docs.example.com", "https://dev.example.com"],
   },
   "cb-004": {
+    widgetKey: "11111111-1111-4111-8111-111111111104",
     widgetColor: "#f59e0b",
     welcomeMessage: "Tôi có thể tư vấn sản phẩm cho bạn!",
     position: "bottom-right",
     allowedOrigins: ["https://store.example.com"],
   },
   "cb-005": {
+    widgetKey: "11111111-1111-4111-8111-111111111105",
     widgetColor: "#ec4899",
     welcomeMessage: "Xin chào! Bộ phận HR có thể giúp gì?",
     position: "bottom-right",
     allowedOrigins: ["https://intranet.example.com"],
   },
   "cb-006": {
+    widgetKey: "11111111-1111-4111-8111-111111111106",
     widgetColor: "#8b5cf6",
     welcomeMessage: "Bạn cần hướng dẫn sản phẩm không?",
     position: "bottom-right",
     allowedOrigins: [],
   },
   "cb-007": {
+    widgetKey: "11111111-1111-4111-8111-111111111107",
     widgetColor: "#64748b",
     welcomeMessage: "Xin chào! Tra cứu tài liệu pháp lý.",
     position: "bottom-right",
     allowedOrigins: [],
   },
   "cb-008": {
+    widgetKey: "11111111-1111-4111-8111-111111111108",
     widgetColor: "#94a3b8",
     welcomeMessage: "Demo",
     position: "bottom-right",

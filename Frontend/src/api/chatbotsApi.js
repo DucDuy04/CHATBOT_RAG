@@ -33,8 +33,13 @@ export const chatbotsApi = {
   createChatbot: async ({ name, description, domain }) => {
     if (USE_MOCK_API) {
       await mockDelay(500);
+      const idNum = _nextId++;
+      const mockWidgetKey =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `00000000-0000-4000-8000-${String(100000000000 + idNum).slice(-12)}`;
       const newBot = {
-        id: `cb-00${_nextId++}`,
+        id: `cb-00${idNum}`,
         name,
         description: description || "",
         domain: domain || "general",
@@ -45,9 +50,11 @@ export const chatbotsApi = {
         initials: name.slice(0, 2).toUpperCase(),
         systemPrompt: "",
         modelConfig: { model: "llama-3.1-70b-versatile", temperature: 0.7, maxTokens: 1024 },
+        apiKey: mockWidgetKey,
       };
       chatbots.push(newBot);
       embedConfigs[newBot.id] = {
+        widgetKey: mockWidgetKey,
         widgetColor: "#3b82f6",
         welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
         position: "bottom-right",

@@ -17,7 +17,7 @@ export default function ExportSessionButton({ sessionId, toast }) {
       return;
     }
     try {
-      const result = await playgroundApi.exportSession(sessionId);
+      const result = await playgroundApi.exportSession(sessionId, { asBlob: true });
 
       let blob;
       let filename;

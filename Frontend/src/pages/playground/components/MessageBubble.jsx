@@ -64,6 +64,10 @@ export default function MessageBubble({ message, selectedSource, onSourceClick }
                 {message.content || ""}
               </ReactMarkdown>
 
+              {message.streaming && !message.content?.trim() && (
+                <p className="text-xs text-gray-500 italic mt-1">Đang nhận token từ server…</p>
+              )}
+
               {/* Blinking cursor while streaming */}
               {message.streaming && (
                 <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 animate-pulse align-middle rounded-sm" />

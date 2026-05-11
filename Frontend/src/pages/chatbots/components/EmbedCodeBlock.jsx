@@ -6,13 +6,19 @@ import { useToast } from "../../../components/common/useToast";
  *
  * Props:
  *   snippet : string — the full embed code to display
+ *   copyDisabled : boolean — when true, do not copy (e.g. missing public widget key)
  */
-export default function EmbedCodeBlock({ snippet }) {
+export default function EmbedCodeBlock({ snippet, copyDisabled = false }) {
   const toast = useToast();
   const [copying, setCopying] = useState(false);
 
   async function handleCopy() {
-    if (copying) return;
+    if (copying || copyDisabled) {
+      if (copyDisabled) {
+        toast.error("Thiếu public widget key — không thể copy snippet hợp lệ.");
+      }
+      return;
+    }
     setCopying(true);
     try {
       if (navigator.clipboard?.writeText) {
@@ -50,7 +56,8 @@ export default function EmbedCodeBlock({ snippet }) {
         <button
           type="button"
           onClick={handleCopy}
-          disabled={copying}
+          disabled={copying || copyDisabled}
+          title={copyDisabled ? "Thiếu public widget key" : undefined}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium
                      bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors
                      disabled:opacity-60 flex-shrink-0"

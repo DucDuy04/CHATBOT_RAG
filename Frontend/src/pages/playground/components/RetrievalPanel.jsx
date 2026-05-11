@@ -8,8 +8,9 @@ import EmptyState from "../../../components/common/EmptyState";
  *   sources       — array of source objects from last assistant response
  *   selectedSource — highlighted source or null
  *   onSourceSelect — (source | null) => void
+ *   compareMode    — when true, empty-state copy matches compare flow (no session persist)
  */
-export default function RetrievalPanel({ sources = [], selectedSource, onSourceSelect }) {
+export default function RetrievalPanel({ sources = [], selectedSource, onSourceSelect, compareMode = false }) {
   return (
     <div className="p-3">
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
@@ -19,8 +20,12 @@ export default function RetrievalPanel({ sources = [], selectedSource, onSourceS
       {sources.length === 0 ? (
         <EmptyState
           icon="🔍"
-          title="Chưa có sources"
-          message="Gửi tin nhắn để xem chunks được retrieve."
+          title={compareMode ? "No sources for compare" : "No sources for this answer"}
+          message={
+            compareMode
+              ? "No sources returned for compare result (retrieval may be empty or backend omitted sources)."
+              : "Nguồn tham chiếu sẽ hiển thị khi retrieval trả về dữ liệu."
+          }
           className="py-6"
         />
       ) : (

@@ -17,8 +17,18 @@ import { documentsApi } from "../../../api";
 export default function ChunkDrawer({ document, onClose }) {
   const isOpen = !!document;
   const [chunks,  setChunks]  = useState([]);
+  const [status,  setStatus]  = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+
+  function getApiErrorMessage(err) {
+    return (
+      err?.response?.data?.message ||
+      err?.response?.data?.error ||
+      err?.message ||
+      "Failed to load document details."
+    );
+  }
 
   useEffect(() => {
     if (!document) return;
@@ -30,13 +40,18 @@ export default function ChunkDrawer({ document, onClose }) {
         setLoading(true);
         setError(null);
         setChunks([]);
-        return documentsApi.getDocumentChunks(docId);
+        setStatus(null);
+        return Promise.all([
+          documentsApi.getDocumentStatus(docId),
+          documentsApi.getDocumentChunks(docId),
+        ]);
       })
-      .then((data) => {
-        setChunks(Array.isArray(data) ? data : []);
+      .then(([statusData, chunksData]) => {
+        setStatus(statusData || null);
+        setChunks(Array.isArray(chunksData) ? chunksData : []);
       })
       .catch((err) => {
-        setError(err?.message || "Failed to load chunks.");
+        setError(getApiErrorMessage(err));
       })
       .finally(() => {
         setLoading(false);
@@ -47,9 +62,15 @@ export default function ChunkDrawer({ document, onClose }) {
     if (!document) return;
     setLoading(true);
     setError(null);
-    documentsApi.getDocumentChunks(document.id)
-      .then((data) => setChunks(Array.isArray(data) ? data : []))
-      .catch((err) => setError(err?.message || "Failed to load chunks."))
+    Promise.all([
+      documentsApi.getDocumentStatus(document.id),
+      documentsApi.getDocumentChunks(document.id),
+    ])
+      .then(([statusData, chunksData]) => {
+        setStatus(statusData || null);
+        setChunks(Array.isArray(chunksData) ? chunksData : []);
+      })
+      .catch((err) => setError(getApiErrorMessage(err)))
       .finally(() => setLoading(false));
   }
 
@@ -61,6 +82,16 @@ export default function ChunkDrawer({ document, onClose }) {
       width="w-[480px] max-w-full"
     >
       {loading && <SkeletonLoader variant="line" count={8} />}
+
+      {!loading && !error && status && (
+        <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+          <span className="font-semibold">Status:</span> {status.status || "—"}
+          <span className="mx-2 text-gray-300">|</span>
+          <span className="font-semibold">Chunks:</span> {status.chunkCount ?? chunks.length}
+          <span className="mx-2 text-gray-300">|</span>
+          <span className="font-semibold">Progress:</span> {status.progress ?? 0}%
+        </div>
+      )}
 
       {!loading && error && (
         <div className="space-y-3 text-center py-8">

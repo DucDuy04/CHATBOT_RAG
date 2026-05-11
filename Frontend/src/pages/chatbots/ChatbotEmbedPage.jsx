@@ -14,11 +14,17 @@ const FRONTEND_URL =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_FRONTEND_URL) ||
   window.location.origin;
 
-/** Build embed snippet from current form values. */
-function buildSnippet({ id, form }) {
+/** Public widget UUID from embed-config (widgetKey or legacy apiKey). */
+function resolveWidgetKey(form) {
+  const k = form.widgetKey ?? form.apiKey;
+  return typeof k === "string" ? k.trim() : "";
+}
+
+/** Build embed snippet from current form values (real widgetKey when loaded). */
+function buildSnippet({ form }) {
+  const widgetKey = resolveWidgetKey(form);
   const cfg = {
-    chatbotId: id,
-    apiKey: "YOUR_PUBLIC_API_KEY",
+    widgetKey,
     frontendUrl: `${FRONTEND_URL}`,
     widgetColor: form.widgetColor,
     welcomeMessage: form.welcomeMessage,
@@ -36,13 +42,17 @@ function buildSnippet({ id, form }) {
     `<script>`,
     `  window.RagChatbotConfig = ${cfgJson};`,
     `</script>`,
-    `<script async src="${FRONTEND_URL}/chatbot-widget.js"></script>`,
+    `<script async src="${FRONTEND_URL}/dist-widget/chatbot-widget.iife.js"></script>`,
   ].join("\n");
 }
 
 /** Normalize API embed config → form state, with safe fallbacks. */
 function toFormState(config) {
   return {
+    widgetKey: resolveWidgetKey({
+      widgetKey: config.widgetKey,
+      apiKey: config.apiKey,
+    }),
     widgetColor:
       config.widgetColor || config.color || "#2563eb",
     welcomeMessage: config.welcomeMessage || "",
@@ -54,6 +64,7 @@ function toFormState(config) {
 }
 
 const DEFAULT_FORM = {
+  widgetKey: "",
   widgetColor: "#2563eb",
   welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
   position: "bottom-right",
@@ -147,7 +158,7 @@ export default function ChatbotEmbedPage() {
         launcherIcon: form.launcherIcon,
       };
       const updated = await chatbotsApi.updateEmbedConfig(id, payload);
-      // Sync local form from response to pick up any server-side normalization
+      // Sync local form from response to pick up any server-side normalization (widgetKey still from API)
       if (updated && typeof updated === "object") {
         setForm(toFormState({ ...form, ...updated }));
       }
@@ -191,7 +202,8 @@ export default function ChatbotEmbedPage() {
 
   // ─── Derived values ──────────────────────────────────────────────────────────
 
-  const snippet = buildSnippet({ id, form });
+  const snippet = buildSnippet({ form });
+  const hasWidgetKey = Boolean(resolveWidgetKey(form));
 
   // ─── Render: loading ─────────────────────────────────────────────────────────
 
@@ -275,7 +287,14 @@ export default function ChatbotEmbedPage() {
             position={form.position}
             launcherIcon={form.launcherIcon}
           />
-          <EmbedCodeBlock snippet={snippet} />
+          {!hasWidgetKey && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Thiếu public widget key. Vui lòng refresh trang hoặc tạo lại chatbot. Snippet bên dưới có
+              <code className="mx-1 rounded bg-amber-100 px-1">widgetKey</code> rỗng — không dùng được cho
+              widget cho đến khi key được tải từ API.
+            </div>
+          )}
+          <EmbedCodeBlock snippet={snippet} copyDisabled={!hasWidgetKey} />
         </div>
       </div>
     </div>

@@ -16,6 +16,15 @@ const POLL_INTERVAL_MS = 3000;
 const DEFAULT_FILTERS = { search: "", type: "", chatbotId: "", status: "" };
 const PAGE_SIZE = 10;
 
+function getApiErrorMessage(err, fallback) {
+  return (
+    err?.response?.data?.message ||
+    err?.response?.data?.error ||
+    err?.message ||
+    fallback
+  );
+}
+
 /**
  * DocumentsPage — /documents
  *
@@ -68,10 +77,13 @@ export default function DocumentsPage() {
         page,
         size:      PAGE_SIZE,
       });
-      setDocuments(res.items || []);
+      const items = res.items || [];
+      setDocuments(items);
       setPagination({ page: res.page, size: res.size, total: res.total, totalPages: res.totalPages });
+      return { ...res, items };
     } catch (err) {
-      setLoadError(err?.message || "Failed to load documents.");
+      setLoadError(getApiErrorMessage(err, "Failed to load documents."));
+      return null;
     } finally {
       setLoading(false);
     }
@@ -192,13 +204,21 @@ export default function DocumentsPage() {
       const uploaded = await documentsApi.uploadDocuments(files, uploadChatbotId.trim());
       const count = Array.isArray(uploaded) ? uploaded.length : 1;
       toast.success(`${count} file${count > 1 ? "s" : ""} uploaded — processing started.`);
-      fetchDocuments(0);
+      const refreshed = await fetchDocuments(0);
+      const hasChatbotFilterMismatch = !!filters.chatbotId && filters.chatbotId !== uploadChatbotId.trim();
+      if (hasChatbotFilterMismatch) {
+        toast.info("Uploaded document co the khong hien do chatbot filter hien tai khac chatbot vua upload.");
+      } else if (Array.isArray(uploaded) && Array.isArray(refreshed?.items)) {
+        const uploadedIds = new Set(uploaded.map((d) => d?.id).filter(Boolean));
+        if (uploadedIds.size > 0) {
+          const visible = refreshed.items.some((d) => uploadedIds.has(d.id));
+          if (!visible) {
+            toast.info("Document da upload nhung khong nam trong filter/status hien tai.");
+          }
+        }
+      }
     } catch (err) {
-      const msg =
-        err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        err?.message ||
-        "Upload failed.";
+      const msg = getApiErrorMessage(err, "Upload failed.");
       toast.error(msg);
       throw err;
     }
@@ -226,7 +246,7 @@ export default function DocumentsPage() {
       toast.success(`"${doc.filename}" queued for retry.`);
       fetchDocuments(pagination.page);
     } catch (err) {
-      toast.error(err?.message || "Retry failed.");
+      toast.error(getApiErrorMessage(err, "Retry failed."));
     } finally {
       clearDocAction(doc.id);
     }
@@ -244,7 +264,7 @@ export default function DocumentsPage() {
       setDeleteDoc(null);
       fetchDocuments(pagination.page);
     } catch (err) {
-      toast.error(err?.message || "Delete failed.");
+      toast.error(getApiErrorMessage(err, "Delete failed."));
     } finally {
       setDeleting(false);
       if (deleteDoc) clearDocAction(deleteDoc.id);

@@ -109,7 +109,7 @@ public class DocumentController {
     }
 
     @GetMapping
-    public ResponseEntity<DocumentPageResponse> listDocuments(
+    public ResponseEntity<?> listDocuments(
             @RequestParam(required = false, defaultValue = "") String search,
             @RequestParam(required = false, defaultValue = "") String type,
             @RequestParam(required = false, defaultValue = "") String chatbotId,
@@ -117,7 +117,13 @@ public class DocumentController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size
     ) {
-        return ResponseEntity.ok(documentService.listDocuments(search, type, chatbotId, status, page, size));
+        try {
+            DocumentPageResponse body = documentService.listDocuments(search, type, chatbotId, status, page, size);
+            return ResponseEntity.ok(body);
+        } catch (IllegalArgumentException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Bad request";
+            return ResponseEntity.badRequest().body(Map.of("message", msg));
+        }
     }
 
     @GetMapping("/{id}/status")

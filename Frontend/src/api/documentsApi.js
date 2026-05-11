@@ -5,6 +5,12 @@ import { chatbots } from "../mocks/chatbotsMock";
 
 let _nextDocId = 11;
 
+/** UUID string shape — only send chatbotId filter when valid (avoid junk query params) */
+const CHATBOT_ID_PARAM_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const STATUS_SENTINELS = new Set(["all statuses", "all status"]);
+
 /** Chuẩn hoá File[] từ tham số upload */
 function normalizeFiles(filesOrFormData) {
   if (filesOrFormData instanceof FormData) {
@@ -94,9 +100,20 @@ export const documentsApi = {
       if (status)     filtered = filtered.filter((d) => d.status === status);
       return createPaginatedResponse(filtered, page, size);
     }
-    const res = await axiosInstance.get("/api/documents", {
-      params: { search, type, chatbotId, status, page, size },
-    });
+    // Omit empty filter params — avoids brittle server parsing and keeps URLs clean.
+    const params = { page, size };
+    const s = search != null ? String(search).trim() : "";
+    const t = type != null ? String(type).trim() : "";
+    const cid = chatbotId != null ? String(chatbotId).trim() : "";
+    let st = status != null ? String(status).trim() : "";
+    if (STATUS_SENTINELS.has(st.toLowerCase())) {
+      st = "";
+    }
+    if (s) params.search = s;
+    if (t) params.type = t;
+    if (cid && CHATBOT_ID_PARAM_RE.test(cid)) params.chatbotId = cid;
+    if (st) params.status = st;
+    const res = await axiosInstance.get("/api/documents", { params });
     return res.data;
   },
 

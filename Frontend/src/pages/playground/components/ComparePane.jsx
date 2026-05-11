@@ -65,7 +65,7 @@ function AnswerColumn({ title, result, loading, configSummary }) {
         </p>
       )}
 
-      {sources.length > 0 && (
+      {sources.length > 0 ? (
         <div className="text-xs border-t pt-2">
           <p className="font-semibold text-gray-600 mb-1">Sources</p>
           <ul className="space-y-1 text-gray-600">
@@ -78,6 +78,10 @@ function AnswerColumn({ title, result, loading, configSummary }) {
             ))}
           </ul>
         </div>
+      ) : (
+        <p className="text-xs text-gray-500 border-t pt-2">
+          No sources returned for this compare branch.
+        </p>
       )}
     </div>
   );
@@ -121,6 +125,11 @@ export default function ComparePane({
             Prompt Builder override đang bật — áp dụng khi cột System prompt trống.
           </p>
         )}
+        <p className="text-[11px] text-gray-600 leading-snug border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+          Compare dùng để thử cấu hình A/B. Backend hiện có thể chưa áp dụng sâu mọi override (temperature/topK/maxTokens)
+          nên câu trả lời A và B có thể giống nhau. Compare không lưu phiên chat — danh sách Sessions bên trái không đổi sau khi chạy.
+          Nguồn (nếu có) hiển thị dưới từng cột và đồng bộ panel Sources bên phải.
+        </p>
         <div>
           <label className="text-xs font-medium text-gray-600 block mb-1">
             Compare query

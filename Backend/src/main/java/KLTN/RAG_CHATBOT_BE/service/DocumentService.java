@@ -16,6 +16,7 @@ import KLTN.RAG_CHATBOT_BE.dto.DocumentResponse;
 import KLTN.RAG_CHATBOT_BE.dto.DocumentStatusResponse;
 import KLTN.RAG_CHATBOT_BE.record.Section;
 import KLTN.RAG_CHATBOT_BE.support.BytesMultipartFile;
+import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.criteria.Join;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Predicate;
@@ -177,12 +178,21 @@ public class DocumentService {
             int page,
             int size
     ) {
+        String statusNorm = normalizeListStatusParam(statusFe);
+        UUID chatbotFilter = null;
+        if (chatbotIdStr != null && !chatbotIdStr.isBlank()) {
+            try {
+                chatbotFilter = UUID.fromString(chatbotIdStr.trim());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid chatbotId");
+            }
+        }
         Pageable pageable = PageRequest.of(
                 Math.max(0, page),
                 Math.max(1, size),
                 Sort.by(Sort.Direction.DESC, "createdAt")
         );
-        Specification<Document> spec = buildDocumentSpec(search, type, chatbotIdStr, statusFe);
+        Specification<Document> spec = buildDocumentSpec(search, type, chatbotFilter, statusNorm);
         Page<Document> result = documentRepository.findAll(spec, pageable);
         List<DocumentResponse> items = result.getContent().stream()
                 .map(this::toDocumentResponse)
@@ -196,15 +206,28 @@ public class DocumentService {
                 .build();
     }
 
+    /**
+     * FE may send placeholder labels; treat as no status filter (no 500, no bogus enum parse).
+     */
+    private static String normalizeListStatusParam(String statusFe) {
+        if (statusFe == null || statusFe.isBlank()) {
+            return "";
+        }
+        String t = statusFe.trim();
+        if ("ALL STATUSES".equalsIgnoreCase(t) || "ALL STATUS".equalsIgnoreCase(t)) {
+            return "";
+        }
+        return t;
+    }
+
     private Specification<Document> buildDocumentSpec(
             String search,
             String type,
-            String chatbotIdStr,
+            UUID chatbotFilter,
             String statusFe
     ) {
         return (root, query, cb) -> {
             List<Predicate> preds = new ArrayList<>();
-            Join<Object, Object> widgetJoin = root.join("widgetConfig", JoinType.INNER);
 
             if (search != null && !search.isBlank()) {
                 preds.add(cb.like(cb.lower(root.get("fileName")), "%" + search.trim().toLowerCase() + "%"));
@@ -212,13 +235,9 @@ public class DocumentService {
             if (type != null && !type.isBlank()) {
                 preds.add(cb.equal(cb.upper(root.get("fileType")), type.trim().toUpperCase()));
             }
-            if (chatbotIdStr != null && !chatbotIdStr.isBlank()) {
-                try {
-                    UUID wid = UUID.fromString(chatbotIdStr.trim());
-                    preds.add(cb.equal(widgetJoin.get("id"), wid));
-                } catch (IllegalArgumentException e) {
-                    preds.add(cb.equal(cb.literal(1), cb.literal(0)));
-                }
+            if (chatbotFilter != null) {
+                Join<Object, Object> widgetJoin = root.join("widgetConfig", JoinType.INNER);
+                preds.add(cb.equal(widgetJoin.get("id"), chatbotFilter));
             }
             if (statusFe != null && !statusFe.isBlank()) {
                 String s = statusFe.trim().toUpperCase();
@@ -230,6 +249,10 @@ public class DocumentService {
                     default -> {
                     }
                 }
+            }
+            // Hibernate rejects cb.and() with zero predicates (e.g. no search/type/chatbot/status).
+            if (preds.isEmpty()) {
+                return cb.conjunction();
             }
             return cb.and(preds.toArray(Predicate[]::new));
         };
@@ -360,13 +383,28 @@ public class DocumentService {
     }
 
     public DocumentResponse toDocumentResponse(Document d) {
+        UUID chatbotId = null;
+        String chatbotName = "Unknown chatbot";
         WidgetConfig w = d.getWidgetConfig();
+        if (w != null) {
+            try {
+                chatbotId = w.getId();
+                String n = w.getName();
+                chatbotName = (n != null && !n.isBlank()) ? n : "Unknown chatbot";
+            } catch (EntityNotFoundException ex) {
+                // Widget row missing or soft-deleted (@SQLRestriction) while document still references FK
+                chatbotId = null;
+                chatbotName = "Unknown chatbot";
+            }
+        }
+        String filename = d.getFileName() != null ? d.getFileName() : "";
+        String fileType = d.getFileType() != null ? d.getFileType() : "UNKNOWN";
         return DocumentResponse.builder()
                 .id(d.getId())
-                .filename(d.getFileName())
-                .type(d.getFileType())
-                .chatbotId(w != null ? w.getId() : null)
-                .chatbotName(w != null ? w.getName() : null)
+                .filename(filename)
+                .type(fileType)
+                .chatbotId(chatbotId)
+                .chatbotName(chatbotName)
                 .chunkCount(d.getChunkCount() != null ? d.getChunkCount() : 0)
                 .sizeBytes(d.getFileSize() != null ? d.getFileSize() : 0L)
                 .status(toFeStatus(d.getStatus()))

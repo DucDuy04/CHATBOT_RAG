@@ -1,6 +1,15 @@
 import { useState, useEffect } from "react";
 import Modal from "../../../components/common/Modal";
 
+function getApiErrorMessage(err, fallback) {
+  return (
+    err?.response?.data?.message ||
+    err?.response?.data?.error ||
+    err?.message ||
+    fallback
+  );
+}
+
 /**
  * AssignChatbotModal — select a chatbot and assign a document to it.
  *
@@ -36,7 +45,7 @@ export default function AssignChatbotModal({ document, chatbots, onClose, onConf
       await onConfirm(document.id, selected);
       // onConfirm handles close + toast
     } catch (err) {
-      setError(err?.message || "Failed to assign document.");
+      setError(getApiErrorMessage(err, "Failed to assign document."));
     } finally {
       setSaving(false);
     }

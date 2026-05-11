@@ -270,6 +270,7 @@ public class WidgetService {
                 : List.of();
 
         return EmbedConfigResponse.builder()
+                .widgetKey(w.getApiKey() != null ? w.getApiKey().toString() : null)
                 .widgetColor(widgetColor)
                 .welcomeMessage(welcome)
                 .position(position)
