@@ -23,13 +23,27 @@ groq:
   api-key: ${GROQ_API_KEY}
   chat-model: llama-3.3-70b-versatile
   base-url: https://api.groq.com/openai/v1
+  fallback-models: "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
 
 nomic:
   api-key: ${NOMIC_API_KEY}
   embedding-model: nomic-embed-text-v1.5
+
+cohere:
+  api-key: ${COHERE_API_KEY:}
+  rerank:
+    enabled: ${COHERE_RERANK_ENABLED:false}
+    model: rerank-multilingual-v3.0
 
 app:
   upload-dir: ./uploads
 
 server:
   port: 8080
+
+logging:
+  level:
+    # Bật debug để thấy log parse/chunk trong docker logs
+    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG

@@ -1,0 +1,84 @@
+---
+description: Apply when modifying Docker, Compose, env files, Spring profiles, nginx, runtime config, deployment wiring, or production behavior.
+globs: docker-compose.yml,**/Dockerfile,**/nginx.conf,**/.env*,**/*.env*,Backend/src/main/resources/application*.yml,Backend/src/main/resources/application*.properties,Frontend/vite*.config.js,Frontend/package.json
+alwaysApply: false
+---
+
+# 30 - Deploy / Env / Operations Rule
+
+Áp dụng khi task liên quan Docker, docker-compose, env, Spring profile, nginx, build, runtime wiring hoặc lỗi chỉ xuất hiện ở production.
+
+## File nên đọc
+
+Ưu tiên đọc:
+
+- `docker-compose.yml`
+- `Backend/Dockerfile`
+- `Frontend/Dockerfile`
+- `Frontend/nginx.conf`
+- `Backend/src/main/resources/application.yml`
+- `Backend/src/main/resources/application-dev.yml`
+- `Backend/src/main/resources/application-docker.yml`
+- `Backend/.env.example`
+- `Frontend/.env`
+- `Frontend/vite.config.js`
+- `Frontend/vite.widget.config.js`
+- `agent/06-operations.md`
+
+## Env/config quan trọng cần kiểm tra
+
+Backend thường phụ thuộc:
+
+- `GROQ_API_KEY`
+- `NOMIC_API_KEY`
+- `COHERE_API_KEY`
+- `COHERE_RERANK_ENABLED`
+- MySQL URL/user/password
+- Qdrant host/port/http-port/collection/vector-size
+- Spring profile active
+- upload dir / multipart limit nếu liên quan upload
+
+Frontend thường phụ thuộc:
+
+- `VITE_API_URL`
+- widget build/runtime API URL nếu có
+- nginx route fallback
+
+## Nguyên tắc deploy/env
+
+- Không đưa secret thật vào repo.
+- Không đổi port/service name nếu không cần.
+- Không đổi profile mặc định nếu không hiểu impact.
+- Không hardcode URL production nếu env đang được dùng.
+- Không claim production verified nếu chưa chạy production thật.
+- Không recreate DB/Qdrant data nếu task không yêu cầu.
+- Không đổi vector size/model nếu chưa phân tích dữ liệu cũ.
+
+## Checklist deploy/runtime
+
+Trong phạm vi task, kiểm tra:
+
+- service name trong compose khớp host config không
+- backend có nhận đúng env không
+- frontend build-time env có đúng không
+- nginx có proxy/fallback đúng route không
+- container startup order/healthcheck có đủ không
+- port mapping có khớp tài liệu/API không
+- local profile và docker profile khác nhau chỗ nào
+- thiếu env thì app fail fast hay fallback hợp lý
+
+## Kiểm tra deploy/config
+
+Ưu tiên chạy:
+
+```bash
+docker compose config
+```
+
+Nếu task liên quan build image:
+
+```bash
+docker compose build
+```
+
+Nếu không thể chạy compose/build vì thiếu secret/resource, ghi rõ trong report và mô tả expected runtime verification.

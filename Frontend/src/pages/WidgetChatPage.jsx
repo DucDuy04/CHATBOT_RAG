@@ -3,7 +3,22 @@ import { v4 as uuidv4 } from "uuid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = (import.meta.env.VITE_API_URL || "").trim();
+const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
+const DEFAULT_WIDGET_COLOR = "#2563eb";
+const DEFAULT_WELCOME_MESSAGE = "Xin chào! Tôi có thể giúp gì cho bạn?";
+
+const readErrorMessage = async (response) => {
+  const text = await response.text();
+  if (!text) return "Loi ket noi";
+
+  try {
+    const data = JSON.parse(text);
+    return data.error || data.message || text;
+  } catch {
+    return text;
+  }
+};
 
 const getSessionId = () => {
   const stored = localStorage.getItem("widget_session_id");
@@ -14,11 +29,26 @@ const getSessionId = () => {
 };
 
 export default function WidgetChatPage() {
+  const params = new URLSearchParams(window.location.search);
+  const queryWidgetKey = params.get("widgetKey") || params.get("apiKey");
+  const queryWidgetColor = params.get("widgetColor");
+  const queryWelcomeMessage = params.get("welcomeMessage");
+  const widgetKey =
+    queryWidgetKey || localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY;
+  const widgetColor = isHexColor(queryWidgetColor) ? queryWidgetColor : DEFAULT_WIDGET_COLOR;
+  const welcomeMessage = queryWelcomeMessage?.trim() || DEFAULT_WELCOME_MESSAGE;
+
+  useEffect(() => {
+    if (queryWidgetKey) {
+      localStorage.setItem("widget_api_key", queryWidgetKey);
+    }
+  }, [queryWidgetKey]);
+
   const [messages, setMessages] = useState([
     {
       id: "welcome",
       role: "assistant",
-      content: "Xin chào! Tôi có thể giúp gì cho bạn?",
+      content: welcomeMessage,
     },
   ]);
   const [input, setInput]     = useState("");
@@ -32,6 +62,21 @@ export default function WidgetChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    if (!widgetKey) {
+      setMessages((prev) => [
+        ...prev,
+        { id: uuidv4(), role: "user", content: input.trim() },
+        {
+          id: uuidv4(),
+          role: "assistant",
+          content:
+            "Thiếu widget key. Truyền `widgetKey` khi nhúng widget hoặc cấu hình `window.RagChatbotConfig.apiKey`.",
+          streaming: false,
+        },
+      ]);
+      setInput("");
+      return;
+    }
 
     const userMessage = {
       id: uuidv4(),
@@ -53,13 +98,22 @@ export default function WidgetChatPage() {
     setLoading(true);
 
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (widgetKey) headers["X-Widget-Key"] = widgetKey;
+
       const response = await fetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ sessionId, message: userMessage.content }),
       });
 
-      if (!response.ok) throw new Error("Lỗi kết nối");
+      if (!response.ok) {
+        const errorMessage = await readErrorMessage(response);
+        if (response.status === 401 && !queryWidgetKey) {
+          localStorage.removeItem("widget_api_key");
+        }
+        throw new Error(errorMessage);
+      }
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
@@ -121,7 +175,7 @@ export default function WidgetChatPage() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === botMessageId
-            ? { ...msg, content: "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
+            ? { ...msg, content: error.message || "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
             : msg
         )
       );
@@ -135,7 +189,7 @@ export default function WidgetChatPage() {
     <div className="flex flex-col h-screen bg-white">
 
       {/* Header nhỏ gọn */}
-      <div className="px-4 py-3 text-sm font-medium text-white bg-blue-600 border-b">
+      <div className="px-4 py-3 text-sm font-medium text-white border-b" style={{ background: widgetColor }}>
         Trợ lý AI
       </div>
 
@@ -149,8 +203,9 @@ export default function WidgetChatPage() {
             <div
               className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm overflow-hidden
                 ${msg.role === "user"
-                  ? "bg-blue-600 text-white rounded-br-sm"
+                  ? "text-white rounded-br-sm"
                   : "bg-white border text-gray-800 rounded-bl-sm"}`}
+              style={msg.role === "user" ? { background: widgetColor } : undefined}
             >
               
             <div className="text-sm prose max-w-none prose-p:leading-relaxed prose-pre:p-0">
@@ -158,18 +213,18 @@ export default function WidgetChatPage() {
                 remarkPlugins={[remarkGfm]}
                 components={{
                   // Tinh chỉnh cho Widget: Dùng bảng text-xs, margin/padding nhỏ hơn
-                  table: ({ node, ...props }) => (
+                  table: ({ ...props }) => (
                     <div className="my-2 overflow-x-auto custom-scrollbar">
                       <table className="min-w-full text-xs border border-collapse border-gray-300" {...props} />
                     </div>
                   ),
-                  th: ({ node, ...props }) => (
+                  th: ({ ...props }) => (
                     <th className="border border-gray-300 bg-gray-100 px-2 py-1.5 text-left font-semibold text-gray-700" {...props} />
                   ),
-                  td: ({ node, ...props }) => (
+                  td: ({ ...props }) => (
                     <td className="border border-gray-300 px-2 py-1.5 text-gray-600" {...props} />
                   ),
-                  p: ({ node, ...props }) => (
+                  p: ({ ...props }) => (
                     <p className="mb-1.5 last:mb-0 break-words whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }} {...props} />
                   )
                 }}
@@ -190,8 +245,17 @@ export default function WidgetChatPage() {
                   <div className="mt-1 space-y-1">
                     {msg.sources.map((src, i) => (
                       <div key={i} className="p-1 text-xs border rounded bg-gray-50">
-                        <p className="font-medium text-gray-500 truncate">{src.fileName}</p>
-                        <p className="line-clamp-2 text-gray-400 mt-0.5">{src.chunkText}</p>
+                        <p className="font-medium text-gray-600 truncate">
+                          {src.fileName}
+                        </p>
+                        <p className="text-gray-500 mt-0.5">
+                          {src.sectionTitle || "Không rõ section"}
+                          {src.pages ? ` · Trang ${src.pages}` : ""}
+                          {src.chunkType ? ` · ${src.chunkType}` : ""}
+                        </p>
+                        <p className="line-clamp-2 text-gray-400 mt-0.5">
+                          {src.chunkText}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -217,7 +281,8 @@ export default function WidgetChatPage() {
         <button
           onClick={handleSend}
           disabled={loading || !input.trim()}
-          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: widgetColor }}
         >
           Gửi
         </button>
@@ -225,3 +290,8 @@ export default function WidgetChatPage() {
     </div>
   );
 }
+
+function isHexColor(value) {
+  return typeof value === "string" && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(value);
+}
+

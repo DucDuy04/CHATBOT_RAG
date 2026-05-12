@@ -13,7 +13,10 @@ public class ChatResponse {
     @Data
     @Builder
     public static class SourceDto {
-        private String fileName;
-        private String chunkText; // Đoạn text gốc đã dùng làm context
-    }
+    private String fileName;
+    private String sectionTitle;
+    private String pages;
+    private String chunkType;
+    private String chunkText;
+}
 }

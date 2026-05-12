@@ -3,70 +3,246 @@ package KLTN.RAG_CHATBOT_BE.service;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import org.springframework.stereotype.Service;
 import java.util.List;
+import java.util.Locale;
+import java.util.stream.Collectors;
 
 @Service
 public class PromptBuilderService {
 
-    // System prompt định nghĩa vai trò chatbot
-    // private static final String SYSTEM_PROMPT = """
-    // Bạn là trợ lý AI hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
-
-    // Nguyên tắc trả lời:
-    // 1. Chỉ trả lời dựa trên nội dung trong phần [TÀI LIỆU THAM KHẢO] bên dưới.
-    // 2. Nếu câu hỏi không liên quan đến tài liệu, hãy nói: "Tôi không tìm thấy
-    // thông tin này trong tài liệu."
-    // 3. Trả lời bằng tiếng Việt, rõ ràng và ngắn gọn.
-    // 4. Không bịa đặt thông tin ngoài tài liệu.
-    // """;
     private static final String SYSTEM_PROMPT = """
-            Bạn là một trợ lý AI thông minh, chuyên nghiệp, hỗ trợ trả lời câu hỏi dựa trên tài liệu được cung cấp.
+        Bạn là trợ lý AI chuyên trả lời câu hỏi dựa trên tài liệu được cung cấp.
 
-            NGUYÊN TẮC TRẢ LỜI CƠ BẢN:
-            1. Ưu tiên tuyệt đối: Chỉ sử dụng nội dung trong [TÀI LIỆU THAM KHẢO] làm cơ sở trả lời.
-            2. Suy luận hợp lý: Nếu câu hỏi yêu cầu giải thích, phân tích hoặc mở rộng — hãy dùng tư duy logic của bạn để giải thích rõ hơn, nhưng tuyệt đối không được mâu thuẫn với tài liệu.
-            3. Xử lý thiếu thông tin: Nếu câu hỏi hoàn toàn không liên quan đến tài liệu hoặc tài liệu không có đáp án, hãy nói thẳng: "Tôi không tìm thấy thông tin này trong tài liệu." Không được tự bịa đặt (hallucinate).
-            4. Hình thức: Trả lời bằng tiếng Việt, ngôn từ tự nhiên, dễ hiểu. Cấu trúc câu trả lời rõ ràng (dùng bullet points, in đậm các ý chính).
+        ═══════════════════════════════════════════
+        NGUYÊN TẮC CỐT LÕI
+        ═══════════════════════════════════════════
+        1. CHỈ sử dụng nội dung trong [TÀI LIỆU THAM KHẢO] để trả lời. KHÔNG dùng kiến thức ngoài tài liệu.
+        2. Nếu tài liệu không có thông tin, trả lời đúng 1 câu: "Tôi không tìm thấy thông tin này trong tài liệu."
+        3. KHÔNG suy diễn, KHÔNG bịa đặt, KHÔNG ngoại suy ngoài những gì tài liệu nói rõ.
+        4. Trả lời bằng tiếng Việt, ngắn gọn, đúng trọng tâm.
 
-            ĐẶC BIỆT LƯU Ý KHI XỬ LÝ DỮ LIỆU BẢNG (TABLE):
-            5. Nhận diện Bảng: Trong [TÀI LIỆU THAM KHẢO] có thể chứa các bảng dữ liệu được định dạng chuẩn Markdown (ví dụ: | Cột 1 | Cột 2 |). Hãy ưu tiên tìm kiếm câu trả lời trong các bảng này nếu người dùng hỏi về thông số, số liệu, hoặc danh sách.
-            6. Trích xuất chính xác: Khi đọc bảng, phải giống đúng hàng (row) và cột (column). Không được lấy râu ông nọ cắm cằm bà kia (ví dụ: lấy tên sản phẩm ở hàng 1 nhưng ghép với giá tiền ở hàng 2).
-            7. Trình bày dạng Bảng: Nếu người dùng yêu cầu so sánh, hoặc nếu câu trả lời chứa nhiều thông số phức tạp được trích ra từ tài liệu, hãy chủ động trình bày lại câu trả lời cho người dùng dưới dạng Bảng Markdown để họ dễ đọc nhất có thể.
-            8. Tổng hợp Bảng (Table Aggregation): Nếu bạn tìm thấy nhiều bảng dữ liệu, hoặc nhiều phần của một bảng nằm rải rác trong các tài liệu tham khảo khác nhau, bạn BẮT BUỘC phải tự động gộp (merge) tất cả các hàng dữ liệu đó lại thành MỘT BẢNG MARKDOWN DUY NHẤT trong câu trả lời. Tuyệt đối không được bỏ sót bất kỳ hàng dữ liệu nào. Nếu cú pháp bảng trong tài liệu bị lỗi nhẹ, hãy tự động sửa lại cho chuẩn định dạng | Cột 1 | Cột 2 | nhưng không được làm sai lệch con số.
-            """;
+        ═══════════════════════════════════════════
+        CHECKLIST TRƯỚC KHI TRẢ LỜI (bắt buộc kiểm tra)
+        ═══════════════════════════════════════════
+        Trước khi viết câu trả lời, hãy tự hỏi:
+        □ Câu hỏi đang hỏi section cha hay section con hay cả hai?
+        □ Có Source nào có Type=section_summary không? Nếu có, đọc kỹ trước.
+        □ Câu hỏi yêu cầu liệt kê đầy đủ không? Nếu có, đã duyệt hết tất cả Source chưa?
+        □ Câu hỏi yêu cầu đếm? Nếu có, đã xác định được tập đối tượng chưa?
+        □ Có bảng nào liên quan không? Nếu có, có Source Type=table_summary hoặc table_row_group không?
+        □ Nguồn trích dẫn có thật sự chứa nội dung trả lời không?
+        □ Có nội dung nào bị bỏ sót do chỉ đọc một phần Source không?
 
-    public String buildPrompt(
+        ═══════════════════════════════════════════
+        XỬ LÝ SECTION VÀ SUBSECTION
+        ═══════════════════════════════════════════
+        5. Khi có Source có Type=section_summary, đây là tóm tắt của toàn bộ section — đọc kỹ trước khi đọc chi tiết.
+        6. KHÔNG nói "không tìm thấy" chỉ vì một Source cha có content rỗng. Phải kiểm tra các Source con (subsection).
+        7. Nếu câu hỏi hỏi về section cha (vd: "Section 6 gồm những gì?"), hãy tổng hợp từ TẤT CẢ Source thuộc section đó và các subsection con.
+        8. Khi tổng hợp nhiều subsection, giữ nguyên cấu trúc nhóm logic như trong tài liệu.
+
+        ═══════════════════════════════════════════
+        XỬ LÝ BẢNG
+        ═══════════════════════════════════════════
+        9. Khi có Source có Type=table_summary hoặc table_row_group, hoặc Content chứa '|' theo dạng Markdown table, BẮT BUỘC trình bày kết quả bằng bảng Markdown.
+        10. Đọc đúng từng hàng và cột. KHÔNG nhầm lẫn dữ liệu giữa các hàng.
+        11. Nếu dữ liệu bảng nằm ở nhiều Source, BẮT BUỘC gộp tất cả hàng thành MỘT bảng duy nhất, KHÔNG bỏ sót hàng nào.
+        12. KHÔNG dùng table_summary làm nguồn duy nhất nếu câu hỏi yêu cầu số liệu cụ thể — phải đọc thêm table_row_group.
+        13. Nếu table_summary cho biết có nhiều dòng nhưng chỉ thấy một phần, hãy nói rõ: "Bảng có N dòng, hiển thị M dòng được tìm thấy."
+        14. Khi có Source có Type=text_table_like, nội dung có cấu trúc dạng bảng nhưng không được parser nhận diện thành bảng chính thức. BẮT BUỘC giữ nguyên quan hệ hàng-cột, KHÔNG flatten thành danh sách phẳng. Trình bày theo dạng "thuộc tính — giá trị" hoặc bảng Markdown nếu có thể nhận ra cấu trúc cột.
+
+        ═══════════════════════════════════════════
+        XỬ LÝ CÂU HỎI ĐẾM / BAO NHIÊU
+        ═══════════════════════════════════════════
+        14. Với câu hỏi "bao nhiêu", "có mấy", "tổng số": KHÔNG tự đoán số. Phải đếm thực sự từ danh sách.
+        15. Quy trình đếm bắt buộc:
+            a. Xác định tập đối tượng cần đếm (từ tất cả Source liên quan).
+            b. Chuẩn hóa danh sách (bỏ duplicate, bỏ item không hợp lệ).
+            c. Đếm số lượng.
+            d. Trả lời: "Có N [đối tượng]. Danh sách: 1. ..., 2. ..., ..."
+        16. Nếu phạm vi mơ hồ (vd: tính trong một section hay toàn tài liệu), trả lời theo cả hai cách hiểu.
+
+        ═══════════════════════════════════════════
+        XỬ LÝ DANH SÁCH / LIỆT KÊ
+        ═══════════════════════════════════════════
+        17. Khi được yêu cầu liệt kê, tổng hợp ĐẦY ĐỦ tất cả items từ tất cả Source. KHÔNG tự ý lược bớt.
+        18. Sắp xếp theo thứ tự trong tài liệu (không sắp xếp lại theo bảng chữ cái trừ khi được yêu cầu).
+        19. Nếu một item xuất hiện nhiều lần ở nhiều Source, chỉ liệt kê 1 lần (deduplicate).
+
+        ═══════════════════════════════════════════
+        TRÍCH NGUỒN (CITATION)
+        ═══════════════════════════════════════════
+        20. Luôn trích nguồn ở cuối câu trả lời theo dạng:
+            Nguồn: [Tên file] | Section: [Section Title] | Trang: [X-Y]
+        21. Nếu tổng hợp từ nhiều Source, trích từng Source liên quan.
+        22. KHÔNG cite Source mà content không thật sự chứa thông tin trả lời.
+        23. KHÔNG cite section cha rỗng cho nội dung thật sự nằm trong section con.
+
+        ═══════════════════════════════════════════
+        GIỚI HẠN ĐỘ DÀI
+        ═══════════════════════════════════════════
+        24. Câu hỏi thực thể đơn giản: trả lời ngắn gọn (1-3 câu + nguồn).
+        25. Câu hỏi liệt kê / tóm tắt section: trả lời đầy đủ, có thể dài, nhưng không dài hơn mức cần thiết.
+        26. Câu hỏi đếm: luôn kèm danh sách để người dùng kiểm chứng.
+        """;
+
+    public String getSystemPrompt() {
+        return SYSTEM_PROMPT;
+    }
+
+    /**
+     * Xây dựng user prompt từ danh sách RetrievedContext, kèm loại câu hỏi để LLM
+     * biết chiến lược trả lời phù hợp.
+     */
+    public String buildUserPromptFromRetrievedContexts(
+            String question,
+            List<KLTN.RAG_CHATBOT_BE.dto.RetrievedContext> contexts,
+            List<ChatMessage> chatHistory
+    ) {
+        return buildUserPromptFromRetrievedContexts(question, contexts, chatHistory, null);
+    }
+
+    public String buildUserPromptFromRetrievedContexts(
+            String question,
+            List<KLTN.RAG_CHATBOT_BE.dto.RetrievedContext> contexts,
+            List<ChatMessage> chatHistory,
+            String queryTypeHint
+    ) {
+        return buildUserPromptFromRetrievedContexts(question, contexts, chatHistory, queryTypeHint, null);
+    }
+
+    public String buildUserPromptFromRetrievedContexts(
+            String question,
+            List<KLTN.RAG_CHATBOT_BE.dto.RetrievedContext> contexts,
+            List<ChatMessage> chatHistory,
+            String queryTypeHint,
+            String lockedScopeLabel
+    ) {
+        StringBuilder prompt = new StringBuilder();
+
+        // Khi scope đã được lock vào một section cụ thể, thông báo cho LLM để tránh cite ngoài phạm vi.
+        if (lockedScopeLabel != null && !lockedScopeLabel.isBlank()) {
+            prompt.append("[PHẠM VI TÌM KIẾM ĐÃ XÁC ĐỊNH: ").append(lockedScopeLabel).append("]\n");
+            prompt.append("Tất cả Source dưới đây đều thuộc section này và các mục con của nó. ")
+                  .append("CHỈ cite từ các Source trong danh sách, KHÔNG cite section khác.\n\n");
+        }
+
+        // Nếu có query type hint, thêm instruction đặc biệt trước [TÀI LIỆU THAM KHẢO]
+        if (queryTypeHint != null && !queryTypeHint.isBlank()) {
+            prompt.append("[LOẠI CÂU HỎI: ").append(queryTypeHint).append("]\n");
+            prompt.append(buildQueryTypeInstruction(queryTypeHint)).append("\n\n");
+        }
+
+        prompt.append("[TÀI LIỆU THAM KHẢO]\n");
+
+        for (int i = 0; i < contexts.size(); i++) {
+            KLTN.RAG_CHATBOT_BE.dto.RetrievedContext ctx = contexts.get(i);
+
+            prompt.append("[Source ").append(i + 1).append("]\n");
+            prompt.append("Document: ").append(nullSafe(ctx.getFileName())).append("\n");
+            prompt.append("Section: ").append(nullSafe(ctx.getHeadingPathText())).append("\n");
+            prompt.append("Pages: ").append(ctx.getPageStart()).append("-").append(ctx.getPageEnd()).append("\n");
+            prompt.append("Type: ").append(nullSafe(ctx.getChunkType())).append("\n\n");
+            prompt.append("Content:\n");
+            prompt.append(ctx.getContent()).append("\n\n");
+        }
+
+        if (!chatHistory.isEmpty()) {
+            prompt.append("[LỊCH SỬ HỘI THOẠI]\n");
+            for (ChatMessage msg : chatHistory) {
+                String role = "USER".equals(msg.getRole().name().toUpperCase(Locale.ROOT))
+                        ? "Người dùng" : "Trợ lý";
+                prompt.append(role).append(": ").append(msg.getContent()).append("\n");
+            }
+            prompt.append("\n");
+        }
+
+        prompt.append("[CÂU HỎI HIỆN TẠI]\n");
+        prompt.append(question);
+
+        return prompt.toString();
+    }
+
+    /** Instruction bổ sung dựa trên loại câu hỏi. */
+    private String buildQueryTypeInstruction(String queryTypeHint) {
+        return switch (queryTypeHint) {
+            case "COUNT_QUERY" -> """
+                    Đây là câu hỏi ĐẾM. Bắt buộc:
+                    1. Duyệt TẤT CẢ Source để tìm đủ danh sách đối tượng.
+                    2. Deduplicate danh sách.
+                    3. Đếm số lượng và liệt kê đầy đủ kèm theo.
+                    4. Nếu phạm vi mơ hồ, trả lời theo cả hai cách hiểu.
+                    """;
+            case "LIST_ALL" -> """
+                    Đây là câu hỏi LIỆT KÊ ĐẦY ĐỦ. Bắt buộc:
+                    1. Duyệt TẤT CẢ Source (đặc biệt section_summary) để tìm đủ items.
+                    2. KHÔNG bỏ sót items ở các Source cuối.
+                    3. Giữ nguyên nhóm logic trong tài liệu.
+                    4. Nếu có Source là section_summary, đọc trước để có tổng quan.
+                    """;
+            case "TABLE_LOOKUP" -> """
+                    Đây là câu hỏi TRA CỨU BẢNG. Bắt buộc:
+                    1. Tìm Source có Type=table_summary hoặc table_row_group.
+                    2. Gộp TẤT CẢ dòng từ các Source table_row_group thành một bảng duy nhất.
+                    3. Trình bày kết quả bằng bảng Markdown.
+                    4. Không bỏ sót dòng nào.
+                    """;
+            case "SECTION_SUMMARY" -> """
+                    Đây là câu hỏi về NỘI DUNG MỘT SECTION. Bắt buộc:
+                    1. Đọc Source có Type=section_summary trước (nếu có).
+                    2. Tổng hợp từ TẤT CẢ Source thuộc section và subsection liên quan.
+                    3. Giữ cấu trúc phân cấp (heading cha → heading con) trong câu trả lời.
+                    4. KHÔNG bỏ sót subsection nào.
+                    """;
+            case "TABLE_LIKE" -> """
+                    Source có Type=text_table_like chứa dữ liệu dạng bảng chưa được parse thành bảng chính thức.
+                    BẮT BUỘC:
+                    1. Đọc và giữ nguyên quan hệ cột-hàng trong content.
+                    2. Nếu nhận ra pattern cột, trình bày bằng bảng Markdown.
+                    3. Nếu không chắc pattern cột, trình bày theo "thuộc tính — giá trị" cho từng dòng.
+                    4. KHÔNG flatten thành danh sách phẳng.
+                    """;
+            default -> "";
+        };
+    }
+
+    /** Legacy method. */
+    public String buildUserPrompt(
             String question,
             List<String> contextChunks,
             List<ChatMessage> chatHistory) {
 
         StringBuilder prompt = new StringBuilder();
 
-        // 1. System prompt
-        prompt.append(SYSTEM_PROMPT).append("\n\n");
+        List<String> uniqueChunks = contextChunks.stream()
+                .filter(chunk -> chunk != null && !chunk.isBlank())
+                .map(String::trim)
+                .distinct()
+                .limit(6)
+                .collect(Collectors.toList());
 
-        // 2. Context từ Qdrant
         prompt.append("[TÀI LIỆU THAM KHẢO]\n");
-        for (int i = 0; i < contextChunks.size(); i++) {
+        for (int i = 0; i < uniqueChunks.size(); i++) {
             prompt.append("Đoạn ").append(i + 1).append(":\n");
-            prompt.append(contextChunks.get(i)).append("\n\n");
+            prompt.append(uniqueChunks.get(i)).append("\n\n");
         }
 
-        // 3. Lịch sử chat (nếu có)
         if (!chatHistory.isEmpty()) {
             prompt.append("[LỊCH SỬ HỘI THOẠI]\n");
             for (ChatMessage msg : chatHistory) {
-                String role = msg.getRole() == ChatMessage.MessageRole.USER
-                        ? "Người dùng"
-                        : "Trợ lý";
+                String role = "USER".equals(msg.getRole().name().toUpperCase(Locale.ROOT))
+                        ? "Người dùng" : "Trợ lý";
                 prompt.append(role).append(": ").append(msg.getContent()).append("\n");
             }
             prompt.append("\n");
         }
 
-        // 4. Câu hỏi hiện tại
         prompt.append("[CÂU HỎI HIỆN TẠI]\n");
         prompt.append(question);
 
         return prompt.toString();
+    }
+
+    private String nullSafe(String value) {
+        return value == null ? "" : value;
     }
 }

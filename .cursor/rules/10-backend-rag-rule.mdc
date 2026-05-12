@@ -1,0 +1,99 @@
+---
+description: Apply when modifying Backend Java/Spring Boot, RAG pipeline, chat, upload, parsing, embedding, retrieval, prompt building, or backend config.
+globs: Backend/**/*.java,Backend/pom.xml,Backend/src/main/resources/**/*.yml,preprocess/**/*.java
+alwaysApply: false
+---
+
+# 10 - Backend / RAG Rule
+
+Áp dụng khi task liên quan backend, RAG, upload tài liệu, parsing, chunking, embedding, retrieval, chat sync, chat streaming, security hoặc service Java.
+
+## File nên đọc theo loại task
+
+### Upload / ingestion
+
+Ưu tiên đọc:
+
+- `Backend/src/main/java/**/api/DocumentController.java`
+- `Backend/src/main/java/**/service/DocumentService.java`
+- `Backend/src/main/java/**/service/DocumentParserService.java`
+- `Backend/src/main/java/**/service/ChunkingService2.java`
+- `Backend/src/main/java/**/service/EmbeddingService.java`
+- `Backend/src/main/java/**/domain/document/**`
+- repository liên quan document/chunk/section/table
+- config upload/multipart nếu có
+- Qdrant config nếu có lưu vector
+
+### Chat sync / RAG answer
+
+Ưu tiên đọc:
+
+- `Backend/src/main/java/**/api/ChatController.java`
+- `Backend/src/main/java/**/service/ChatService.java`
+- `Backend/src/main/java/**/service/RagRetrievalService.java`
+- `Backend/src/main/java/**/service/EmbeddingService.java`
+- `Backend/src/main/java/**/service/PromptBuilderService.java`
+- `Backend/src/main/java/**/service/QueryAnalyzerService.java`
+- `Backend/src/main/java/**/service/RerankService.java`
+- `Backend/src/main/java/**/domain/chat/**`
+- DTO request/response liên quan
+
+### Chat streaming / SSE
+
+Ưu tiên đọc:
+
+- `ChatController`
+- `ChatService` method stream nếu có
+- DTO streaming nếu có
+- fallback model/provider
+- timeout/executor nếu có
+- frontend code gọi stream nếu bug thấy ở UI
+
+### Widget backend / security
+
+Ưu tiên đọc:
+
+- `WidgetController`
+- `WidgetService`
+- `WidgetAuthFilter`
+- `SecurityConfig`
+- `domain/widget/**`
+- repository widget liên quan
+- CORS config
+
+## Nguyên tắc backend
+
+- Không thêm dependency mới nếu chưa thật sự cần.
+- Không đổi public API contract nếu task không yêu cầu.
+- Không đổi entity/schema nếu chưa phân tích impact dữ liệu cũ.
+- Không đổi model/provider Groq/Nomic/Cohere nếu task không yêu cầu.
+- Không log nội dung tài liệu quá dài, prompt đầy đủ, API key, token, credential.
+- Không load toàn bộ dữ liệu lớn vào memory nếu có cách giữ scope nhỏ hơn.
+- Không xử lý nhiều chunk/vector một lần theo kiểu dễ OOM.
+- Không tăng top-k/context/prompt length nếu chưa có lý do rõ ràng.
+- Không để exception làm document/chat rơi vào trạng thái không rõ ràng.
+
+## Checklist phân tích backend
+
+Khi đọc source, phải kiểm tra trong phạm vi task:
+
+- request đi qua controller/service/repository nào
+- transaction/status update có đúng không
+- exception có bị nuốt hoặc convert sai không
+- query có nguy cơ N+1/full scan không
+- dữ liệu có thể null/blank/invalid UUID không
+- file/PDF/chunk/text có thể quá lớn không
+- external API có thể fail/rate limit/timeout không
+- Qdrant vector-size/collection/filter có phù hợp không
+- fallback có làm sai behavior không
+
+## Kiểm tra backend
+
+Ưu tiên chạy:
+
+```bash
+cd Backend && ./mvnw -DskipTests compile
+cd Backend && ./mvnw test
+```
+
+Nếu test phụ thuộc external service hoặc thiếu env, ghi rõ `NOT RUN` hoặc `FAIL` cùng lý do trong report.

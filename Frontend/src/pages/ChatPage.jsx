@@ -3,7 +3,20 @@ import { v4 as uuidv4 } from "uuid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = (import.meta.env.VITE_API_URL || "").trim();
+const ENV_WIDGET_KEY = import.meta.env.VITE_WIDGET_API_KEY;
+
+const readErrorMessage = async (response) => {
+  const text = await response.text();
+  if (!text) return "Loi ket noi server";
+
+  try {
+    const data = JSON.parse(text);
+    return data.error || data.message || text;
+  } catch {
+    return text;
+  }
+};
 
 const getSessionId = () => {
   const stored = localStorage.getItem("chat_session_id");
@@ -23,6 +36,11 @@ export default function ChatPage() {
   ]);
   const [input, setInput]     = useState("");
   const [loading, setLoading] = useState(false);
+  const [widgetKey, setWidgetKey] = useState(
+    localStorage.getItem("widget_api_key") || ENV_WIDGET_KEY || ""
+  );
+  const [widgetKeyInput, setWidgetKeyInput] = useState(widgetKey);
+  const [authError, setAuthError] = useState("");
   const bottomRef             = useRef(null);
   const sessionId             = getSessionId();
 
@@ -32,6 +50,21 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    if (!widgetKey) {
+      setMessages((prev) => [
+        ...prev,
+        { id: uuidv4(), role: "user", content: input.trim() },
+        {
+          id: uuidv4(),
+          role: "assistant",
+          content:
+            "Thiếu widget key. Hãy cấu hình `VITE_WIDGET_API_KEY` hoặc lưu `widget_api_key` vào localStorage.",
+          streaming: false,
+        },
+      ]);
+      setInput("");
+      return;
+    }
 
     const userMessage = {
       id: uuidv4(),
@@ -53,16 +86,28 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (widgetKey) headers["X-Widget-Key"] = widgetKey;
+
       const response = await fetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           sessionId,
           message: userMessage.content,
         }),
       });
 
-      if (!response.ok) throw new Error("Lỗi kết nối server");
+      if (!response.ok) {
+        const errorMessage = await readErrorMessage(response);
+        if (response.status === 401) {
+          localStorage.removeItem("widget_api_key");
+          setWidgetKey("");
+          setWidgetKeyInput("");
+          setAuthError("Widget key khong hop le hoac da bi tat. Hay tao/lap lai apiKey hop le trong tab Tai lieu.");
+        }
+        throw new Error(errorMessage);
+      }
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
@@ -132,7 +177,7 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === botMessageId
-            ? { ...msg, content: "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
+            ? { ...msg, content: error.message || "Có lỗi xảy ra, vui lòng thử lại.", streaming: false }
             : msg
         )
       );
@@ -148,6 +193,22 @@ export default function ChatPage() {
     }
   };
 
+  const handleSaveWidgetKey = () => {
+    const normalized = widgetKeyInput.trim();
+    if (!normalized) return;
+    localStorage.setItem("widget_api_key", normalized);
+    setWidgetKey(normalized);
+    setAuthError("");
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uuidv4(),
+        role: "assistant",
+        content: "Đã lưu widget_api_key. Bạn có thể gửi câu hỏi lại.",
+      },
+    ]);
+  };
+
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto">
 
@@ -155,6 +216,29 @@ export default function ChatPage() {
       <div className="p-4 text-lg font-semibold bg-white border-b">
         RAG Chatbot
       </div>
+
+      {(!widgetKey || authError) && (
+        <div className="p-3 border-b bg-amber-50">
+          <p className="text-xs text-amber-800 mb-2">
+            {authError || "Thieu widget key. Dan apiKey tu API tao widget de bat chat."}
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={widgetKeyInput}
+              onChange={(e) => setWidgetKeyInput(e.target.value)}
+              placeholder="widget api key (UUID)"
+              className="flex-1 px-3 py-2 text-xs border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+            />
+            <button
+              onClick={handleSaveWidgetKey}
+              className="px-3 py-2 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700"
+            >
+              Lưu key
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Danh sách tin nhắn */}
       <div className="flex-1 p-4 space-y-4 overflow-y-auto bg-gray-50">
@@ -175,18 +259,18 @@ export default function ChatPage() {
               remarkPlugins={[remarkGfm]}
               components={{
                 // Customize lại thẻ table để hiển thị đẹp bằng Tailwind
-                table: ({ node, ...props }) => (
+                table: ({ ...props }) => (
                   <div className="my-3 overflow-x-auto">
                     <table className="min-w-full text-sm border border-collapse border-gray-300" {...props} />
                   </div>
                 ),
-                th: ({ node, ...props }) => (
+                th: ({ ...props }) => (
                   <th className="px-3 py-2 font-semibold text-left text-gray-700 bg-gray-100 border border-gray-300" {...props} />
                 ),
-                td: ({ node, ...props }) => (
+                td: ({ ...props }) => (
                   <td className="px-3 py-2 text-gray-600 border border-gray-300" {...props} />
                 ),
-                p: ({ node, ...props }) => (
+                p: ({ ...props }) => (
                   <p className="mb-2 break-words whitespace-pre-wrap last:mb-0" style={{ overflowWrap: "anywhere" }} {...props} />
                 )
               }}
@@ -208,16 +292,15 @@ export default function ChatPage() {
                   <div className="mt-1 space-y-1">
                     {msg.sources.map((src, i) => (
                       <div key={i} className="p-2 border rounded bg-gray-50">
-                        <p
-                          className="font-medium text-gray-600 break-words"
-                          style={{ overflowWrap: "anywhere" }}
-                        >
+                        <p className="font-medium text-gray-600 truncate">
                           {src.fileName}
                         </p>
-                        <p
-                          className="mt-1 break-words line-clamp-2"
-                          style={{ overflowWrap: "anywhere" }}
-                        >
+                        <p className="text-gray-500 mt-0.5">
+                          {src.sectionTitle || "Không rõ section"}
+                          {src.pages ? ` · Trang ${src.pages}` : ""}
+                          {src.chunkType ? ` · ${src.chunkType}` : ""}
+                        </p>
+                        <p className="line-clamp-2 text-gray-400 mt-0.5">
                           {src.chunkText}
                         </p>
                       </div>
@@ -253,3 +336,4 @@ export default function ChatPage() {
     </div>
   );
 }
+

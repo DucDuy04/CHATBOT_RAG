@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public Widget Test</title>
+  </head>
+  <body>
+    <h1>Public Widget Test</h1>
+    <p>
+      Bubble + iframe widget load từ <code>dist-widget/chatbot-widget.iife.js</code>.
+      API key là UUID trả về field <code>apiKey</code> duy nhất lúc
+      <code>POST /api/chatbots</code> (không hiện lại trong list).
+    </p>
+    <p>
+      Mở kèm query để không sửa file:
+      <code>?widgetKey=&lt;apiKey-uuid&gt;</code> hoặc <code>?apiKey=&lt;uuid&gt;</code>
+    </p>
+    <p>Ví dụ: <code>http://localhost:5173/public-widget-test.html?widgetKey=YOUR_UUID</code></p>
+
+    <script>
+      (function () {
+        var qs = new URLSearchParams(window.location.search);
+        var key = qs.get("widgetKey") || qs.get("apiKey") || "";
+        window.RagChatbotConfig = {
+          widgetKey: key,
+          frontendUrl: "http://localhost:5173",
+          position: "bottom-right",
+          widgetColor: "#2563eb",
+          welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
+          launcherIcon: "chat",
+        };
+      })();
+    </script>
+
+    <script src="/dist-widget/chatbot-widget.iife.js"></script>
+  </body>
+</html>
