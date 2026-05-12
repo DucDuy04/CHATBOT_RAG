@@ -4,7 +4,7 @@ import CompareConfigPanel from "./CompareConfigPanel";
 import SkeletonLoader from "../../../components/common/SkeletonLoader";
 import EmptyState from "../../../components/common/EmptyState";
 
-function AnswerColumn({ title, result, loading, configSummary }) {
+function AnswerColumn({ title, result, loading, configSummary, topK }) {
   if (loading) {
     return (
       <div className="rounded-lg border bg-white p-4 min-h-[200px]">
@@ -34,7 +34,13 @@ function AnswerColumn({ title, result, loading, configSummary }) {
         ? String(result.answer)
         : "";
 
-  const sources = Array.isArray(result.sources) ? result.sources : [];
+  const rawSources = Array.isArray(result.sources) ? result.sources : [];
+  const cap =
+    topK != null && Number.isFinite(Number(topK)) && Number(topK) > 0
+      ? Math.min(50, Math.max(1, Math.floor(Number(topK))))
+      : null;
+  const sources = cap != null ? rawSources.slice(0, cap) : rawSources;
+  const hiddenCount = cap != null ? Math.max(0, rawSources.length - sources.length) : 0;
   const latency = result.latency;
 
   return (
@@ -68,6 +74,12 @@ function AnswerColumn({ title, result, loading, configSummary }) {
       {sources.length > 0 ? (
         <div className="text-xs border-t pt-2">
           <p className="font-semibold text-gray-600 mb-1">Sources</p>
+          {cap != null && (
+            <p className="text-[10px] text-gray-500 mb-1">
+              Showing top {cap} source{cap === 1 ? "" : "s"}
+              {hiddenCount > 0 ? ` (${hiddenCount} more from retrieval hidden in MVP view).` : "."}
+            </p>
+          )}
           <ul className="space-y-1 text-gray-600">
             {sources.map((src, i) => (
               <li key={i} className="truncate" title={src.chunkText}>
@@ -179,12 +191,14 @@ export default function ComparePane({
             result={resA}
             loading={compareLoading}
             configSummary={fmtCfg(compareConfigA, "A")}
+            topK={compareConfigA?.topK}
           />
           <AnswerColumn
             title="Answer B"
             result={resB}
             loading={compareLoading}
             configSummary={fmtCfg(compareConfigB, "B")}
+            topK={compareConfigB?.topK}
           />
         </div>
       </div>

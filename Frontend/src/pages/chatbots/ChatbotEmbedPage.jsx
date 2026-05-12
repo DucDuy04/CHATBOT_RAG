@@ -20,9 +20,39 @@ function resolveWidgetKey(form) {
   return typeof k === "string" ? k.trim() : "";
 }
 
+const ORIGIN_LINE_RE = /^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?(\/.*)?$/;
+
+/**
+ * Normalize allowed origins for form + snippet: array, multiline string, or comma-separated.
+ * Trims, drops blanks, dedupes (first occurrence wins).
+ */
+function normalizeAllowedOriginsList(raw) {
+  let parts = [];
+  if (raw == null) {
+    parts = [];
+  } else if (Array.isArray(raw)) {
+    parts = raw.map((s) => String(s).trim()).filter(Boolean);
+  } else if (typeof raw === "string") {
+    parts = raw
+      .split(/[\n\r,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    if (!ORIGIN_LINE_RE.test(p)) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
 /** Build embed snippet from current form values (real widgetKey when loaded). */
 function buildSnippet({ form }) {
   const widgetKey = resolveWidgetKey(form);
+  const allowedOrigins = normalizeAllowedOriginsList(form.allowedOrigins);
   const cfg = {
     widgetKey,
     frontendUrl: `${FRONTEND_URL}`,
@@ -30,7 +60,7 @@ function buildSnippet({ form }) {
     welcomeMessage: form.welcomeMessage,
     position: form.position,
     launcherIcon: form.launcherIcon,
-    allowedOrigins: form.allowedOrigins,
+    allowedOrigins,
   };
 
   const cfgJson = JSON.stringify(cfg, null, 2)
@@ -59,7 +89,7 @@ function toFormState(config) {
     position:
       config.position === "bottom-left" ? "bottom-left" : "bottom-right",
     launcherIcon: config.launcherIcon || "chat",
-    allowedOrigins: Array.isArray(config.allowedOrigins) ? config.allowedOrigins : [],
+    allowedOrigins: normalizeAllowedOriginsList(config.allowedOrigins),
   };
 }
 
@@ -158,9 +188,9 @@ export default function ChatbotEmbedPage() {
         launcherIcon: form.launcherIcon,
       };
       const updated = await chatbotsApi.updateEmbedConfig(id, payload);
-      // Sync local form from response to pick up any server-side normalization (widgetKey still from API)
+      // Merge response into current form so snippet uses latest allowedOrigins (and never drops widgetKey)
       if (updated && typeof updated === "object") {
-        setForm(toFormState({ ...form, ...updated }));
+        setForm((prev) => toFormState({ ...prev, ...updated }));
       }
       toastRef.current.success("Embed config saved!");
     } catch (err) {
@@ -286,6 +316,7 @@ export default function ChatbotEmbedPage() {
             welcomeMessage={form.welcomeMessage}
             position={form.position}
             launcherIcon={form.launcherIcon}
+            allowedOrigins={form.allowedOrigins}
           />
           {!hasWidgetKey && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

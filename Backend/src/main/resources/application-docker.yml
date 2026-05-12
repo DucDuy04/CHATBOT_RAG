@@ -2,7 +2,7 @@ spring:
   datasource:
     url: jdbc:mysql://mysql:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
-    password: 0406
+    password: root
 
   jpa:
     hibernate:

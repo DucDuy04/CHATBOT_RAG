@@ -10,24 +10,15 @@ function formatDateTime(value) {
   });
 }
 
-function renderRating(rating) {
-  if (rating == null) return "-";
-  const num = Number(rating);
-  if (Number.isNaN(num)) return String(rating);
-  const stars = "★".repeat(Math.max(Math.min(Math.round(num), 5), 0));
-  return `${num}/5 ${stars}`;
-}
-
 export default function SessionsTable({ items = [], onView }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[860px] text-sm">
+      <table className="w-full min-w-[640px] text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
             <th className="py-2 pr-3">Session ID</th>
             <th className="px-3 py-2">Chatbot</th>
             <th className="px-3 py-2">Messages</th>
-            <th className="px-3 py-2">Rating</th>
             <th className="px-3 py-2">Date</th>
             <th className="py-2 pl-3 text-right">View</th>
           </tr>
@@ -38,7 +29,6 @@ export default function SessionsTable({ items = [], onView }) {
               <td className="py-3 pr-3 font-mono text-xs text-gray-700">{session.id || "-"}</td>
               <td className="px-3 py-3 text-gray-700">{session.chatbotName || "-"}</td>
               <td className="px-3 py-3 text-gray-600">{session.messageCount ?? "-"}</td>
-              <td className="px-3 py-3 text-gray-600">{renderRating(session.rating)}</td>
               <td className="px-3 py-3 text-gray-600">{formatDateTime(session.createdAt)}</td>
               <td className="py-3 pl-3 text-right">
                 <button

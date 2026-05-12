@@ -5,13 +5,6 @@ import SessionsTable from "./SessionsTable";
 import SessionsPagination from "./SessionsPagination";
 import SessionDetailDrawer from "./SessionDetailDrawer";
 
-const RATING_OPTIONS = [
-  { value: "", label: "All ratings" },
-  { value: "positive", label: "Positive" },
-  { value: "negative", label: "Negative" },
-  { value: "unrated", label: "Unrated" },
-];
-
 function normalizeSessionsResponse(payload) {
   if (Array.isArray(payload)) {
     return { items: payload, page: 0, size: payload.length || 10, total: payload.length, totalPages: 1 };
@@ -34,7 +27,6 @@ export default function AnalyticsSessionsTab({
 }) {
   const toast = useToast();
   const toastRef = useRef(toast);
-  const [rating, setRating] = useState("");
   const [page, setPage] = useState(0);
   const [selectedSession, setSelectedSession] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -55,7 +47,7 @@ export default function AnalyticsSessionsTab({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPage(0);
-  }, [from, to, chatbotId, rating]);
+  }, [from, to, chatbotId]);
 
   const loadSessions = useCallback(async () => {
     if (!active || invalidRange) return;
@@ -66,7 +58,6 @@ export default function AnalyticsSessionsTab({
         from,
         to,
         chatbotId: chatbotId || undefined,
-        rating: rating || undefined,
         page,
       });
       const normalized = normalizeSessionsResponse(payload);
@@ -75,7 +66,7 @@ export default function AnalyticsSessionsTab({
       setState((prev) => ({ ...prev, loading: false, error: "Failed to load sessions." }));
       toastRef.current.error("Failed to load sessions data.");
     }
-  }, [active, chatbotId, from, invalidRange, page, rating, to]);
+  }, [active, chatbotId, from, invalidRange, page, to]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -107,23 +98,6 @@ export default function AnalyticsSessionsTab({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="max-w-[260px]">
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Rating</label>
-          <select
-            value={rating}
-            onChange={(e) => setRating(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-          >
-            {RATING_OPTIONS.map((opt) => (
-              <option key={opt.value || "all"} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
       {invalidRange && (
         <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
           Sessions fetch is paused until the custom date range is valid.
@@ -142,7 +116,11 @@ export default function AnalyticsSessionsTab({
         )}
 
         {showEmpty && (
-          <EmptyState icon="🗂️" title="No sessions found" message="Try changing date range, chatbot or rating filter." />
+          <EmptyState
+            icon="🗂️"
+            title="No sessions found"
+            message="Try changing the date range or chatbot filter."
+          />
         )}
 
         {!state.loading && !state.error && state.items.length > 0 && (

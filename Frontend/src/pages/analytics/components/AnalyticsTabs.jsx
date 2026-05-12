@@ -1,7 +1,6 @@
 const TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" },
-  { key: "feedback", label: "Feedback" },
 ];
 
 export default function AnalyticsTabs({ activeTab, onChange }) {

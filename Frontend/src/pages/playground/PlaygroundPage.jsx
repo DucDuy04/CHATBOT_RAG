@@ -85,12 +85,42 @@ export default function PlaygroundPage() {
   const [compareConfigA, setCompareConfigA] = useState({ ...DEFAULT_COMPARE_CONFIG });
   const [compareConfigB, setCompareConfigB] = useState({ ...DEFAULT_COMPARE_CONFIG });
 
+  /** After stream completes, merge into sessions list so click-without-refresh shows assistant reply. */
+  const lastStreamSnapshotRef = useRef(null);
+
   const chatOverrideParams = useMemo(() => {
     const o = { ...overrideParams };
     const sp = sessionPromptOverride.trim();
     if (sp) o.systemPrompt = sp;
     return o;
   }, [overrideParams, sessionPromptOverride]);
+
+  /** Top-K from override panel — used to cap how many sources we *show* (backend may return more). */
+  const retrievalTopKLimit = useMemo(() => {
+    const n = Number(overrideParams?.topK);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.min(50, Math.max(1, Math.floor(n)));
+  }, [overrideParams.topK]);
+
+  const compareTopKLimit = useMemo(() => {
+    const a = Number(compareConfigA?.topK);
+    const b = Number(compareConfigB?.topK);
+    const maxSide = Math.max(
+      Number.isFinite(a) && a > 0 ? Math.floor(a) : 0,
+      Number.isFinite(b) && b > 0 ? Math.floor(b) : 0
+    );
+    if (maxSide <= 0) return null;
+    return Math.min(50, maxSide);
+  }, [compareConfigA.topK, compareConfigB.topK]);
+
+  const activeSourceDisplayLimit = compareMode ? compareTopKLimit : retrievalTopKLimit;
+
+  const displaySources = useMemo(() => {
+    if (!Array.isArray(lastSources) || lastSources.length === 0) return [];
+    const cap = activeSourceDisplayLimit;
+    if (cap == null) return lastSources;
+    return lastSources.slice(0, cap);
+  }, [lastSources, activeSourceDisplayLimit]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -208,10 +238,16 @@ export default function PlaygroundPage() {
     setSelectedSource(null);
 
     try {
-      let restoredMsgs = normalizeRestoredMessages(session?.messages);
-      if (restoredMsgs.length === 0) {
+      // Prefer export — list payload can lag behind DB right after streaming ends.
+      let restoredMsgs = [];
+      try {
         const result = await playgroundApi.exportSession(session.id);
         restoredMsgs = normalizeRestoredMessages(result?.messages);
+      } catch {
+        restoredMsgs = [];
+      }
+      if (restoredMsgs.length === 0) {
+        restoredMsgs = normalizeRestoredMessages(session?.messages);
       }
       setMessages(restoredMsgs);
 
@@ -300,14 +336,26 @@ export default function PlaygroundPage() {
         const sources = result?.sources || [];
         const latencyVal = result?.latency ?? null;
         const returnedSessionId = result?.sessionId || null;
+        const sid = returnedSessionId || selectedSessionId;
 
-        setMessages((prev) =>
-          prev.map((msg) =>
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
             msg.id === botMsgId
               ? { ...msg, streaming: false, sources, latency: latencyVal }
               : msg
-          )
-        );
+          );
+          if (sid) {
+            const snapshot = updated.map((m) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              sources: Array.isArray(m.sources) ? m.sources : [],
+              latency: m.latency ?? null,
+            }));
+            lastStreamSnapshotRef.current = { sessionId: sid, messages: snapshot };
+          }
+          return updated;
+        });
         setLastSources(sources);
         setLastLatency(latencyVal);
         setIsStreaming(false);
@@ -317,11 +365,23 @@ export default function PlaygroundPage() {
           setSelectedSessionId(returnedSessionId);
         }
 
-        // Refresh session list in microtask to avoid setState-in-effect lint issue
         Promise.resolve().then(async () => {
           try {
             const data = await playgroundApi.getSessions(selectedChatbotId);
-            setSessions(data || []);
+            let list = data || [];
+            const snap = lastStreamSnapshotRef.current;
+            if (snap?.sessionId) {
+              list = list.map((s) => {
+                if (s.id !== snap.sessionId) return s;
+                const fromServer = normalizeRestoredMessages(s.messages);
+                const hasAssistant = fromServer.some(
+                  (m) => m.role === "assistant" && m.content && m.content.trim() !== ""
+                );
+                if (hasAssistant) return s;
+                return { ...s, messages: snap.messages };
+              });
+            }
+            setSessions(list);
           } catch {
             /* ignore refresh errors */
           }
@@ -521,7 +581,9 @@ export default function PlaygroundPage() {
         <div className="hidden lg:flex w-72 shrink-0 flex-col border-l bg-white overflow-y-auto">
           <div className="border-b">
             <RetrievalPanel
-              sources={lastSources}
+              sources={displaySources}
+              totalSourceCount={lastSources.length}
+              topKLimit={activeSourceDisplayLimit}
               selectedSource={selectedSource}
               onSourceSelect={handleSourceClick}
               compareMode={compareMode}

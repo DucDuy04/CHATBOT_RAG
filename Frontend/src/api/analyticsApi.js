@@ -60,31 +60,17 @@ export const analyticsApi = {
     return res.data;
   },
 
-  /** GET /api/analytics/sessions?from=&to=&chatbotId=&rating=&page= */
-  getSessions: async ({ from, to, chatbotId, rating, page = 0, size = 10 } = {}) => {
+  /** GET /api/analytics/sessions?from=&to=&chatbotId=&page= — rating filter removed from MVP UI */
+  getSessions: async ({ from, to, chatbotId, page = 0, size = 10 } = {}) => {
     if (USE_MOCK_API) {
       await mockDelay(400);
       let filtered = [...analyticsSessions];
       if (chatbotId) filtered = filtered.filter((s) => s.chatbotId === chatbotId);
-      if (rating) {
-        if (rating === "positive") {
-          filtered = filtered.filter((s) => Number(s.rating) >= 4);
-        } else if (rating === "negative") {
-          filtered = filtered.filter((s) => Number(s.rating) <= 2);
-        } else if (rating === "unrated") {
-          filtered = filtered.filter((s) => s.rating == null);
-        } else {
-          const asNumber = Number(rating);
-          if (!Number.isNaN(asNumber)) {
-            filtered = filtered.filter((s) => s.rating === asNumber);
-          }
-        }
-      }
       void from; void to;
       return createPaginatedResponse(filtered, page, size);
     }
     const res = await axiosInstance.get("/api/analytics/sessions", {
-      params: { from, to, chatbotId, rating, page, size },
+      params: { from, to, chatbotId, page, size },
     });
     return res.data;
   },

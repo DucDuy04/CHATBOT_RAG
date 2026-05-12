@@ -42,6 +42,29 @@ export default function AllowedOriginsInput({ origins, onChange }) {
     }
   }
 
+  function handlePaste(e) {
+    const text = e.clipboardData?.getData("text") || "";
+    if (!text.includes("\n") && !text.includes("\r") && !text.includes(",")) {
+      return;
+    }
+    e.preventDefault();
+    const chunks = text
+      .split(/[\n\r,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (chunks.length === 0) return;
+    let next = [...origins];
+    for (const chunk of chunks) {
+      if (!ORIGIN_PATTERN.test(chunk)) continue;
+      if (next.includes(chunk)) continue;
+      next.push(chunk);
+    }
+    if (next.length !== origins.length) {
+      setError("");
+      onChange(next);
+    }
+  }
+
   return (
     <div className="space-y-2">
       <label className="block text-sm font-medium text-gray-700">
@@ -79,6 +102,7 @@ export default function AllowedOriginsInput({ origins, onChange }) {
           setInputValue(e.target.value);
           if (error) setError("");
         }}
+        onPaste={handlePaste}
         onKeyDown={handleKeyDown}
         placeholder="https://example.com"
         className={`w-full px-3 py-2 text-sm border rounded-lg bg-white
@@ -91,7 +115,8 @@ export default function AllowedOriginsInput({ origins, onChange }) {
       )}
 
       <p className="text-xs text-gray-400">
-        Press Enter to add an origin. Leave empty to allow all (check backend policy).
+        Press Enter to add an origin, or paste multiple lines / comma-separated URLs. Leave empty to allow all
+        (check backend policy).
       </p>
     </div>
   );

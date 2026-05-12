@@ -85,7 +85,23 @@ export default function ModelOverridePanel({ params, onChange }) {
       </div>
 
       <p className="text-xs text-gray-400 italic">
-        Overrides chỉ áp dụng cho session hiện tại, không lưu vào cấu hình chatbot.
+        Overrides chỉ áp dụng cho session playground hiện tại, không lưu vào cấu hình chatbot.
+      </p>
+      <p className="text-xs text-gray-400 italic border-t border-gray-100 pt-2 mt-1">
+        <strong className="font-medium text-gray-500">Temperature</strong>: độ ngẫu nhiên của câu trả lời — thấp hơn
+        thường ổn định/chính xác hơn, cao hơn đa dạng hơn.
+        <br />
+        <strong className="font-medium text-gray-500">Top-K</strong>: số chunk tối đa lấy từ retrieval để đưa vào
+        context (panel Sources bên phải chỉ hiển thị tối đa K mục để tránh nhầm với số chunk thực tế backend có thể
+        dùng).
+        <br />
+        <strong className="font-medium text-gray-500">Max tokens</strong>: giới hạn độ dài (ước lượng) của câu trả lời
+        từ model.
+        <br />
+        <span className="not-italic text-[10px] text-amber-800/90">
+          MVP: một số override có thể chưa được backend áp dụng sâu cho mọi đường RAG; nếu câu trả lời không đổi khi
+          chỉnh nhẹ, đó là giới hạn hiện tại chứ không phải lỗi UI.
+        </span>
       </p>
       <p className="text-xs text-gray-400">
         System prompt: dùng nút <strong className="font-medium">Prompt Builder</strong> trên thanh công cụ.

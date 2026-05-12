@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { analyticsApi } from "../../api/analyticsApi";
 import { chatbotsApi } from "../../api/chatbotsApi";
 import { useToast } from "../../components/common";
@@ -11,7 +11,6 @@ import DailyBarChart from "./components/DailyBarChart";
 import ChatbotShareBars from "./components/ChatbotShareBars";
 import UnansweredTable from "./components/UnansweredTable";
 import AnalyticsSessionsTab from "./components/AnalyticsSessionsTab";
-import AnalyticsFeedbackTab from "./components/AnalyticsFeedbackTab";
 
 function toIsoDate(dateObj) {
   const year = dateObj.getFullYear();
@@ -50,6 +49,7 @@ function escapeCsvField(value) {
 
 export default function AnalyticsPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const { setRightSlot, clearRightSlot } = useLayout();
   const toastRef = useRef(toast);
@@ -72,6 +72,25 @@ export default function AnalyticsPage() {
   const [dailyState, setDailyState] = useState({ data: [], loading: true, error: null });
   const [byChatbotState, setByChatbotState] = useState({ data: [], loading: true, error: null });
   const [unansweredState, setUnansweredState] = useState({ data: [], loading: true, error: null });
+
+  /** Feedback tab removed — old links `?activeTab=feedback` should not crash. */
+  useEffect(() => {
+    const raw = searchParams.get("activeTab") || searchParams.get("tab");
+    if (raw !== "feedback") return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("activeTab");
+    next.delete("tab");
+    setSearchParams(next, { replace: true });
+    setActiveTab("usage");
+  }, [searchParams, setSearchParams]);
+
+  const handleAnalyticsTab = useCallback((key) => {
+    if (key === "feedback") {
+      setActiveTab("usage");
+      return;
+    }
+    setActiveTab(key);
+  }, []);
 
   const invalidRange = !from || !to || from > to;
   const hasLoadedData =
@@ -255,7 +274,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      <AnalyticsTabs activeTab={activeTab} onChange={setActiveTab} />
+      <AnalyticsTabs activeTab={activeTab} onChange={handleAnalyticsTab} />
 
       {showSharedFilters && (
         <>
@@ -357,10 +376,6 @@ export default function AnalyticsPage() {
           chatbotId={chatbotId}
           invalidRange={invalidRange}
         />
-      )}
-
-      {activeTab === "feedback" && (
-        <AnalyticsFeedbackTab />
       )}
     </div>
   );

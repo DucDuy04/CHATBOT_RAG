@@ -10,8 +10,9 @@
  *   welcomeMessage : string
  *   position       : "bottom-right" | "bottom-left"
  *   launcherIcon   : "chat" | "help" | "spark"
+ *   allowedOrigins : string[] optional — shown as count in preview footer
  */
-export default function WidgetLivePreview({ widgetColor, welcomeMessage, position, launcherIcon }) {
+export default function WidgetLivePreview({ widgetColor, welcomeMessage, position, launcherIcon, allowedOrigins = [] }) {
   const isRight = position !== "bottom-left";
   const alignClass = isRight ? "items-end" : "items-start";
 
@@ -116,6 +117,12 @@ export default function WidgetLivePreview({ widgetColor, welcomeMessage, positio
             style={{ background: widgetColor }}
           />
           <span className="font-mono font-medium text-gray-700">{widgetColor}</span>
+          {Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && (
+            <>
+              {" · "}
+              <span className="text-gray-600">{allowedOrigins.length} allowed origin(s)</span>
+            </>
+          )}
         </p>
       </div>
     </section>
