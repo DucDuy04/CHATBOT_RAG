@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, forwardRef, useImperativeHandle } from "react";
 
 const ORIGIN_PATTERN = /^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?(\/.*)?$/;
 
@@ -8,8 +8,14 @@ const ORIGIN_PATTERN = /^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?(\/.*)?$/;
  * Props:
  *   origins  : string[]  — current list
  *   onChange : (origins: string[]) => void
+ *
+ * Ref API (for save / snippet sync):
+ *   getOriginsForSave() — commits pending text field as a tag if valid; returns list to PUT.
  */
-export default function AllowedOriginsInput({ origins, onChange }) {
+const AllowedOriginsInput = forwardRef(function AllowedOriginsInput(
+  { origins, onChange },
+  ref
+) {
   const [inputValue, setInputValue] = useState("");
   const [error, setError] = useState("");
 
@@ -35,10 +41,47 @@ export default function AllowedOriginsInput({ origins, onChange }) {
     onChange(origins.filter((o) => o !== origin));
   }
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      getOriginsForSave() {
+        const v = inputValue.trim();
+        if (!v) {
+          return origins;
+        }
+        if (!ORIGIN_PATTERN.test(v)) {
+          setError("Invalid origin. Example: https://example.com or http://localhost:3000");
+          return origins;
+        }
+        if (origins.includes(v)) {
+          setInputValue("");
+          setError("");
+          return origins;
+        }
+        const next = [...origins, v];
+        setInputValue("");
+        setError("");
+        onChange(next);
+        return next;
+      },
+    }),
+    [inputValue, origins, onChange]
+  );
+
   function handleKeyDown(e) {
     if (e.key === "Enter") {
       e.preventDefault();
       addOrigin(inputValue);
+    }
+  }
+
+  function handleBlur() {
+    const v = inputValue.trim();
+    if (!v) return;
+    if (ORIGIN_PATTERN.test(v) && !origins.includes(v)) {
+      setError("");
+      setInputValue("");
+      onChange([...origins, v]);
     }
   }
 
@@ -102,6 +145,7 @@ export default function AllowedOriginsInput({ origins, onChange }) {
           setInputValue(e.target.value);
           if (error) setError("");
         }}
+        onBlur={handleBlur}
         onPaste={handlePaste}
         onKeyDown={handleKeyDown}
         placeholder="https://example.com"
@@ -115,9 +159,12 @@ export default function AllowedOriginsInput({ origins, onChange }) {
       )}
 
       <p className="text-xs text-gray-400">
-        Press Enter to add an origin, or paste multiple lines / comma-separated URLs. Leave empty to allow all
-        (check backend policy).
+        Press Enter to add an origin, or paste multiple lines / comma-separated URLs. Pending text is
+        applied when you leave this field or click Save. Empty list clears allowed origins on save
+        (snippet will show <code className="mx-0.5 rounded bg-gray-100 px-0.5">[]</code>).
       </p>
     </div>
   );
-}
+});
+
+export default AllowedOriginsInput;

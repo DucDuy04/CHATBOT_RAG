@@ -24,7 +24,7 @@ const MAX_WELCOME_LEN = 200;
  *   onSave   : () => void
  *   saving   : boolean
  */
-export default function EmbedSettingsSection({ form, onChange, onSave, saving }) {
+export default function EmbedSettingsSection({ form, onChange, onSave, saving, allowedOriginsInputRef }) {
   const hexError = form.widgetColor && !HEX_RE.test(form.widgetColor)
     ? "Invalid hex color (e.g. #2563eb)"
     : "";
@@ -128,6 +128,7 @@ export default function EmbedSettingsSection({ form, onChange, onSave, saving })
 
         {/* Allowed Origins */}
         <AllowedOriginsInput
+          ref={allowedOriginsInputRef}
           origins={form.allowedOrigins}
           onChange={(v) => onChange("allowedOrigins", v)}
         />

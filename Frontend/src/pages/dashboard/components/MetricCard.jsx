@@ -8,7 +8,9 @@ const defaultFormatter = (v) =>
  *
  * Props:
  *   title       — label của metric
+ *   titleHint   — optional native tooltip (giải thích metric)
  *   value       — giá trị hiển thị
+ *   valueCaption — optional dòng nhỏ dưới value (vd: "Chưa có feedback")
  *   delta       — số delta (e.g. +2.1 hoặc -3). null = không hiện.
  *   description — text mô tả thêm (e.g. "vs last 7 days")
  *   loading     — hiện skeleton khi true
@@ -16,7 +18,9 @@ const defaultFormatter = (v) =>
  */
 export default function MetricCard({
   title,
+  titleHint,
   value,
+  valueCaption,
   delta,
   description,
   loading = false,
@@ -42,12 +46,23 @@ export default function MetricCard({
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+      <p
+        className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
+        title={titleHint || undefined}
+      >
         {title}
+        {titleHint ? (
+          <span className="ml-1 font-normal normal-case text-gray-300" aria-hidden="true">
+            ⓘ
+          </span>
+        ) : null}
       </p>
       <p className="text-3xl font-bold text-gray-900 mb-2 leading-none">
         {formatter(value)}
       </p>
+      {valueCaption ? (
+        <p className="text-xs text-gray-500 -mt-1 mb-2">{valueCaption}</p>
+      ) : null}
       <div className="flex items-center gap-1.5 min-h-[1.25rem]">
         {deltaText && (
           <span className={`text-sm font-semibold ${deltaClass}`}>

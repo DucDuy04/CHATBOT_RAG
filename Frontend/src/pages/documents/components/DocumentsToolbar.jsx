@@ -4,7 +4,6 @@ const TYPE_OPTIONS = [
   { value: "", label: "All types" },
   { value: "PDF",  label: "PDF" },
   { value: "TXT",  label: "TXT" },
-  { value: "DOCX", label: "DOCX" },
 ];
 
 const STATUS_OPTIONS = [

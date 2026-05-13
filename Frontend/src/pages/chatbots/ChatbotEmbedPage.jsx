@@ -114,6 +114,7 @@ export default function ChatbotEmbedPage() {
   const { setPageTitle, setRightSlot, clearRightSlot } = useLayout();
   const toast = useToast();
   const toastRef = useRef(toast);
+  const allowedOriginsInputRef = useRef(null);
 
   useEffect(() => {
     toastRef.current = toast;
@@ -178,19 +179,30 @@ export default function ChatbotEmbedPage() {
     if (saving) return;
     setSaving(true);
     try {
+      const originsPayload = normalizeAllowedOriginsList(
+        allowedOriginsInputRef.current?.getOriginsForSave?.() ?? form.allowedOrigins
+      );
       const payload = {
         widgetColor:    form.widgetColor,
         welcomeMessage: form.welcomeMessage,
         position:       form.position,
-        allowedOrigins: form.allowedOrigins,
+        allowedOrigins: originsPayload,
         // launcherIcon included for mock/dev; may be ignored by backend if contract
         // does not include it. Report 06 documents this gap.
         launcherIcon: form.launcherIcon,
       };
       const updated = await chatbotsApi.updateEmbedConfig(id, payload);
-      // Merge response into current form so snippet uses latest allowedOrigins (and never drops widgetKey)
+      // Merge response into form: always take server allowedOrigins when present (never merge stale origins)
       if (updated && typeof updated === "object") {
-        setForm((prev) => toFormState({ ...prev, ...updated }));
+        setForm((prev) => {
+          const merged = { ...prev, ...updated };
+          if (Object.prototype.hasOwnProperty.call(updated, "allowedOrigins")) {
+            merged.allowedOrigins = normalizeAllowedOriginsList(updated.allowedOrigins);
+          } else {
+            merged.allowedOrigins = originsPayload;
+          }
+          return toFormState(merged);
+        });
       }
       toastRef.current.success("Embed config saved!");
     } catch (err) {
@@ -307,6 +319,7 @@ export default function ChatbotEmbedPage() {
           onChange={updateForm}
           onSave={handleSave}
           saving={saving}
+          allowedOriginsInputRef={allowedOriginsInputRef}
         />
 
         {/* Right: preview + code block */}

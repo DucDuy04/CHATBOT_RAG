@@ -79,7 +79,8 @@ public class QueryAnalyzerService {
                 "bao gom", "gom nhung gi", "gom gi", "gom co", "gom",
                 "nhung gi", "nhung loai", "nhung thanh phan",
                 "trinh bay", "tom tat", "tong hop",
-                "bao gom nhung gi", "listat", "list all")) {
+                "bao gom nhung gi", "listat", "list all"
+               )) {
             return QueryType.LIST_ALL;
         }
 

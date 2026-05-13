@@ -213,6 +213,9 @@ public class DocumentController {
             return ResponseEntity.ok(SimpleSuccessResponse.builder().success(true).build());
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Document not found"));
+        } catch (IllegalStateException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Failed to purge document vectors from Qdrant";
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("message", msg));
         }
     }
 }

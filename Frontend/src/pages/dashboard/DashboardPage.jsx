@@ -164,10 +164,14 @@ export default function DashboardPage() {
           loading={summaryLoading}
         />
         <MetricCard
-          title="Avg. Satisfaction"
+          title="Avg satisfaction"
+          titleHint="Tỷ lệ feedback tích cực (đánh giá 👍) trên tổng số feedback đã gửi (👍 và 👎). Dấu — khi chưa có feedback nào; không phải lỗi hệ thống."
           value={summary?.avgSatisfaction}
+          valueCaption={
+            summary?.avgSatisfaction == null ? "Chưa có feedback — gửi đánh giá sau câu trả lời để có chỉ số." : null
+          }
           delta={summary?.avgSatisfactionDelta}
-          description="vs last period"
+          description="% positive / all ratings"
           loading={summaryLoading}
           formatter={(v) => (v != null ? `${v}%` : "—")}
         />

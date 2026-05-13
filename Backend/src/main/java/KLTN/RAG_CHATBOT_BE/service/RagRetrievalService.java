@@ -341,7 +341,15 @@ public class RagRetrievalService {
             //   rerank top: sec_2=0.8658, sec_1=0.0497, sec_7.2=0.0058
             //   → lock sec_2 → re-fetch [sec_2, sec_2.1, sec_2.2] = 3 chunks
             //   INSTEAD OF 20 chunks từ 33 sections trên toàn tài liệu.
-            if (rerankResult.maxScore() >= RERANK_LOCK_THRESHOLD && !rerankResult.chunks().isEmpty()) {
+            //
+            // MVP guard: KHÔNG kích hoạt lock cho câu hỏi tổng hợp (list/count/table),
+            // vì top-1 rerank thường là một use case / một bảng con → lock sẽ loại bỏ
+            // các chunk còn lại và bot chỉ trả một phần (vd chỉ Use Case 4).
+            boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
+                    && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
+                    && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
+            if (allowRerankScopeLock
+                    && rerankResult.maxScore() >= RERANK_LOCK_THRESHOLD && !rerankResult.chunks().isEmpty()) {
                 DocumentChunk topChunk = rerankResult.chunks().get(0);
                 String topSectionId = topChunk.getSectionId();
 
@@ -373,7 +381,7 @@ public class RagRetrievalService {
         }
 
         // ── STEP 6: Dedup, sort, apply budget ─────────────────────────
-        List<RetrievedContext> result = dedupeSortBudget(expanded, queryType, isLockedScope);
+        List<RetrievedContext> result = dedupeSortBudget(expanded, queryType, isLockedScope, question);
 
         // ── STEP 7: Final context log ──────────────────────────────────
         log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
@@ -777,7 +785,8 @@ public class RagRetrievalService {
      */
     private List<RetrievedContext> dedupeSortBudget(List<DocumentChunk> chunks,
                                                      QueryAnalyzerService.QueryType queryType,
-                                                     boolean isLockedScope) {
+                                                     boolean isLockedScope,
+                                                     String question) {
         boolean isExpandedQuery = isExpanded(queryType);
 
         int finalLimit;
@@ -961,7 +970,6 @@ public class RagRetrievalService {
         result.addAll(others);
         return result;
     }
-
     // ================================================================
     // INNER RECORDS
     // ================================================================

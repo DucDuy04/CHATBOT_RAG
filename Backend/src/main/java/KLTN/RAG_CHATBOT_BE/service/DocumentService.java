@@ -61,12 +61,20 @@ public class DocumentService {
     private final DocumentSectionRepository documentSectionRepository;
     private final DocumentTableRepository documentTableRepository;
 
+    private final QdrantPurgeService qdrantPurgeService;
+
     @Value("${app.upload-dir}")
     private String uploadDir;
+
+    /** Must match {@link DocumentParserService} supported types. */
+    public static final String UNSUPPORTED_UPLOAD_FILE_MSG =
+            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF và TXT.";
 
     public Document uploadAndProcess(MultipartFile file, UUID widgetId) throws IOException {
         WidgetConfig widgetConfig = widgetConfigRepository.findById(widgetId)
                 .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy Widget với ID: " + widgetId));
+
+        validateUploadableFile(file);
 
         String savedPath = saveFile(file);
 
@@ -363,12 +371,61 @@ public class DocumentService {
         }
     }
 
-    @Transactional
+    /**
+     * Purge Qdrant vectors for this document+tenant, then soft-delete the row.
+     * If Qdrant purge fails, the document is not deleted and an {@link IllegalStateException} is thrown.
+     */
     public void softDeleteDocument(UUID id) {
         Document d = documentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found"));
+        UUID widgetId = resolveWidgetIdForPurge(d);
+        qdrantPurgeService.purgeDocumentVectors(d.getId(), widgetId);
         d.setDeletedAt(LocalDateTime.now());
         documentRepository.save(d);
+    }
+
+    private UUID resolveWidgetIdForPurge(Document d) {
+        try {
+            if (d.getWidgetConfig() != null) {
+                return d.getWidgetConfig().getId();
+            }
+        } catch (EntityNotFoundException ignored) {
+            // Widget soft-deleted — read FK from documents table
+        }
+        return documentRepository.findWidgetConfigIdUuidStringForPurge(d.getId())
+                .map(String::trim)
+                .map(UUID::fromString)
+                .orElseThrow(() -> new IllegalArgumentException("Document not found"));
+    }
+
+    /**
+     * Reject unsupported uploads before writing to disk or creating a {@link Document} row.
+     * Allowed: {@code .pdf}, {@code .txt} (case-insensitive). MIME: pdf, plain text, or generic binary when extension is allowed.
+     */
+    static void validateUploadableFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("Không có file để upload.");
+        }
+        String original = file.getOriginalFilename();
+        if (original == null || original.isBlank()) {
+            throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
+        }
+        String lower = original.toLowerCase();
+        if (!lower.endsWith(".pdf") && !lower.endsWith(".txt")) {
+            throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
+        }
+        String mime = file.getContentType();
+        if (mime == null || mime.isBlank()) {
+            return;
+        }
+        String m = mime.toLowerCase().trim();
+        boolean ok = m.equals("application/pdf")
+                || m.startsWith("text/plain")
+                || m.equals("application/octet-stream")
+                || m.equals("binary/octet-stream");
+        if (!ok) {
+            throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
+        }
     }
 
     /**

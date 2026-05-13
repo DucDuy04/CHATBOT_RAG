@@ -37,7 +37,8 @@ function TypeBadge({ type }) {
   const colors = {
     PDF:  "bg-red-50 text-red-700 border-red-200",
     TXT:  "bg-gray-50 text-gray-600 border-gray-200",
-    DOCX: "bg-blue-50 text-blue-700 border-blue-200",
+    DOCX: "bg-gray-50 text-gray-500 border-gray-200",
+    DOC:  "bg-gray-50 text-gray-500 border-gray-200",
   };
   const cls = colors[type] || "bg-gray-50 text-gray-500 border-gray-200";
   return (

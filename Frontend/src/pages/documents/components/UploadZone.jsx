@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
 import { useToast } from "../../../components/common/useToast";
 
-const ALLOWED_EXTENSIONS = ["pdf", "txt", "docx"];
+const ALLOWED_EXTENSIONS = ["pdf", "txt"];
 const ALLOWED_MIME = [
   "application/pdf",
   "text/plain",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/octet-stream",
+  "binary/octet-stream",
 ];
 const MAX_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -19,9 +20,14 @@ function fmtSize(bytes) {
 /** Validate a File; return null if ok, string error if invalid. */
 function validateFile(file) {
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
-  const mimeOk = ALLOWED_MIME.includes(file.type) || ALLOWED_EXTENSIONS.includes(ext);
-  if (!mimeOk) {
-    return `"${file.name}" — unsupported type. Allowed: PDF, TXT, DOCX.`;
+  const extOk = ALLOWED_EXTENSIONS.includes(ext);
+  const mime = (file.type || "").toLowerCase().trim();
+  const mimeOk =
+    !mime ||
+    ALLOWED_MIME.includes(mime) ||
+    mime.startsWith("text/plain");
+  if (!extOk || !mimeOk) {
+    return `"${file.name}" — Hiện chỉ hỗ trợ PDF và TXT.`;
   }
   if (file.size > MAX_SIZE_BYTES) {
     return `"${file.name}" — exceeds 50 MB limit (${fmtSize(file.size)}).`;
@@ -71,8 +77,16 @@ export default function UploadZone({
       else valid.push(file);
     }
 
-    if (errors.length) setFileErrors(errors);
-    if (!valid.length) return;
+    if (errors.length) {
+      setFileErrors(errors);
+      if (valid.length > 0) {
+        toast.error(
+          "Một hoặc nhiều file không hợp lệ. Hiện chỉ hỗ trợ PDF và TXT — không upload batch này."
+        );
+      }
+      if (!valid.length) return;
+      return;
+    }
 
     setUploadingFiles(valid.map((f) => ({ name: f.name, size: f.size })));
 
@@ -162,7 +176,7 @@ export default function UploadZone({
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.txt,.docx,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".pdf,.txt,application/pdf,text/plain,application/octet-stream"
           className="hidden"
           onChange={handleInputChange}
           disabled={zoneInactive}
@@ -199,7 +213,7 @@ export default function UploadZone({
               )}
             </p>
             <p className="text-xs text-gray-400 mt-1">
-              PDF, TXT, DOCX — max 50 MB per file
+              Chỉ PDF hoặc TXT — tối đa 50 MB mỗi file
             </p>
           </>
         )}
