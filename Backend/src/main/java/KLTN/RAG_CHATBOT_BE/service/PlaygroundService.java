@@ -4,6 +4,7 @@ import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatSession;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatSessionRepository;
+import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundCompareResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundCompareResult;
@@ -33,6 +34,7 @@ public class PlaygroundService {
     private final RagRetrievalService ragRetrievalService;
     private final PromptBuilderService promptBuilderService;
     private final LlmFallbackService llmFallbackService;
+    private final WidgetConfigRepository widgetConfigRepository;
 
     public List<PlaygroundSessionResponse> listSessions(UUID chatbotId) {
         List<ChatSession> sessions = chatSessionRepository.findByWidgetConfigIdOrderByUpdatedAtDesc(chatbotId);
@@ -100,7 +102,9 @@ public class PlaygroundService {
         long start = System.currentTimeMillis();
 
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, chatbotId);
-        RagRetrievalService.RetrievalResult retrievalResult = ragRetrievalService.retrieveWithMetadata(question, chatbotId);
+        Integer topKOverride = RagRetrievalService.parseTopKOverride(config);
+        RagRetrievalService.RetrievalResult retrievalResult =
+                ragRetrievalService.retrieveWithMetadata(question, chatbotId, topKOverride);
         List<RetrievedContext> contexts = retrievalResult.contexts();
         List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
@@ -117,10 +121,11 @@ public class PlaygroundService {
             );
 
             String systemPrompt = promptBuilderService.getSystemPrompt();
+            LlmGenerationOptions llmOptions = resolveCompareLlmOptions(chatbotId, config);
             answer = llmFallbackService.generateWithFallback(List.of(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userPrompt)
-            ));
+            ), llmOptions);
         }
 
         long elapsed = System.currentTimeMillis() - start;
@@ -158,6 +163,32 @@ public class PlaygroundService {
             return Collections.emptyMap();
         }
         return config;
+    }
+
+    private LlmGenerationOptions resolveCompareLlmOptions(UUID chatbotId, Map<String, Object> config) {
+        Double requestTemperature = LlmGenerationOptions.parseTemperatureOverride(config);
+        Integer requestMaxTokens = LlmGenerationOptions.parseMaxTokensOverride(config);
+
+        Double configuredTemperature = null;
+        Integer configuredMaxTokens = null;
+        if (requestTemperature == null || requestMaxTokens == null) {
+            var uiConfig = widgetConfigRepository.findById(chatbotId)
+                    .map(w -> w.getUiConfig())
+                    .orElse(null);
+            if (requestTemperature == null) {
+                configuredTemperature = WidgetService.parseModelConfigTemperature(uiConfig);
+            }
+            if (requestMaxTokens == null) {
+                configuredMaxTokens = WidgetService.parseModelConfigMaxTokens(uiConfig);
+            }
+        }
+
+        return ChatService.resolveLlmGeneration(
+                requestTemperature,
+                requestMaxTokens,
+                configuredTemperature,
+                configuredMaxTokens
+        ).effective();
     }
 
     private List<ChatResponse.SourceDto> buildSourceDtos(List<RetrievedContext> contexts) {

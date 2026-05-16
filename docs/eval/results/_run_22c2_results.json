@@ -1,0 +1,57 @@
+{
+  "chatbotA": {
+    "id": "a780a357-3fd3-4b91-8606-d049260a5075",
+    "apiKeyMasked": "1915...5d62",
+    "docId": "88955d11-02e1-4d29-a1ab-8f6937241953",
+    "modelConfigApi": { "temperature": 0.2, "maxTokens": 256, "topK": 5 }
+  },
+  "chatbotB": {
+    "id": "2fef74a1-59f5-4bea-90d6-77a55a1c0b1b",
+    "apiKeyMasked": "b9da...0653",
+    "modelConfigApiMerged": { "temperature": 0.7, "maxTokens": 1024, "topK": 5 }
+  },
+  "cases": [
+    {
+      "case": "1_modelConfig_fallback",
+      "llmLog": "tempSource=MODEL_CONFIG maxTokensSource=MODEL_CONFIG effectiveTemperature=0.2 effectiveMaxTokens=256",
+      "sources": 5,
+      "pass": true
+    },
+    {
+      "case": "2_request_override",
+      "llmLog": "tempSource=REQUEST maxTokensSource=REQUEST effectiveTemperature=0.7 effectiveMaxTokens=512",
+      "sources": 5,
+      "pass": true
+    },
+    {
+      "case": "3_clamp",
+      "llmLog": "tempSource=REQUEST maxTokensSource=REQUEST effectiveTemperature=1.0 effectiveMaxTokens=4096",
+      "sources": 5,
+      "pass": true
+    },
+    {
+      "case": "4_default_fallback_B",
+      "llmLog": "tempSource=DEFAULT maxTokensSource=DEFAULT effectiveTemperature=0.1 effectiveMaxTokens=1500",
+      "topKLog": "source=DEFAULT effective=30",
+      "sources": 5,
+      "pass": true
+    },
+    {
+      "case": "topK_no_request",
+      "topKLog": "source=MODEL_CONFIG configured=5 effective=5",
+      "pass": true
+    },
+    {
+      "case": "topK_request_10",
+      "topKLog": "source=REQUEST requested=10 effective=10",
+      "pass": true
+    },
+    {
+      "case": "5_OOS_bitcoin",
+      "sources": 2,
+      "refusalLog": "Refusal-like answer → response sources 5 → 2",
+      "pass": true
+    }
+  ],
+  "timestamp": "2026-05-15T23:01:02+07:00"
+}

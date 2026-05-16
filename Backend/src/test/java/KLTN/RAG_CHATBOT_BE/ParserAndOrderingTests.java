@@ -5,18 +5,104 @@ import KLTN.RAG_CHATBOT_BE.record.Section;
 import KLTN.RAG_CHATBOT_BE.service.ChunkingService2;
 import KLTN.RAG_CHATBOT_BE.service.DocumentParserService;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockMultipartFile;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 class ParserAndOrderingTests {
 
     // ═══════════════════════════════════════════════════════════════════
     // EXISTING TESTS (regression prevention)
     // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Golden TXT (markdown): phải tách theo {@code ##} chứ không tạo section root từ list {@code 1.}/{@code 2.}/{@code 3.}
+     * trong mục chính sách; nội dung "Bước 2" nằm trong section quy trình.
+     */
+    @Test
+    void markdown_golden_txt_sections_follow_atx_headings_not_numbered_lists() throws Exception {
+        DocumentParserService parser = new DocumentParserService();
+        Path golden = Path.of(System.getProperty("user.dir"))
+                .resolve("../docs/eval/RAG_GOLDEN_TEST_DOCUMENT.txt")
+                .normalize();
+        if (!Files.isRegularFile(golden)) {
+            // cwd có thể là repo root khi chạy IDE khác Maven
+            golden = Path.of(System.getProperty("user.dir"))
+                    .resolve("docs/eval/RAG_GOLDEN_TEST_DOCUMENT.txt")
+                    .normalize();
+        }
+        assumeThat(golden)
+                .as("Cần file golden tại docs/eval/RAG_GOLDEN_TEST_DOCUMENT.txt")
+                .exists();
+
+        byte[] bytes = Files.readAllBytes(golden);
+        var file = new MockMultipartFile(
+                "files", "RAG_GOLDEN_TEST_DOCUMENT.txt", "text/plain", bytes);
+
+        List<Section> sections = parser.parse(file);
+
+        assertThat(sections.get(0).header())
+                .as("Intro trước ## 1 vẫn là General (# tiêu đề không tách section)")
+                .isEqualTo("General");
+
+        assertThat(sections.stream().map(Section::header))
+                .noneMatch(h -> h.startsWith("1. Phản hồi yêu cầu trong"))
+                .noneMatch(h -> h.startsWith("2. Mỗi phiên chat hỗ trợ"))
+                .noneMatch(h -> h.startsWith("3. Không hỗ trợ can thiệp"));
+
+        Section quyTrinh = sections.stream()
+                .filter(s -> s.header().contains("Quy trình"))
+                .findFirst()
+                .orElse(null);
+        assertThat(quyTrinh).as("Phải có section mục Quy trình từ ## 3.").isNotNull();
+        assertThat(quyTrinh.content()).contains("Bước 2");
+
+        Section bangGoi = sections.stream()
+                .filter(s -> s.header().contains("Bảng gói dịch vụ"))
+                .findFirst()
+                .orElse(null);
+        assertThat(bangGoi).as("Phải có section mục bảng từ ## 4.").isNotNull();
+        assertThat(bangGoi.content()).contains("| Gói |").contains("Basic");
+
+        Section chinhSach = sections.stream()
+                .filter(s -> s.header().contains("Chính sách hỗ trợ"))
+                .findFirst()
+                .orElse(null);
+        assertThat(chinhSach).isNotNull();
+        assertThat(chinhSach.content()).contains("24 giờ làm việc").contains("15 phút");
+
+        assertThat(sections.stream().map(Section::header))
+                .as("Phải có section riêng cho ## 7 (không gộp vào mục 6)")
+                .anyMatch(h -> h.contains("Phạm vi") && h.contains("KHÔNG có trong tài liệu"));
+
+        ChunkingService2 chunker = new ChunkingService2();
+        List<DocumentChunk> chunks = chunker.processSections2(sections);
+        DocumentChunk buoc2Chunk = chunks.stream()
+                .filter(c -> "text".equals(c.chunkType()) && c.content().contains("Bước 2"))
+                .findFirst()
+                .orElse(null);
+        assertThat(buoc2Chunk).as("Chunk text chứa Bước 2 phải gắn header section Quy trình").isNotNull();
+        assertThat(buoc2Chunk.header()).contains("Quy trình");
+
+        boolean tableInBangGoi = chunks.stream()
+                .anyMatch(c -> ("table_summary".equals(c.chunkType()) || "table_row_group".equals(c.chunkType()))
+                        && c.header() != null && c.header().contains("Bảng gói dịch vụ"));
+        assertThat(tableInBangGoi).as("Table chunk phải thuộc section Bảng gói dịch vụ").isTrue();
+
+        DocumentChunk outOfScopeChunk = chunks.stream()
+                .filter(c -> c.content().contains("USD/VND"))
+                .findFirst()
+                .orElse(null);
+        assertThat(outOfScopeChunk).as("Chunk mục out-of-scope phải gắn header Phạm vi…").isNotNull();
+        assertThat(outOfScopeChunk.header()).contains("Phạm vi").contains("KHÔNG có trong tài liệu");
+    }
 
     @Test
     void each_valid_heading_must_produce_its_own_section_no_merging() {
@@ -451,5 +537,62 @@ class ParserAndOrderingTests {
         String result = chunker.buildChildSectionIdsStr(children);
 
         assertThat(result).isEqualTo("sec_6.1,sec_6.2,sec_6.3");
+    }
+
+    /**
+     * Regression 23B: bảng thực thể gộp một khối (sau merge cross-page) phải index đủ rows
+     * cho cả phần "trang 13" lẫn "trang 14" (LichSuPhucKhao … BienBan).
+     */
+    @Test
+    void merged_cross_page_entity_table_indexes_all_entity_rows() {
+        DocumentParserService parser = new DocumentParserService();
+        ChunkingService2 chunker = new ChunkingService2();
+
+        String mergedTable = """
+                [TABLE_START]
+                | Thực thể | Thuộc tính |
+                | --- | --- |
+                | NguoiDung | id, email |
+                | ThongBao | id, noiDung |
+                | SinhVien | maSV, hoTen |
+                | GiangVien | maGV, hoTen |
+                | MonHoc | maMon, tenMon |
+                | KetQuaHocTap | diem |
+                | PhongKhaoThi | maPhong |
+                | YeuCauPhucKhao | maYC, trangThai |
+                | LichSuPhucKhao | maLS, ngay |
+                | Khoa | maKhoa, tenKhoa |
+                | TuiBaiThi | maTui |
+                | BienBan | maBB, noiDung |
+                [TABLE_END]
+                """;
+
+        Map<Integer, String> pages = new LinkedHashMap<>();
+        pages.put(13, "3. Các thực thể và thuộc tính\n" + mergedTable);
+        pages.put(14, "");
+
+        List<Section> sections = parser.parseSections(pages);
+        List<DocumentChunk> chunks = chunker.processSections2(sections);
+
+        String allTableText = chunks.stream()
+                .filter(c -> c.chunkType() != null && c.chunkType().startsWith("table"))
+                .map(DocumentChunk::content)
+                .reduce("", String::concat);
+
+        List<String> entities = List.of(
+                "NguoiDung", "ThongBao", "SinhVien", "GiangVien", "MonHoc", "KetQuaHocTap",
+                "PhongKhaoThi", "YeuCauPhucKhao", "LichSuPhucKhao", "Khoa", "TuiBaiThi", "BienBan");
+        for (String entity : entities) {
+            assertThat(allTableText)
+                    .as("Merged table chunks must contain entity %s", entity)
+                    .contains(entity);
+        }
+
+        long tableSummaryCount = chunks.stream()
+                .filter(c -> "table_summary".equals(c.chunkType()))
+                .count();
+        assertThat(tableSummaryCount)
+                .as("Single merged table → one table_summary per section")
+                .isEqualTo(1);
     }
 }

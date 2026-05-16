@@ -138,7 +138,7 @@ export default function ComparePane({
           </p>
         )}
         <p className="text-[11px] text-gray-600 leading-snug border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
-          Compare dùng để thử cấu hình A/B. Backend hiện có thể chưa áp dụng sâu mọi override (temperature/topK/maxTokens)
+          Compare dùng để thử cấu hình A/B. Top-K, temperature và maxTokens được backend áp dụng cho compare
           nên câu trả lời A và B có thể giống nhau. Compare không lưu phiên chat — danh sách Sessions bên trái không đổi sau khi chạy.
           Nguồn (nếu có) hiển thị dưới từng cột và đồng bộ panel Sources bên phải.
         </p>

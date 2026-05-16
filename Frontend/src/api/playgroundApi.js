@@ -55,7 +55,24 @@ export const playgroundApi = {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ chatbotId, message, sessionId, overrideParams }),
+          body: JSON.stringify({
+            chatbotId,
+            message,
+            sessionId,
+            overrideParams,
+            topK:
+              overrideParams?.topK != null && Number.isFinite(Number(overrideParams.topK))
+                ? Math.min(30, Math.max(1, Math.floor(Number(overrideParams.topK))))
+                : undefined,
+            temperature:
+              overrideParams?.temperature != null && Number.isFinite(Number(overrideParams.temperature))
+                ? Math.min(1, Math.max(0, Number(overrideParams.temperature)))
+                : undefined,
+            maxTokens:
+              overrideParams?.maxTokens != null && Number.isFinite(Number(overrideParams.maxTokens))
+                ? Math.min(4096, Math.max(64, Math.floor(Number(overrideParams.maxTokens))))
+                : undefined,
+          }),
         });
 
         if (!response.ok) {

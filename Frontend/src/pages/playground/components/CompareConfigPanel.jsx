@@ -52,11 +52,13 @@ export default function CompareConfigPanel({ label, config, onChange }) {
         <input
           type="number"
           min="1"
-          max="20"
+          max="30"
           value={config.topK}
-          onChange={(e) =>
-            handleChange("topK", Math.max(1, parseInt(e.target.value, 10) || 1))
-          }
+          onChange={(e) => {
+            const parsed = parseInt(e.target.value, 10);
+            const n = Number.isFinite(parsed) ? parsed : 1;
+            handleChange("topK", Math.min(30, Math.max(1, n)));
+          }}
           className="w-full px-2 py-1 text-xs border rounded-lg"
         />
       </div>

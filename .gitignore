@@ -15,3 +15,16 @@ Thumbs.db
 node_modules/
 dist/
 build/
+# Track selected docs/runbooks and refactor reports; ignore other generated docs.
+docs/*
+!docs/RAG_TARGET_ARCHITECTURE.md
+!docs/RAG_CORE_FLOW_E2E_RUNBOOK.md
+!docs/CURSOR_REPORT_20F_CORE_RAG_E2E_RUNBOOK.md
+!docs/samples/
+!docs/samples/**
+!docs/eval/
+!docs/eval/**
+
+reports/*
+!reports/refactor/
+!reports/refactor/CURSOR_REPORT_21A_RAG_GOLDEN_EVALUATION_BASELINE.md

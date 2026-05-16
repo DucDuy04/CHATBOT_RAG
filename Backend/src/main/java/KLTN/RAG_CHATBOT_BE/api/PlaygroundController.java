@@ -9,6 +9,8 @@ import KLTN.RAG_CHATBOT_BE.dto.PlaygroundSessionResponse;
 import KLTN.RAG_CHATBOT_BE.dto.SimpleSuccessResponse;
 import KLTN.RAG_CHATBOT_BE.service.ChatService;
 import KLTN.RAG_CHATBOT_BE.service.PlaygroundService;
+import KLTN.RAG_CHATBOT_BE.service.LlmGenerationOptions;
+import KLTN.RAG_CHATBOT_BE.service.RagRetrievalService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -56,8 +58,24 @@ public class PlaygroundController {
                         ? UUID.randomUUID().toString()
                         : request.getSessionId()
         );
+        Integer topK = request.getTopK();
+        if (topK == null) {
+            topK = RagRetrievalService.parseTopKOverride(request.getOverrideParams());
+        }
+        chatRequest.setTopK(topK);
 
-        // overrideParams được FE gửi nhưng chưa map vào model config trong scope prompt này.
+        Double temperature = request.getTemperature();
+        if (temperature == null) {
+            temperature = LlmGenerationOptions.parseTemperatureOverride(request.getOverrideParams());
+        }
+        chatRequest.setTemperature(temperature);
+
+        Integer maxTokens = request.getMaxTokens();
+        if (maxTokens == null) {
+            maxTokens = LlmGenerationOptions.parseMaxTokensOverride(request.getOverrideParams());
+        }
+        chatRequest.setMaxTokens(maxTokens);
+
         return chatService.chatStream(chatRequest, widgetId);
     }
 
