@@ -43,13 +43,18 @@ public class LlmFallbackService {
     // NON-STREAMING: trả về answer String
     // ==========================================
     public String generateWithFallback(List<ChatMessage> messages) {
+        return generateWithFallback(messages, LlmGenerationOptions.defaults());
+    }
+
+    public String generateWithFallback(List<ChatMessage> messages, LlmGenerationOptions options) {
+        LlmGenerationOptions effective = options != null ? options : LlmGenerationOptions.defaults();
         List<String> modelsToTry = buildModelList();
 
         for (int i = 0; i < modelsToTry.size(); i++) {
             String modelName = modelsToTry.get(i);
             try {
                 log.info("[LLM] Thử model: {} (attempt {}/{})", modelName, i + 1, modelsToTry.size());
-                OpenAiChatModel model = buildChatModel(modelName);
+                OpenAiChatModel model = buildChatModel(modelName, effective);
                 Response<AiMessage> response = model.generate(messages);
                 String answer = response.content().text();
                 if (i > 0) {
@@ -95,7 +100,7 @@ public class LlmFallbackService {
         String modelName = primaryModel;
         try {
             log.info("[LLM-Stream] Thử streaming với model: {}", modelName);
-            OpenAiStreamingChatModel streamModel = buildStreamingModel(modelName);
+            OpenAiStreamingChatModel streamModel = buildStreamingModel(modelName, LlmGenerationOptions.defaults());
             streamModel.generate(messages, handler);
 
         } catch (Exception e) {
@@ -113,6 +118,11 @@ public class LlmFallbackService {
      * Kết quả trả về để caller tự phát token qua SSE.
      */
     public String generateFallbackAnswer(List<ChatMessage> messages) {
+        return generateFallbackAnswer(messages, LlmGenerationOptions.defaults());
+    }
+
+    public String generateFallbackAnswer(List<ChatMessage> messages, LlmGenerationOptions options) {
+        LlmGenerationOptions effective = options != null ? options : LlmGenerationOptions.defaults();
         // Chỉ dùng fallback models — KHÔNG thử lại primary (đã biết rate limit)
         List<String> onlyFallbacks = parseFallbackModels();
 
@@ -127,7 +137,7 @@ public class LlmFallbackService {
             String modelName = onlyFallbacks.get(i);
             try {
                 log.info("[LLM-Fallback] Thử fallback model: {} ({}/{})", modelName, i + 1, onlyFallbacks.size());
-                OpenAiChatModel model = buildChatModel(modelName);
+                OpenAiChatModel model = buildChatModel(modelName, effective);
                 String answer = model.generate(messages).content().text();
                 log.info("[LLM-Fallback] Thành công với model: {}", modelName);
                 return answer;
@@ -258,22 +268,25 @@ public class LlmFallbackService {
         }
     }
 
-    private OpenAiChatModel buildChatModel(String modelName) {
+    public OpenAiChatModel buildChatModel(String modelName, LlmGenerationOptions options) {
+        LlmGenerationOptions effective = options != null ? options : LlmGenerationOptions.defaults();
         return OpenAiChatModel.builder()
                 .apiKey(groqApiKey)
                 .baseUrl(groqBaseUrl)
                 .modelName(modelName)
-                .temperature(0.1)
-                .maxTokens(1500)
+                .temperature(effective.temperature())
+                .maxTokens(effective.maxTokens())
                 .build();
     }
 
-    private OpenAiStreamingChatModel buildStreamingModel(String modelName) {
+    public OpenAiStreamingChatModel buildStreamingModel(String modelName, LlmGenerationOptions options) {
+        LlmGenerationOptions effective = options != null ? options : LlmGenerationOptions.defaults();
         return OpenAiStreamingChatModel.builder()
                 .apiKey(groqApiKey)
                 .baseUrl(groqBaseUrl)
                 .modelName(modelName)
-                .temperature(0.1)
+                .temperature(effective.temperature())
+                .maxTokens(effective.maxTokens())
                 .build();
     }
 }

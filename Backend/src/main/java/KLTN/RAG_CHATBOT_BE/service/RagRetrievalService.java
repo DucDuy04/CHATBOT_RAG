@@ -21,7 +21,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class RagRetrievalService {
 
-    private static final int ANCHOR_TOP_K = 30;
+    /** Default Qdrant vector candidate limit when request does not specify topK. */
+    public static final int DEFAULT_ANCHOR_TOP_K = 30;
+
+    public static final int MIN_ANCHOR_TOP_K = 1;
+
+    public static final int MAX_ANCHOR_TOP_K = 30;
 
     // --- Giới hạn cho query thông thường ---
     private static final int FINAL_LIMIT = 10;
@@ -85,11 +90,22 @@ public class RagRetrievalService {
 
     /** Backward-compatible entry point — returns only the context list. */
     public List<RetrievedContext> retrieve(String question, UUID widgetId) {
-        return retrieveWithMetadata(question, widgetId).contexts();
+        return retrieveWithMetadata(question, widgetId, null).contexts();
     }
 
-    /** Full entry point — returns contexts + locked scope label for prompt enrichment. */
+    /** Full entry point — default anchor top-K (30). */
     public RetrievalResult retrieveWithMetadata(String question, UUID widgetId) {
+        return retrieveWithMetadata(question, widgetId, null);
+    }
+
+    /**
+     * Full entry point with optional per-request anchor top-K override for Qdrant vector search.
+     *
+     * @param topKOverride requested limit from client; null uses {@link #DEFAULT_ANCHOR_TOP_K}
+     */
+    public RetrievalResult retrieveWithMetadata(String question, UUID widgetId, Integer topKOverride) {
+        int effectiveAnchorTopK = normalizeAnchorTopK(topKOverride);
+        log.info("[RAG] retrieval topK requested={}, effective={}", topKOverride, effectiveAnchorTopK);
 
         // ── STEP 0: Intent detection ───────────────────────────────────
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
@@ -146,7 +162,7 @@ public class RagRetrievalService {
         for (String variant : queryVariants) {
             List<TextSegment> anchors;
             try {
-                anchors = embeddingService.search(variant, ANCHOR_TOP_K, widgetId);
+                anchors = embeddingService.search(variant, effectiveAnchorTopK, widgetId);
             } catch (Exception e) {
                 log.error("[RAG] Qdrant error for variant='{}': {}", variant, e.getMessage());
                 continue;
@@ -970,6 +986,46 @@ public class RagRetrievalService {
         result.addAll(others);
         return result;
     }
+
+    // ================================================================
+    // TOP-K (per-request vector search limit)
+    // ================================================================
+
+    public static int normalizeAnchorTopK(Integer requestedTopK) {
+        if (requestedTopK == null) {
+            return DEFAULT_ANCHOR_TOP_K;
+        }
+        return Math.max(MIN_ANCHOR_TOP_K, Math.min(MAX_ANCHOR_TOP_K, requestedTopK));
+    }
+
+    /**
+     * Reads {@code topK} from playground override map (Number or String).
+     */
+    public static Integer parseTopKOverride(Map<String, Object> params) {
+        if (params == null || params.isEmpty()) {
+            return null;
+        }
+        Object raw = params.get("topK");
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof Number number) {
+            return number.intValue();
+        }
+        if (raw instanceof String text) {
+            String trimmed = text.trim();
+            if (trimmed.isEmpty()) {
+                return null;
+            }
+            try {
+                return Integer.parseInt(trimmed);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     // ================================================================
     // INNER RECORDS
     // ================================================================

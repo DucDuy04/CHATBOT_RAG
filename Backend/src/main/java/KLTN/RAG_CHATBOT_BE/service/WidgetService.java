@@ -338,6 +338,39 @@ public class WidgetService {
         return out;
     }
 
+    /**
+     * Reads {@code topK} from persisted {@code uiConfig.modelConfig} (Number or String).
+     * Returns null when absent or invalid — does not apply {@link #DEFAULT_MODEL_CONFIG} defaults
+     * so chat retrieval can fall through to backend default (30).
+     */
+    public static Integer parseModelConfigTopK(Map<String, Object> uiConfig) {
+        return parseModelConfigField(uiConfig, RagRetrievalService::parseTopKOverride);
+    }
+
+    public static Double parseModelConfigTemperature(Map<String, Object> uiConfig) {
+        return parseModelConfigField(uiConfig, LlmGenerationOptions::parseTemperatureOverride);
+    }
+
+    public static Integer parseModelConfigMaxTokens(Map<String, Object> uiConfig) {
+        return parseModelConfigField(uiConfig, LlmGenerationOptions::parseMaxTokensOverride);
+    }
+
+    private static <T> T parseModelConfigField(
+            Map<String, Object> uiConfig,
+            java.util.function.Function<Map<String, Object>, T> parser
+    ) {
+        if (uiConfig == null || uiConfig.isEmpty()) {
+            return null;
+        }
+        Object modelConfig = uiConfig.get("modelConfig");
+        if (!(modelConfig instanceof Map<?, ?> rawMap)) {
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> modelMap = (Map<String, Object>) rawMap;
+        return parser.apply(modelMap);
+    }
+
     private Map<String, Object> uiMap(WidgetConfig w) {
         if (w.getUiConfig() == null || w.getUiConfig().isEmpty()) {
             return Collections.emptyMap();

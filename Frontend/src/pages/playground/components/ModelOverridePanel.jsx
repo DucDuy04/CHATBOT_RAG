@@ -54,11 +54,13 @@ export default function ModelOverridePanel({ params, onChange }) {
         <input
           type="number"
           min="1"
-          max="20"
+          max="30"
           value={params.topK}
-          onChange={(e) =>
-            handleChange("topK", Math.max(1, parseInt(e.target.value, 10) || 1))
-          }
+          onChange={(e) => {
+            const parsed = parseInt(e.target.value, 10);
+            const n = Number.isFinite(parsed) ? parsed : 1;
+            handleChange("topK", Math.min(30, Math.max(1, n)));
+          }}
           className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
       </div>
@@ -91,16 +93,15 @@ export default function ModelOverridePanel({ params, onChange }) {
         <strong className="font-medium text-gray-500">Temperature</strong>: độ ngẫu nhiên của câu trả lời — thấp hơn
         thường ổn định/chính xác hơn, cao hơn đa dạng hơn.
         <br />
-        <strong className="font-medium text-gray-500">Top-K</strong>: số chunk tối đa lấy từ retrieval để đưa vào
-        context (panel Sources bên phải chỉ hiển thị tối đa K mục để tránh nhầm với số chunk thực tế backend có thể
-        dùng).
+        <strong className="font-medium text-gray-500">Top-K</strong>: giới hạn vector search Qdrant mỗi request (1–30,
+        mặc định backend 30 khi không gửi). Panel Sources vẫn có thể hiển thị tối đa K mục theo cấu hình hiển thị.
         <br />
         <strong className="font-medium text-gray-500">Max tokens</strong>: giới hạn độ dài (ước lượng) của câu trả lời
         từ model.
         <br />
-        <span className="not-italic text-[10px] text-amber-800/90">
-          MVP: một số override có thể chưa được backend áp dụng sâu cho mọi đường RAG; nếu câu trả lời không đổi khi
-          chỉnh nhẹ, đó là giới hạn hiện tại chứ không phải lỗi UI.
+        <span className="not-italic text-[10px] text-gray-500">
+          Temperature, Top-K và max tokens được gửi xuống backend qua playground chat (request override ưu tiên hơn
+          modelConfig chatbot).
         </span>
       </p>
       <p className="text-xs text-gray-400">

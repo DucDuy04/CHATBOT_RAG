@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -67,6 +68,18 @@ public class QueryAnalyzerService {
 
         String q = normalize(question);
 
+        // True item-count questions must stay COUNT_QUERY even when they mention "bảng"
+        // or contain "bao nhiêu" (collision with table cell "giá là bao nhiêu").
+        if (isExplicitItemCountQuery(q)) {
+            return QueryType.COUNT_QUERY;
+        }
+
+        // Table cell / row attribute lookup (scalar in a row / cell), often with "bao nhiêu",
+        // must not be classified as COUNT_QUERY. Uses structural cues only — no hardcoded entity names.
+        if (isTableCellLookupQuery(q)) {
+            return QueryType.TABLE_LOOKUP;
+        }
+
         if (containsAny(q,
                 "bao nhieu", "co may", "may cai", "may loai", "may buoc",
                 "tong so", "so luong", "dem tat ca", "co bao nhieu",
@@ -85,9 +98,10 @@ public class QueryAnalyzerService {
         }
 
         if (containsAny(q,
-                "bang", "cot", "hang", "row", "column", "table",
-                "ma", "sku", "id", "code", "gia tri", "so lieu",
-                "thong ke", "chi tiet bang", "tra bang")) {
+                "bang", "cot", " row", "column", "table",
+                " ma ", " ma,", " ma.", "sku", "id", "code", "gia tri", "so lieu",
+                "thong ke", "chi tiet bang", "tra bang")
+                || TABLE_ROW_HANG.matcher(q).find()) {
             return QueryType.TABLE_LOOKUP;
         }
 
@@ -308,6 +322,24 @@ public class QueryAnalyzerService {
     // PRIVATE HELPERS
     // ===================================================================
 
+    private static final Pattern SPECIFIC_ROW_CATEGORY_ENTITY = Pattern.compile(
+            "(^|\\s)(goi|san pham|dich vu|sku|\\bma\\b|\\bdong\\b|\\bhang\\b|\\bcot\\b|nhan vien|khach hang)\\s+"
+                    + "([\\p{L}\\p{N}][\\p{L}\\p{N}_\\-\\.]*(?:\\s+[\\p{L}\\p{N}][\\p{L}\\p{N}_\\-\\.]*){0,4})",
+            Pattern.UNICODE_CHARACTER_CLASS);
+
+    /** SKU-123 / SKU 456 (no space after SKU still counts as a concrete code reference). */
+    private static final Pattern SPECIFIC_SKU_REFERENCE = Pattern.compile(
+            "\\bsku[-\\s]?[\\p{L}\\p{N}_\\-\\.]+",
+            Pattern.UNICODE_CHARACTER_CLASS);
+
+    /**
+     * "..., Entity có giá/ton kho/..." — entity token is not interpreted; only the "có &lt;field&gt;" frame.
+     */
+    private static final Pattern ENTITY_THEN_CO_FIELD = Pattern.compile(
+            "(?:^|[,\\s]+)([\\p{L}\\p{N}][\\p{L}\\p{N}_\\-\\.]*(?:\\s+[\\p{L}\\p{N}][\\p{L}\\p{N}_\\-\\.]*){0,3})\\s+co\\s+"
+                    + "(gia|ton kho|luot|trang thai|phong ban|thuoc|kenh|ho tro|muc|ngay|han|gia tri|bao nhieu\\s+vnd)\\b",
+            Pattern.UNICODE_CHARACTER_CLASS);
+
     private boolean isLikelyHeadingQueryByWidget(String normalizedQuestion, UUID widgetId) {
         List<DocumentSection> sections = documentSectionRepository
                 .findTop200ByWidgetConfigIdOrderByOrderIndexAsc(widgetId);
@@ -341,6 +373,159 @@ public class QueryAnalyzerService {
             if (text.contains(kw)) return true;
         }
         return false;
+    }
+
+    /**
+     * Counting rows/items (how many packages / policies / rows in a table), including phrasing
+     * inside a table context. Runs before {@link #isTableCellLookupQuery} to avoid collision.
+     * Uses category words only — no product/company proper names.
+     */
+    private boolean isExplicitItemCountQuery(String q) {
+        if (q.isBlank()) return false;
+
+        if (containsAny(q, " dem ", " dem.", "dem so", "dem tat ca")
+                || q.startsWith("dem ")
+                || q.endsWith(" dem")) {
+            return true;
+        }
+
+        if (q.contains("so luong") && hasCountTargetCategory(q)) {
+            return true;
+        }
+
+        if (containsAny(q,
+                "co bao nhieu goi", "bao nhieu goi dich vu", "bao nhieu hang goi",
+                "bao nhieu hang", "co bao nhieu chinh sach", "bao nhieu chinh sach",
+                "co bao nhieu san pham", "bao nhieu san pham trong bang", "trong bang co bao nhieu san pham",
+                "co bao nhieu nhan vien", "bao nhieu nhan vien trong danh sach",
+                "co bao nhieu dich vu", "dem so dich vu", "dem dich vu",
+                "co bao nhieu dong", "co bao nhieu dong trong bang", "bao nhieu dong trong bang", "bang nay co bao nhieu dong",
+                "co bao nhieu muc", "bao nhieu muc ", "co bao nhieu khach hang",
+                "co bao nhieu ban ghi", "co bao nhieu record", "co bao nhieu item",
+                "trong danh sach co bao nhieu")) {
+            return true;
+        }
+
+        int idx = q.indexOf("bao nhieu goi");
+        if (idx >= 0) {
+            char before = idx == 0 ? ' ' : q.charAt(idx - 1);
+            if (before == ' ' || before == '?' || before == ',' || idx == 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Nouns / targets for aggregate counts (category words only — avoid "hang" inside "thang", "dong" in "duong"). */
+    private boolean hasCountTargetCategory(String q) {
+        if (containsAny(q,
+                "goi", "san pham", "chinh sach", "muc", "nhan vien", "dich vu",
+                "khach hang", "ban ghi", "record", "row", "item", "du lieu", "danh sach", "truong")) {
+            return true;
+        }
+        if (TABLE_ROW_HANG.matcher(q).find()) {
+            return true;
+        }
+        return containsAny(q, "dong du lieu", " bao nhieu dong", "co bao nhieu dong", " so dong");
+    }
+
+    /**
+     * Table / spreadsheet context (section cue), without matching "hang" inside "thang" (month).
+     */
+    private boolean hasTableCue(String q) {
+        if (q.isBlank()) return false;
+        if (containsAny(q, "trong bang", "theo bang", "bang gia", "bang goi", "trong danh sach")) {
+            return true;
+        }
+        if (q.startsWith("bang ") || containsAny(q, " bang ", " bang.", " bang,", " bang?")) {
+            return true;
+        }
+        if (q.startsWith("dong ") || containsAny(q, " dong ", " dong,", " dong.", " dong?")) {
+            return true;
+        }
+        if (TABLE_ROW_HANG.matcher(q).find()) {
+            return true;
+        }
+        return containsAny(q, " cot ", " cot,", " o ", " o.", " o,", " o?",
+                " row", "column", " cell", " table");
+    }
+
+    private static final Pattern TABLE_ROW_HANG = Pattern.compile("(^|\\s)hang(\\s|,|\\.|\\?|$)");
+
+    /**
+     * Asks for a scalar cell / attribute (price, quota, channel, "là gì", column value), not "how many items".
+     */
+    private boolean hasValueFieldCue(String q) {
+        if (q.isBlank()) return false;
+        if (containsAny(q,
+                " gia ", " gia,", " gia.", " gia?", "gia la", "gia goi", "gia san pham",
+                "gia dich vu", "co gia ", " co gia", "co gia?",
+                "vnd", "vnđ",
+                "luot hoi", " luot ", "luot ai", "luot su dung", "su dung moi thang",
+                "ton kho", "so luong con lai",
+                " ho tro", "hotro", "kenh", "uu tien",
+                "trang thai", "phong ban", " thuoc ", "thuoc phong",
+                " la gi", " la gi?", "gia tri cot", " cot ", " cot ho tro", "gia tri",
+                " muc ", " ngay ", " han ", " nao trong bang")) {
+            return true;
+        }
+        if (q.startsWith("gia ") || q.endsWith(" gia") || q.contains(" gia la ")) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Concrete row / entity reference by linguistic frame (category word + tail, SKU, "X có giá", dòng X).
+     * Does not inspect the tail token — no hardcoded product or company names.
+     */
+    private boolean hasSpecificRowReference(String q) {
+        if (q.isBlank()) return false;
+
+        if (SPECIFIC_SKU_REFERENCE.matcher(q).find()) {
+            return true;
+        }
+
+        var m = SPECIFIC_ROW_CATEGORY_ENTITY.matcher(q);
+        while (m.find()) {
+            String category = m.group(2);
+            String tail = m.group(3) != null ? m.group(3).trim() : "";
+            if (tail.length() < 2) {
+                continue;
+            }
+            if (isGenericCategoryTail(category, tail)) {
+                continue;
+            }
+            return true;
+        }
+
+        return ENTITY_THEN_CO_FIELD.matcher(q).find();
+    }
+
+    /** Tails that mean "type of offering" rather than a named plan row in count questions. */
+    private boolean isGenericCategoryTail(String category, String tail) {
+        if (!"goi".equals(category)) {
+            return false;
+        }
+        String t = tail.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
+        return t.equals("dich") || t.equals("vu") || t.equals("dich vu");
+    }
+
+    /**
+     * Reads a single cell / attribute from a table row, including "bao nhiêu" as a scalar ask.
+     */
+    private boolean isTableCellLookupQuery(String q) {
+        if (q.isBlank()) return false;
+
+        boolean tableCue = hasTableCue(q);
+        boolean valueCue = hasValueFieldCue(q);
+        boolean specificRow = hasSpecificRowReference(q);
+
+        if (tableCue && valueCue) {
+            return true;
+        }
+        return specificRow && valueCue;
     }
 
     public String normalize(String value) {

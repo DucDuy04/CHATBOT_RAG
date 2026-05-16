@@ -1,8 +1,12 @@
 package KLTN.RAG_CHATBOT_BE.domain.document;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
@@ -58,4 +62,28 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UU
             UUID widgetConfigId,
             Collection<UUID> documentIds
     );
+
+    /**
+     * Soft-delete all chunks for a document (same {@code deleted_at} as parent document).
+     * Keeps rows for audit; {@code @SQLRestriction} on {@link DocumentChunk} then hides them from retrieval.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE DocumentChunk c SET c.deletedAt = :ts WHERE c.document.id = :documentId AND c.deletedAt IS NULL")
+    int softDeleteByDocumentId(@Param("documentId") UUID documentId, @Param("ts") LocalDateTime ts);
+
+    /**
+     * Break self-referential links before hard-delete (DB FK on {@code prev_chunk_id}/{@code next_chunk_id}).
+     * Applies to all rows for the document, including any soft-deleted partial-ingestion rows.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE DocumentChunk c SET c.prevChunk = NULL, c.nextChunk = NULL WHERE c.document.id = :documentId")
+    int unlinkNeighborsByDocumentId(@Param("documentId") UUID documentId);
+
+    /**
+     * Hard-delete every chunk row for a document (retry after FAILED partial ingestion).
+     * Must run after {@link #unlinkNeighborsByDocumentId}; tables/sections deleted separately.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("DELETE FROM DocumentChunk c WHERE c.document.id = :documentId")
+    int hardDeleteByDocumentId(@Param("documentId") UUID documentId);
 }

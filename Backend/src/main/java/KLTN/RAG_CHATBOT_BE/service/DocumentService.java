@@ -328,7 +328,11 @@ public class DocumentService {
     }
 
     /**
-     * Chỉ retry khi FAILED và chưa có chunk/section/table — tránh trùng vector Qdrant.
+     * Retry chỉ khi {@link DocumentStatus#FAILED}. Nếu ingestion lỗi giữa chừng đã tạo
+     * section/table/chunk hoặc vector Qdrant một phần: purge Qdrant (cùng filter như delete),
+     * rồi hard-delete toàn bộ children của document đó để tránh trộn dữ liệu và tránh
+     * vi phạm unique (document_id, chunk_index) / section_key / table_key khi insert lại.
+     * Thứ tự: kiểm tra file gốc còn tồn tại → purge Qdrant (fail thì dừng) → xóa DB → chạy lại pipeline.
      */
     @Transactional
     public Document retryFailedDocument(UUID documentId) throws Exception {
@@ -337,22 +341,18 @@ public class DocumentService {
         if (doc.getStatus() != DocumentStatus.FAILED) {
             throw new IllegalArgumentException("Chỉ có thể retry document đang FAILED.");
         }
-        if (!documentChunkRepository.findByDocumentId(documentId).isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Không thể retry an toàn: đã tồn tại chunk trong DB. Xóa document và upload lại.");
-        }
-        if (!documentSectionRepository.findByDocumentIdOrderByOrderIndexAsc(documentId).isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Không thể retry an toàn: đã tồn tại section. Xóa document và upload lại.");
-        }
-        if (!documentTableRepository.findByDocumentIdOrderByOrderIndexAsc(documentId).isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Không thể retry an toàn: đã tồn tại table. Xóa document và upload lại.");
-        }
         Path path = Paths.get(doc.getFilePath());
         if (!Files.exists(path)) {
             throw new IllegalArgumentException("File gốc không còn trên disk.");
         }
+        UUID widgetId = resolveWidgetIdForPurge(doc);
+        qdrantPurgeService.purgeDocumentVectors(documentId, widgetId);
+
+        documentChunkRepository.unlinkNeighborsByDocumentId(documentId);
+        documentChunkRepository.hardDeleteByDocumentId(documentId);
+        documentTableRepository.hardDeleteByDocumentId(documentId);
+        documentSectionRepository.hardDeleteByDocumentId(documentId);
+
         BytesMultipartFile mf = BytesMultipartFile.fromPath(
                 "file",
                 path,
@@ -375,12 +375,19 @@ public class DocumentService {
      * Purge Qdrant vectors for this document+tenant, then soft-delete the row.
      * If Qdrant purge fails, the document is not deleted and an {@link IllegalStateException} is thrown.
      */
+    @Transactional
     public void softDeleteDocument(UUID id) {
         Document d = documentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found"));
         UUID widgetId = resolveWidgetIdForPurge(d);
         qdrantPurgeService.purgeDocumentVectors(d.getId(), widgetId);
-        d.setDeletedAt(LocalDateTime.now());
+        LocalDateTime ts = LocalDateTime.now();
+        // Child rows keep their own deleted_at; @SQLRestriction on chunks/sections/tables only filters
+        // those columns — without this, RAG retrieval still loads rows whose parent document is deleted.
+        documentTableRepository.softDeleteByDocumentId(id, ts);
+        documentSectionRepository.softDeleteByDocumentId(id, ts);
+        documentChunkRepository.softDeleteByDocumentId(id, ts);
+        d.setDeletedAt(ts);
         documentRepository.save(d);
     }
 

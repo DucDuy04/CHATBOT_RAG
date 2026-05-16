@@ -1,0 +1,168 @@
+﻿{
+    "sqlChunksWithPage14Entities":  10,
+    "qdrantCollections":  1,
+    "uploadStatus":  "INDEXED",
+    "widgetKeyMasked":  "9cb3...88fc",
+    "regressionSmoke":  [
+                            {
+                                "sourceCount":  5,
+                                "pass":  true,
+                                "id":  "fact",
+                                "answerPreview":  "Mã sinh viên của LÊ ĐỨC DUY là 22T1020585.\n\nNguồn: [HeThongQuanLyYeuCauPhucKhao.pdf | Section: 1 Danh sách thành viên | Trang: 2-3]"
+                            },
+                            {
+                                "sourceCount":  5,
+                                "colHits":  9,
+                                "pass":  true,
+                                "id":  "table",
+                                "answerPreview":  "Bảng NguoiDung có các cột sau:\n| Tên cột | Kiểu dữ liệu | Ràng buộc |\n| --- | --- | --- |\n| MaND | NVARCHAR(20) | PK |\n| TenDangNhap | NVARCHAR(50) | NOT NULL |\n| MatKhau | NVARCHAR(20) | NOT NULL |\n| Email | NVARCHAR(50) | NOT NULL |\n| SoDienThoai |"
+                            },
+                            {
+                                "sourceCount":  2,
+                                "pass":  true,
+                                "id":  "oos",
+                                "answerPreview":  "Tôi không tìm thấy thông tin này trong tài liệu."
+                            }
+                        ],
+    "sqlChunkPreviewLines":  [
+                                 "mysql: [Warning] Using a password on the command line interface can be insecure.",
+                                 "text\tGI?I THI?U  Trong cßc k? thi h?c ph?n t?i cßc tr??ng ??i h?c, nhu c?u  ph·c kh?o ?i?m thi lα m?t ho?t ??ng kh⌠ng th? thi",
+                                 "text\tH? vα tΩn Mπ sinh viΩn  TR??NG TR??NG PH┌C 22T1020328  L╩ ??C DUY 22T1020585  NGUY?N ??C D??NG 22T1020087     2",
+                                 "table_summary\tB?ng trong section \"1. Danh sßch thαnh viΩn\".\\nCßc c?t: | H? vα tΩn | Mπ sinh viΩn |  | \\n| --- | --- | --- | \\n| TR??NG TR",
+                                 "table_row_group\t| H? vα tΩn | Mπ sinh viΩn |  | \\n| --- | --- | --- | \\n| TR??NG TR??NG PH┌C | 22T1020328 |  | \\n| L╩ ??C DUY | 22T1020585 ",
+                                 "text\tII. M⌠ t? bαi toßn \\n1.M?c tiΩu h? th?ng  ? XΓy d?ng H? th?ng h? tr? ph·c kh?o ?i?m thi nh?m t?i ?u h≤a quß  tr∞nh ti?p n",
+                                 "parent_section_summary\tM?c \"2.YΩu c?u ch?c n?ng\" t?ng h?p g?m cßc m?c con:\\n\\n- [sec_2.1] 2.1. Sinh ViΩn\\n  - T?o yΩu c?u ph·c kh?o - Xem k?t qu? ",
+                                 "text_table_like\t- T?o yΩu c?u ph·c kh?o   - Xem k?t qu? ph·c kh?o   2.2. Ph≥ng kh?o thφ \\n\\n - G?i th⌠ng bßo   + Duy?t yΩu c?u   + T? ch?i",
+                                 "parent_section_summary\tM?c \"3. S? ??\" t?ng h?p g?m cßc m?c con:\\n\\n- [sec_3.1] 3.1. S? ?? Use Case\\n- [sec_3.2] 3.2. S? ?? mßy tr?ng thßi\\n  4\\n- [s",
+                                 "text\t4",
+                                 "parent_section_summary\tM?c \"4.??c t? USECASE\" t?ng h?p g?m cßc m?c con:\\n\\n- [sec_4.1] 4.1. Sinh ViΩn\\n- [sec_4.2] 4.2. Ph≥ng kh?o thφ\\n- [sec_4.3]",
+                                 "parent_section_summary\tM?c \"4.1. Sinh ViΩn\" t?ng h?p g?m cßc m?c con:\\n\\n- [sec_4.1.1] 4.1.1. Use Case 1: T?o yΩu c?u ph·c kh?o\\n  - M⌠ t?: Sinh v",
+                                 "text\t- M⌠ t?: Sinh viΩn t?o yΩu c?u ph·c kh?o ?i?m thi.  - Tßc nhΓn: Sinh ViΩn  - Ti?n ?i?u ki?n: Sinh viΩn ?π ??ng nh?p.  - ",
+                                 "text\t- M⌠ t?: Sinh viΩn xem k?t qu? ph·c kh?o.  - Tßc nhΓn: Sinh ViΩn  - Ti?n ?i?u ki?n: YΩu c?u ph·c kh?o ?π ???c x? l².    ",
+                                 "parent_section_summary\tM?c \"4.2. Ph≥ng kh?o thφ\" t?ng h?p g?m cßc m?c con:\\n\\n- [sec_4.2.1] 4.2.1. Use Case 3: Duy?t yΩu c?u\\n  - M⌠ t?: Cßn B? Kh"
+                             ],
+    "pdfPath":  "e:\\chatbot-rag-workspace\\CHATBOT_RAG\\docs\\eval\\manual\\HeThongQuanLyYeuCauPhucKhao.pdf",
+    "pdfExists":  true,
+    "parserMergeSeen":  true,
+    "qdrantEntityCheck":  {
+                              "page14":  {
+                                             "found":  [
+                                                           "LichSuPhucKhao",
+                                                           "Khoa",
+                                                           "TuiBaiThi",
+                                                           "BienBan"
+                                                       ],
+                                             "missing":  [
+
+                                                         ],
+                                             "count":  4
+                                         },
+                              "all12":  {
+                                            "found":  [
+                                                          "NguoiDung",
+                                                          "ThongBao",
+                                                          "SinhVien",
+                                                          "GiangVien",
+                                                          "MonHoc",
+                                                          "KetQuaHocTap",
+                                                          "PhongKhaoThi",
+                                                          "YeuCauPhucKhao",
+                                                          "LichSuPhucKhao",
+                                                          "Khoa",
+                                                          "TuiBaiThi",
+                                                          "BienBan"
+                                                      ],
+                                            "missing":  [
+
+                                                        ],
+                                            "count":  12
+                                        }
+                          },
+    "chatbotId":  "c713cbb0-2f62-491a-bff3-47298d0e1cf3",
+    "chunkCount":  82,
+    "documentId":  "0bcde0c5-eb27-490b-a39e-fd15b62cff7f",
+    "sqlChunkEntityCheck":  {
+                                "page14":  {
+                                               "found":  [
+                                                             "LichSuPhucKhao",
+                                                             "Khoa"
+                                                         ],
+                                               "missing":  [
+                                                               "TuiBaiThi",
+                                                               "BienBan"
+                                                           ],
+                                               "count":  2
+                                           },
+                                "all12":  {
+                                              "found":  [
+                                                            "NguoiDung",
+                                                            "ThongBao",
+                                                            "SinhVien",
+                                                            "GiangVien",
+                                                            "PhongKhaoThi",
+                                                            "LichSuPhucKhao",
+                                                            "Khoa"
+                                                        ],
+                                              "missing":  [
+                                                              "MonHoc",
+                                                              "KetQuaHocTap",
+                                                              "YeuCauPhucKhao",
+                                                              "TuiBaiThi",
+                                                              "BienBan"
+                                                          ],
+                                              "count":  7
+                                          }
+                            },
+    "targetQuestion":  {
+                           "message":  "Bảng các thực và thuộc tính gồm những thực thể nào?",
+                           "page14Check":  {
+                                               "found":  [
+                                                             "LichSuPhucKhao",
+                                                             "Khoa"
+                                                         ],
+                                               "missing":  [
+                                                               "TuiBaiThi",
+                                                               "BienBan"
+                                                           ],
+                                               "count":  2
+                                           },
+                           "verdict":  "PARTIAL",
+                           "sourceCount":  5,
+                           "entityCheck":  {
+                                               "found":  [
+                                                             "NguoiDung",
+                                                             "ThongBao",
+                                                             "SinhVien",
+                                                             "GiangVien",
+                                                             "MonHoc",
+                                                             "KetQuaHocTap",
+                                                             "PhongKhaoThi",
+                                                             "LichSuPhucKhao",
+                                                             "Khoa"
+                                                         ],
+                                               "missing":  [
+                                                               "YeuCauPhucKhao",
+                                                               "TuiBaiThi",
+                                                               "BienBan"
+                                                           ],
+                                               "count":  9
+                                           },
+                           "answerPreview":  "Bảng các thực thể và thuộc tính trong tài liệu bao gồm:\n\n1. Người dùng (NguoiDung) \n2. Thông báo (ThongBao) \n3. Sinh viên (SinhVien) \n4. Giảng viên (GiangVien) \n5. Môn học (MonHoc) \n6. Kết quả học tập (KetQuaHocTap) \n7. Phòng khảo thí (PhongKhaoThi) \n8. Yêu cầu phúc khảo (YêuCầuPhúcKhao)\n9. Lịch sử phúc khảo (LichSuPhucKhao)\n10. Khoa \n\nNguồn: \n- [Source 1] Section: 4.5.3 Use Case 18: Chuyển yêu cầu phúc khảo đến Giảng viên | Pages: 11-14 | Type: table_summary\n- [Source 7] Section: 4.5.3 Use Case..."
+                       },
+    "parserMergeLogLines":  [
+                                "2026-05-16T08:35:33.584Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-6] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=16",
+                                "2026-05-16T08:35:33.588Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-6] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=9",
+                                "2026-05-16T08:35:33.589Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-6] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=6",
+                                "2026-05-16T08:36:14.675Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-2] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=16",
+                                "2026-05-16T08:36:14.675Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-2] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=9",
+                                "2026-05-16T08:36:14.676Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-2] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=6",
+                                "2026-05-16T08:36:48.139Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-8] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=16",
+                                "2026-05-16T08:36:48.140Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-8] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=9",
+                                "2026-05-16T08:36:48.140Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-8] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=6",
+                                "2026-05-16T08:37:25.578Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-4] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=16",
+                                "2026-05-16T08:37:25.578Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-4] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=9",
+                                "2026-05-16T08:37:25.578Z  INFO 1 --- [rag-chatbot-backend] [nio-8080-exec-4] K.R.service.DocumentParserService        : [Parse] Table MERGED continuation page=18 ΓåÆ page=17: mode=REPEATED_HEADER rows=6"
+                            ],
+    "qdrantPointCount":  82,
+    "timestamp":  "2026-05-16T15:37:22"
+}

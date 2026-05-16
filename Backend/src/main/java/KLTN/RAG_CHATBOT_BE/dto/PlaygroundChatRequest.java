@@ -10,4 +10,10 @@ public class PlaygroundChatRequest {
     private String message;
     private String sessionId;
     private Map<String, Object> overrideParams;
+    /** Optional; also accepted inside overrideParams.topK */
+    private Integer topK;
+    /** Optional; also accepted inside overrideParams.temperature */
+    private Double temperature;
+    /** Optional; also accepted inside overrideParams.maxTokens */
+    private Integer maxTokens;
 }

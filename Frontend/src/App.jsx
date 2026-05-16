@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 
 // Layout & Auth
@@ -45,7 +45,8 @@ const PAGE_TITLES = {
  *   2. defaultTitle từ PAGE_TITLES route map
  *
  * rightSlot lấy từ context — page con gọi setRightSlot(<node>).
- * Khi pathname thay đổi: resetLayout() xóa contextTitle và rightSlot.
+ * Khi pathname thay đổi: resetLayout() xóa contextTitle và rightSlot (useLayoutEffect
+ * để chạy trước useEffect setRightSlot của page con — tránh xóa nút sau khi page đã set).
  *
  * Phải render bên trong <LayoutProvider> và bên trong <BrowserRouter>.
  */
@@ -53,8 +54,10 @@ function AppLayoutWithTitle() {
   const { pathname } = useLocation();
   const { pageTitle: contextTitle, rightSlot, resetLayout } = useLayout();
 
-  // Reset context khi route thay đổi — tránh button/title của page cũ bị sót
-  useEffect(() => {
+  // Reset context khi route thay đổi — tránh button/title của page cũ bị sót.
+  // useLayoutEffect (không phải useEffect): page con set rightSlot trong useEffect sau paint;
+  // nếu reset ở useEffect parent, parent chạy sau child và xóa mất nút (vd "+ New chatbot").
+  useLayoutEffect(() => {
     resetLayout();
   }, [pathname, resetLayout]);
 

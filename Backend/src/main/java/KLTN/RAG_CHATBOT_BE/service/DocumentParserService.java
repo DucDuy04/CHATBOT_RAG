@@ -35,6 +35,13 @@ public class DocumentParserService {
         // PDF thường thụt indent cho subheading (vd "    6.4 API Structure ...") nên phải cho phép leading spaces.
         Pattern.compile("(?m)^\\s{0,16}(\\d+(?:\\.\\d+)*)(?:\\.[ \\t]*|[ \\t]+)([^\\n]{3,160})$");
 
+    /**
+     * Markdown ATX: {@code #} … {@code ######}, khoảng trắng bắt buộc, rồi phần còn lại của dòng.
+     * Group 1 = tiêu đề hiển thị (không gồm prefix {@code #}), ví dụ {@code ## 2. Chính sách…} → {@code 2. Chính sách…}.
+     */
+    private static final Pattern MARKDOWN_ATX_HEADER_LINE_PATTERN =
+            Pattern.compile("(?m)^\\s{0,16}#{1,6}\\s+(.+)$");
+
     private static final Pattern SECTION_NUMBER_PATTERN =
         Pattern.compile("^(\\d+(?:\\.\\d+)*)[.\\s]");
     
@@ -140,6 +147,19 @@ public class DocumentParserService {
 
                 // 4. Append Tabula tables vào pageBuilder
                 for (Table table : tabulaTables) {
+                    String headerBeforeConvert = currentHeader[0];
+                    CrossPageMergeOutcome mergeOutcome = attemptCrossPageMerge(
+                            table, pageNum, lastTableHeaderPage, headerBeforeConvert, currentHeader, pageContents);
+                    if (mergeOutcome.merged()) {
+                        log.info(
+                                "[Parse] Table MERGED continuation page={} → page={}: mode={} rows={}",
+                                pageNum,
+                                pageNum - 1,
+                                mergeOutcome.mode(),
+                                mergeOutcome.sourceRowCount());
+                        continue;
+                    }
+
                     String tableMarkdown = convertTableToMarkdown(table, currentHeader);
                     if (!isUsableTable(table, tableMarkdown)) {
                         logRejectedTable(table, tableMarkdown, pageNum);
@@ -153,27 +173,11 @@ public class DocumentParserService {
                             : tableMarkdown.replace("\n", "↵");
                     log.info("[Parse] Table ACCEPTED page={}: rows={} cols={} preview='{}'",
                             pageNum, acceptedRows, acceptedCols, acceptedPreview);
-                    // Nếu table là continuation, ghép rows vào table trang trước để tránh split context
-                    boolean isContinuation = isContinuationTable(table, currentHeader[0]);
-                    boolean canMergeToPrev =
-                            isContinuation
-                                    && pageNum > 1
-                                    && lastTableHeader != null
-                                    && lastTableHeader.equals(currentHeader[0])
-                                    && lastTableHeaderPage == (pageNum - 1)
-                                    && pageContents.containsKey(pageNum - 1);
-
-                    if (canMergeToPrev) {
-                        String prev = pageContents.get(pageNum - 1);
-                        String rowsOnly = removeMarkdownHeader(tableMarkdown, currentHeader[0]);
-                        pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
-                    } else {
-                        pageBuilder.append("\n[TABLE_START]\n");
-                        pageBuilder.append(tableMarkdown);
-                        pageBuilder.append("[TABLE_END]\n");
-                        lastTableHeader = currentHeader[0];
-                        lastTableHeaderPage = pageNum;
-                    }
+                    pageBuilder.append("\n[TABLE_START]\n");
+                    pageBuilder.append(tableMarkdown);
+                    pageBuilder.append("[TABLE_END]\n");
+                    lastTableHeader = currentHeader[0];
+                    lastTableHeaderPage = pageNum;
                 }
 
                 if (!tabulaTables.isEmpty()) {
@@ -212,6 +216,8 @@ public class DocumentParserService {
         List<Section> sections = new ArrayList<>();
         TreeMap<Integer, String> sortedPages = new TreeMap<>(pageContents);
 
+        boolean markdownHeadingMode = detectMarkdownHeadingMode(sortedPages);
+
         // Mặc định "General" cho phần intro trước heading đầu tiên
         String currentHeader = "General";
         StringBuilder currentContent = new StringBuilder();
@@ -232,19 +238,27 @@ public class DocumentParserService {
 
             // Mask nội dung bảng để regex heading không match bên trong table rows.
             String maskedForHeadingScan = maskTableBlocks(pageText);
-            Matcher matcher = SECTION_HEADER_PATTERN.matcher(maskedForHeadingScan);
+            Matcher matcher = markdownHeadingMode
+                    ? MARKDOWN_ATX_HEADER_LINE_PATTERN.matcher(maskedForHeadingScan)
+                    : SECTION_HEADER_PATTERN.matcher(maskedForHeadingScan);
             int lastEndIndex = 0;
 
             while (matcher.find()) {
                 totalCandidates++;
-                String candidateHeader = matcher.group(0).trim();
+                String candidateHeader = markdownHeadingMode
+                        ? safeTrim(matcher.group(1))
+                        : matcher.group(0).trim();
+                if (markdownHeadingMode && candidateHeader.isEmpty()) {
+                    continue;
+                }
                 String candidateNumber = extractSectionNumber(candidateHeader);
 
                 // --- Bước 1: false-positive filter (với reason log) ---
                 String skipReason = headingSkipReason(
                         candidateHeader, candidateNumber,
                         currentHeader, currentSectionNumber,
-                        matcher.start(), seenSectionNumberCounts);
+                        matcher.start(), seenSectionNumberCounts,
+                        markdownHeadingMode);
 
                 if (skipReason != null) {
                     log.debug("[Parse] SKIP [{}] page={} header='{}'", skipReason, currentPage, candidateHeader);
@@ -304,8 +318,8 @@ public class DocumentParserService {
         }
 
         // --- Summary log ---
-        log.info("[Parse] Heading detection: totalCandidates={} accepted={} skipped={}",
-                totalCandidates, acceptedHeadings, totalCandidates - acceptedHeadings);
+        log.info("[Parse] Heading mode: markdownAtx={} totalCandidates={} accepted={} skipped={}",
+                markdownHeadingMode, totalCandidates, acceptedHeadings, totalCandidates - acceptedHeadings);
         log.info("[Parse] Sections created: {} (no merging applied)", sections.size());
 
         if (sections.isEmpty() && !pageContents.isEmpty()) {
@@ -313,6 +327,28 @@ public class DocumentParserService {
         }
 
         return sections;
+    }
+
+    private static String safeTrim(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    /**
+     * Bật chế độ tách section theo markdown ATX ({@code #}…{@code ######}) khi toàn bộ document
+     * có ít nhất một dòng heading markdown hợp lệ — tránh TXT có cấu trúc markdown lại bị
+     * regex số {@code 1.}… tách nhầm list thành section root.
+     */
+    private boolean detectMarkdownHeadingMode(TreeMap<Integer, String> sortedPages) {
+        for (String pageText : sortedPages.values()) {
+            if (pageText == null || pageText.isBlank()) {
+                continue;
+            }
+            String masked = maskTableBlocks(pageText);
+            if (MARKDOWN_ATX_HEADER_LINE_PATTERN.matcher(masked).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -327,10 +363,11 @@ public class DocumentParserService {
             String currentHeader,
             String currentSectionNumber,
             int matchStart,
-            java.util.Map<String, Integer> seenSectionNumberCounts) {
+            java.util.Map<String, Integer> seenSectionNumberCounts,
+            boolean markdownHeadingMode) {
 
         // 1. Kiểm tra false positive cơ bản (format/content)
-        String fpReason = isLikelySectionHeaderSkipReason(candidateHeader);
+        String fpReason = isLikelySectionHeaderSkipReason(candidateHeader, markdownHeadingMode);
         if (fpReason != null) return "false-positive:" + fpReason;
 
         // 2. Header lặp lại chính xác → là page header/footer lặp
@@ -354,8 +391,11 @@ public class DocumentParserService {
     /**
      * Kiểm tra false-positive thuần dựa trên format/nội dung dòng.
      * Trả về null nếu hợp lệ, trả về lý do nếu là false positive.
+     *
+     * @param markdownHeadingMode khi true (ATX), outline số {@code N. …} tin cậy hơn — cho phép mục 7 chứa
+     *        "tài liệu" hợp lệ; vẫn skip dòng chỉ có "tài liệu" kiểu preamble không có số mục (vd tiêu đề sau {@code #}).
      */
-    private String isLikelySectionHeaderSkipReason(String headerLine) {
+    private String isLikelySectionHeaderSkipReason(String headerLine, boolean markdownHeadingMode) {
         if (headerLine == null) return "null";
         String h = headerLine.trim();
         if (h.isBlank()) return "blank";
@@ -377,9 +417,21 @@ public class DocumentParserService {
         String afterNumber = h.replaceFirst("^\\d+(?:\\.\\d+)*\\.?\\s+", "").trim();
         if (afterNumber.length() < 3) return "title-too-short(<3)";
 
-        // Footer/header artifacts (cụm từ đặc trưng)
+        // Footer/header artifacts (cụm từ đặc trưng).
+        // 21D2: "tài liệu" trong tiêu đề outline ATX số "7. … trong tài liệu" là hợp lệ (21E thiếu section 7
+        // do skip nhầm). Với markdown ATX, chỉ bỏ qua heuristic "tài liệu" khi dòng là outline số N.
         String lower = afterNumber.toLowerCase();
-        if (lower.matches(".*\\b(trang|page|tai lieu|tài liệu|noi bo|nội bộ|khong phat hanh|không phát hành)\\b.*")) {
+        boolean strongFooter = lower.matches(
+                ".*\\b(trang|page|noi bo|nội bộ|khong phat hanh|không phát hành)\\b.*");
+        boolean taiLieuToken = lower.matches(".*\\b(tai lieu|tài liệu)\\b.*");
+        boolean numberedOutline = h.matches("^\\d+(?:\\.\\d+)*\\.?\\s+.+");
+        if (strongFooter) {
+            return "footer-header-artifact";
+        }
+        if (taiLieuToken) {
+            if (markdownHeadingMode && numberedOutline) {
+                return null;
+            }
             return "footer-header-artifact";
         }
 
@@ -649,6 +701,373 @@ public class DocumentParserService {
         return isDataRow(rows.get(0)) && headerMarkdown != null && !headerMarkdown.isBlank();
     }
 
+    /**
+     * Trang sau của PDF thường lặp lại header row (Thực thể | Thuộc tính) thay vì chỉ data rows.
+     * Trường hợp này không pass {@link #isContinuationTable} vì firstRow không phải data row.
+     */
+    private boolean isRepeatedHeaderContinuationTable(Table table, String existingHeaderMarkdown) {
+        if (table == null || existingHeaderMarkdown == null || existingHeaderMarkdown.isBlank()) {
+            return false;
+        }
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null || rows.size() < 2) {
+            return false;
+        }
+        List<RectangularTextContainer> firstRow = rows.get(0);
+        if (isDataRow(firstRow)) {
+            return false;
+        }
+        String existingHeaderRow = extractMarkdownHeaderRow(existingHeaderMarkdown);
+        String candidateHeaderRow = buildMarkdownHeaderRowLine(firstRow);
+        if (normalizeHeaderRow(existingHeaderRow).equals(normalizeHeaderRow(candidateHeaderRow))) {
+            return true;
+        }
+        // Header row có nhiều cell rỗng (Tabula sparse) — so khớp sau compact
+        List<String> compactFirst = compactRowTexts(firstRow);
+        if (compactFirst.size() >= 2) {
+            String compactHeaderLine = buildMarkdownRowFromCells(compactFirst);
+            return normalizeHeaderRow(existingHeaderRow).equals(normalizeHeaderRow(compactHeaderLine));
+        }
+        return false;
+    }
+
+    /**
+     * Gộp bảng continuation trang N+1 vào bảng đã accept trang N (23B + 23B3 sparse).
+     * Package-visible cho unit test cùng package {@code KLTN.RAG_CHATBOT_BE.service}.
+     */
+    CrossPageMergeOutcome attemptCrossPageMerge(
+            Table table,
+            int pageNum,
+            int lastTableHeaderPage,
+            String headerBeforeConvert,
+            String[] currentHeader,
+            Map<Integer, String> pageContents) {
+        if (table == null || pageNum <= 1 || lastTableHeaderPage != pageNum - 1) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+        if (headerBeforeConvert == null || headerBeforeConvert.isBlank()
+                || !pageContents.containsKey(pageNum - 1)) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        boolean continuationByData = isContinuationTable(table, headerBeforeConvert);
+        boolean continuationByRepeatedHeader =
+                isRepeatedHeaderContinuationTable(table, headerBeforeConvert);
+        String[] headerHolder = { headerBeforeConvert };
+        String previewMarkdown = convertTableToMarkdown(table, headerHolder);
+        boolean continuationBySparse =
+                isSparseContinuationCandidate(table, previewMarkdown, headerBeforeConvert);
+
+        if (!continuationByData && !continuationByRepeatedHeader && !continuationBySparse) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        String mode;
+        String rowsOnly;
+        if (continuationByRepeatedHeader) {
+            rowsOnly = convertTableDataRowsOnly(table, 1);
+            mode = "REPEATED_HEADER";
+        } else if (continuationBySparse) {
+            rowsOnly = convertSparseContinuationRows(table, headerBeforeConvert);
+            mode = "SPARSE_CONTINUATION";
+        } else {
+            rowsOnly = removeMarkdownHeader(
+                    convertTableToMarkdown(table, currentHeader), headerBeforeConvert);
+            mode = "DATA_ROWS";
+        }
+
+        if (rowsOnly == null || rowsOnly.isBlank()) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        String prev = pageContents.get(pageNum - 1);
+        pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
+        int rowCount = table.getRows() == null ? 0 : table.getRows().size();
+        return new CrossPageMergeOutcome(true, mode, rowCount);
+    }
+
+    record CrossPageMergeOutcome(boolean merged, String mode, int sourceRowCount) {
+        static CrossPageMergeOutcome notMerged() {
+            return new CrossPageMergeOutcome(false, null, 0);
+        }
+    }
+
+    /**
+     * Bảng Tabula trang sau bị reject vì quá nhiều cell rỗng / header sparse nhưng vẫn là continuation
+     * của bảng đã accept trang trước (không nới ngưỡng global {@link #isUsableTable}).
+     */
+    private boolean isSparseContinuationCandidate(
+            Table table, String tableMarkdown, String existingHeaderMarkdown) {
+        if (table == null || existingHeaderMarkdown == null || existingHeaderMarkdown.isBlank()) {
+            return false;
+        }
+        if (isUsableTable(table, tableMarkdown)) {
+            return false;
+        }
+        String reason = getTableRejectionReason(table, tableMarkdown);
+        if (reason == null
+                || (!reason.startsWith("too-many-empty-cells")
+                        && !reason.startsWith("header-row-too-sparse"))) {
+            return false;
+        }
+        if (hasIndependentSectionHeadingInTable(table)) {
+            return false;
+        }
+        String rowsOnly = convertSparseContinuationRows(table, existingHeaderMarkdown);
+        return countMarkdownDataRows(rowsOnly) >= 2;
+    }
+
+    /**
+     * Chỉ coi là bảng độc lập mới nếu <em>hàng substantive đầu tiên</em> là heading số (vd 5. Tiêu đề).
+     * Tránh false-negative khi Tabula kéo cả heading mục tiếp theo vào cuối bảng continuation.
+     */
+    private boolean hasIndependentSectionHeadingInTable(Table table) {
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null) {
+            return false;
+        }
+        for (List<RectangularTextContainer> row : rows) {
+            List<String> logical = extractSparseLogicalRowCells(row);
+            if (logical.stream().allMatch(t -> t == null || t.isBlank())) {
+                continue;
+            }
+            if (isMarkdownSeparatorRow(logical)) {
+                continue;
+            }
+            for (String text : logical) {
+                if (text != null && !text.isBlank() && EARLY_HEADING_PATTERN.matcher(text).matches()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private int countMarkdownDataRows(String rowsMarkdown) {
+        if (rowsMarkdown == null || rowsMarkdown.isBlank()) {
+            return 0;
+        }
+        int count = 0;
+        for (String line : rowsMarkdown.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("|") && trimmed.contains("|")) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private List<String> compactRowTexts(List<RectangularTextContainer> row) {
+        List<String> compact = new ArrayList<>();
+        if (row == null) {
+            return compact;
+        }
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            if (!text.isBlank()) {
+                compact.add(text);
+            }
+        }
+        return compact;
+    }
+
+    private int countMarkdownColumns(String headerRowLine) {
+        if (headerRowLine == null || headerRowLine.isBlank()) {
+            return 0;
+        }
+        int pipes = 0;
+        for (int i = 0; i < headerRowLine.length(); i++) {
+            if (headerRowLine.charAt(i) == '|') {
+                pipes++;
+            }
+        }
+        return Math.max(0, pipes - 1);
+    }
+
+    private String buildMarkdownRowFromCells(List<String> cells) {
+        if (cells == null || cells.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("| ");
+        for (String cell : cells) {
+            sb.append(cell).append(" | ");
+        }
+        return sb.toString().trim();
+    }
+
+    private String formatMarkdownRowAligned(List<String> cells, int expectedColumns) {
+        if (cells == null || cells.isEmpty()) {
+            return "";
+        }
+        int cols = Math.max(expectedColumns, cells.size());
+        StringBuilder sb = new StringBuilder("| ");
+        for (int i = 0; i < cols; i++) {
+            sb.append(i < cells.size() ? cells.get(i) : "").append(" | ");
+        }
+        return sb.toString().trim();
+    }
+
+    private boolean isMarkdownSeparatorRow(List<String> cells) {
+        if (cells == null || cells.isEmpty()) {
+            return false;
+        }
+        return cells.stream().allMatch(c -> c == null || c.isBlank() || c.matches("-+"));
+    }
+
+    /**
+     * Với bảng Tabula 3 cột kiểu PDF thesis: cột 0 thường rỗng, cột 1 = mô tả/entity, cột 2 = thuộc tính.
+     */
+    private List<String> extractSparseLogicalRowCells(List<RectangularTextContainer> row) {
+        if (row == null || row.isEmpty()) {
+            return List.of();
+        }
+        List<String> cols = new ArrayList<>();
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            cols.add(text);
+        }
+        if (cols.size() >= 3) {
+            String c0 = cols.get(0);
+            String c1 = cols.get(1);
+            String c2 = cols.get(2);
+            if (c1.isBlank() && !c0.isBlank()) {
+                c1 = c0;
+            }
+            if (!c1.isBlank() && !c2.isBlank()) {
+                return List.of(c1, c2);
+            }
+            if (!c1.isBlank()) {
+                return List.of(c1);
+            }
+            if (c0.isBlank() && c1.isBlank() && !c2.isBlank()) {
+                return List.of("", c2);
+            }
+        }
+        return compactRowTexts(row);
+    }
+
+    /**
+     * Trích data rows từ bảng sparse: bỏ cell rỗng, bỏ header lặp, ghép fragment 1 cột vào hàng trước.
+     */
+    private String convertSparseContinuationRows(Table table, String existingHeaderMarkdown) {
+        if (table == null || table.getRows() == null || existingHeaderMarkdown == null) {
+            return "";
+        }
+        String existingHeaderRow = extractMarkdownHeaderRow(existingHeaderMarkdown);
+        String normalizedExisting = normalizeHeaderRow(existingHeaderRow);
+        int expectedCols = countMarkdownColumns(existingHeaderRow);
+        if (expectedCols < 2) {
+            expectedCols = 2;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (List<RectangularTextContainer> row : table.getRows()) {
+            List<String> logical = extractSparseLogicalRowCells(row);
+            if (logical.isEmpty() || isMarkdownSeparatorRow(logical)) {
+                continue;
+            }
+            if (logical.size() == 1) {
+                String only = logical.get(0);
+                if (only.isBlank()) {
+                    continue;
+                }
+                String compactLine = buildMarkdownRowFromCells(List.of(only));
+                if (normalizeHeaderRow(compactLine).equals(normalizedExisting)) {
+                    continue;
+                }
+            } else {
+                String compactLine = buildMarkdownRowFromCells(logical);
+                if (normalizeHeaderRow(compactLine).equals(normalizedExisting)) {
+                    continue;
+                }
+            }
+
+            if (logical.size() >= 2 && !logical.get(0).isBlank()) {
+                sb.append(formatMarkdownRowAligned(logical, expectedCols)).append("\n");
+                continue;
+            }
+
+            // Fragment thuộc tính (chỉ cột cuối có text) — nối vào hàng markdown trước đó
+            if (logical.size() >= 2 && logical.get(0).isBlank() && !logical.get(1).isBlank()) {
+                String fragment = logical.get(1);
+                int lastNewline = sb.lastIndexOf("\n");
+                if (lastNewline >= 0 && sb.length() > 0) {
+                    int prevLineStart = sb.lastIndexOf("\n", lastNewline - 1);
+                    if (prevLineStart < 0) {
+                        prevLineStart = 0;
+                    } else {
+                        prevLineStart++;
+                    }
+                    String prevLine = sb.substring(prevLineStart, lastNewline + 1);
+                    if (prevLine.contains("|") && !prevLine.strip().endsWith("| |")) {
+                        int lastPipe = prevLine.lastIndexOf("|");
+                        if (lastPipe > 0) {
+                            String merged = prevLine.substring(0, lastPipe).stripTrailing()
+                                    + ", " + fragment + " | \n";
+                            sb.delete(prevLineStart, sb.length());
+                            sb.append(merged);
+                        }
+                    }
+                } else if (!fragment.isBlank()) {
+                    sb.append("| ").append(fragment).append(" | |\n");
+                }
+            } else if (logical.size() == 1 && !logical.get(0).isBlank()) {
+                sb.append("| ").append(logical.get(0)).append(" | |\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String extractMarkdownHeaderRow(String headerMarkdown) {
+        if (headerMarkdown == null || headerMarkdown.isBlank()) {
+            return "";
+        }
+        String trimmed = headerMarkdown.stripLeading();
+        int newline = trimmed.indexOf('\n');
+        return (newline >= 0 ? trimmed.substring(0, newline) : trimmed).trim();
+    }
+
+    private String buildMarkdownHeaderRowLine(List<RectangularTextContainer> row) {
+        if (row == null || row.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("| ");
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            sb.append(text).append(" | ");
+        }
+        return sb.toString().trim();
+    }
+
+    private static String normalizeHeaderRow(String row) {
+        if (row == null) {
+            return "";
+        }
+        return row.replaceAll("\\s+", " ").trim().toLowerCase();
+    }
+
+    /** Markdown rows only (no header/separator), used when merging repeated-header continuation. */
+    private String convertTableDataRowsOnly(Table table, int startRowIndex) {
+        if (table == null || table.getRows() == null) {
+            return "";
+        }
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (startRowIndex >= rows.size()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = startRowIndex; i < rows.size(); i++) {
+            sb.append("| ");
+            for (RectangularTextContainer cell : rows.get(i)) {
+                String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+                sb.append(text).append(" | ");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
     private String removeMarkdownHeader(String tableMarkdown, String headerMarkdown) {
         if (tableMarkdown == null) return "";
         if (headerMarkdown == null || headerMarkdown.isBlank()) return tableMarkdown;
@@ -842,6 +1261,11 @@ public class DocumentParserService {
                 .replaceAll(
                         "(?m)^(\\s{0,16}\\d+(?:\\.\\d+)*\\.?\\s+[^\\n]{3,160})\\n(?!\\n)",
                         "$1\n\n"
+                )
+                // Giữ newline trước markdown ATX heading (tránh dính "##" vào cuối câu trước).
+                .replaceAll(
+                        "(?m)^(\\s{0,16}#{1,6}\\s+[^\\n]+)\\n(?!\\n)",
+                        "$1\n\n"
                 );
 
         // Restore table blocks TRƯỚC bước newline-to-space để bảo toàn cấu trúc markdown
@@ -849,9 +1273,10 @@ public class DocumentParserService {
             afterNormalize = afterNormalize.replace("[__TBLP_" + i + "__]", tableBlocks.get(i));
         }
 
-        // Gộp newline thành space — loại trừ thêm '|' để giữ nguyên row boundary của markdown table
+        // Gộp newline thành space — loại trừ thêm '|' và dòng bắt đầu bằng markdown ATX (# …)
+        // để heading markdown vẫn bắt đầu dòng mới sau cleanText (TXT golden + hybrid PDF hiếm).
         return afterNormalize
-                .replaceAll("(?<!\\n)\\n(?![\\n\\d\\[|])", " ")
+                .replaceAll("(?<!\\n)\\n(?![\\n\\d\\[|])(?!\\s{0,16}#{1,6}\\s)", " ")
                 .replaceAll("\\.{2,}", ".")
                 .trim();
     }

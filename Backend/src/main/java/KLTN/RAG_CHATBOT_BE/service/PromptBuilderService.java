@@ -1,13 +1,22 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
+import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import org.springframework.stereotype.Service;
+
 import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
 @Service
 public class PromptBuilderService {
+
+    /**
+     * Nhắc thêm khi đã biết context có chunk bảng — tránh LLM từ chối dù evidence có trong Source.
+     */
+    private static final String TABLE_LOOKUP_TABLE_SOURCES_PRESENT_NOTE = """
+            [NHẮN NGỮ CẢNH BẢNG: Trong danh sách Source bên dưới có ít nhất một mục loại bảng (table_summary / table_row_group / text_table_like) hoặc nội dung dạng bảng Markdown. Bạn phải đọc các Source đó trước khi kết luận không có thông tin.]
+            """;
 
     private static final String SYSTEM_PROMPT = """
         Bạn là trợ lý AI chuyên trả lời câu hỏi dựa trên tài liệu được cung cấp.
@@ -131,13 +140,18 @@ public class PromptBuilderService {
         // Nếu có query type hint, thêm instruction đặc biệt trước [TÀI LIỆU THAM KHẢO]
         if (queryTypeHint != null && !queryTypeHint.isBlank()) {
             prompt.append("[LOẠI CÂU HỎI: ").append(queryTypeHint).append("]\n");
-            prompt.append(buildQueryTypeInstruction(queryTypeHint)).append("\n\n");
+            String typeInstruction = buildQueryTypeInstruction(queryTypeHint);
+            prompt.append(typeInstruction);
+            if ("TABLE_LOOKUP".equalsIgnoreCase(queryTypeHint.trim()) && contextsContainTableLikeChunks(contexts)) {
+                prompt.append("\n").append(TABLE_LOOKUP_TABLE_SOURCES_PRESENT_NOTE.trim());
+            }
+            prompt.append("\n\n");
         }
 
         prompt.append("[TÀI LIỆU THAM KHẢO]\n");
 
         for (int i = 0; i < contexts.size(); i++) {
-            KLTN.RAG_CHATBOT_BE.dto.RetrievedContext ctx = contexts.get(i);
+            RetrievedContext ctx = contexts.get(i);
 
             prompt.append("[Source ").append(i + 1).append("]\n");
             prompt.append("Document: ").append(nullSafe(ctx.getFileName())).append("\n");
@@ -182,12 +196,14 @@ public class PromptBuilderService {
                     4. Nếu có Source là section_summary, đọc trước để có tổng quan.
                     """;
             case "TABLE_LOOKUP" -> """
-                    Đây là câu hỏi TRA CỨU BẢNG. Bắt buộc:
-                    1. Nếu câu hỏi nêu tên bảng cụ thể, CHỈ dùng Source khớp bảng đó; không lấy cột từ bảng khác.
-                    2. Tìm Source có Type=table_summary hoặc table_row_group.
-                    3. Gộp TẤT CẢ dòng từ các Source table_row_group thuộc đúng bảng được hỏi thành một bảng duy nhất.
-                    4. Trình bày kết quả bằng bảng Markdown.
-                    5. Không bỏ sót dòng nào thuộc phạm vi bảng đã chọn.
+                    Đây là câu hỏi TRA CỨU BẢNG (TABLE_LOOKUP). Bắt buộc:
+                    1. Ưu tiên đọc các Source có Type=table_summary, table_row_group, text_table_like, và mọi Content có cấu trúc bảng Markdown (có ký tự '|' theo hàng/cột rõ ràng).
+                    2. Nếu câu hỏi nêu tên bảng cụ thể trong tài liệu, CHỈ dùng Source khớp bảng đó; không lấy cột từ bảng khác.
+                    3. Xác định hàng/dòng (đối tượng/entity trong câu hỏi) và cột/thuộc tính (giá trị cần tra). Đọc đúng ô giao của hàng và cột đó.
+                    4. Nếu câu hỏi đưa ra nhiều lựa chọn giá trị (ví dụ dạng “… hay …?”), chọn lựa chọn khớp với giá trị trong ô của bảng; trả lời ngắn gọn và căn cứ vào ô/hàng/cột tương ứng — không suy diễn ngoài ô đã đọc.
+                    5. Gộp TẤT CẢ dòng từ các Source table_row_group thuộc đúng phạm vi bảng được hỏi thành một bảng Markdown; không bỏ sót dòng thuộc phạm vi.
+                    6. KHÔNG được dùng câu “Tôi không tìm thấy thông tin này trong tài liệu.” khi trong [TÀI LIỆU THAM KHẢO] đã có hàng/cột/ô trực tiếp trả lời câu hỏi (kể cả câu dạng lựa chọn). Chỉ dùng câu từ chối đó khi không có hàng/cột/giá trị liên quan trong context.
+                    7. Không đoán hoặc bịa giá trị không xuất hiện trong các Source; không suy luận ngoài nội dung ô/hàng đã có.
                     """;
             case "SECTION_SUMMARY" -> """
                     Đây là câu hỏi về NỘI DUNG MỘT SECTION. Bắt buộc:
@@ -247,5 +263,43 @@ public class PromptBuilderService {
 
     private String nullSafe(String value) {
         return value == null ? "" : value;
+    }
+
+    /**
+     * True nếu có chunk loại bảng hoặc nội dung giống bảng Markdown (không gọi DB/Qdrant).
+     */
+    private boolean contextsContainTableLikeChunks(List<RetrievedContext> contexts) {
+        if (contexts == null || contexts.isEmpty()) {
+            return false;
+        }
+        for (RetrievedContext c : contexts) {
+            if (c == null) {
+                continue;
+            }
+            String chunkType = c.getChunkType();
+            if (chunkType != null) {
+                String t = chunkType.trim().toLowerCase(Locale.ROOT);
+                if ("table_summary".equals(t) || "table_row_group".equals(t) || "text_table_like".equals(t)) {
+                    return true;
+                }
+            }
+            if (contentLooksLikeMarkdownTable(c.getContent())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean contentLooksLikeMarkdownTable(String content) {
+        if (content == null || content.isBlank()) {
+            return false;
+        }
+        return content.lines().anyMatch(line -> {
+            if (line == null || line.isBlank()) {
+                return false;
+            }
+            long pipes = line.chars().filter(ch -> ch == '|').count();
+            return pipes >= 2;
+        });
     }
 }
