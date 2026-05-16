@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-05-16T10:07:18.623Z",
+  "task": "23C2",
+  "baseUrl": "http://localhost:5173",
+  "testUrl": "http://localhost:5173/public-widget-test.html?widgetKey=7218...3b04",
+  "widgetKeyMasked": "7218...3b04",
+  "bundleProbe": {
+    "httpStatus": 200,
+    "length": 1194,
+    "hasInjectStyles": false,
+    "hasRagHidden": false,
+    "isStaleLegacy": true
+  },
+  "layout": {
+    "bubbleExists": true,
+    "bubbleWidth": 1264,
+    "bubbleHeight": 1268,
+    "bubbleX": 8,
+    "bubbleY": -525.125,
+    "launcherSizeOk": false,
+    "positionBottomRight": false,
+    "hugeBlackBlock": true
+  },
+  "panel": {
+    "frameVisible": true,
+    "frameWidth": 304,
+    "frameHeight": 154,
+    "panelSizeOk": false,
+    "inputVisible": true,
+    "sendVisible": true,
+    "inputNotCropped": true,
+    "sendNotCropped": true
+  },
+  "chat": {
+    "messageSent": true,
+    "botReplied": true,
+    "excerpt": "Trợ lý AI Xin chào! Tôi có thể giúp gì cho bạn? Tài liệu này nói về hệ thống gì? Thiếu widget key. Truyền widgetKey khi nhúng widget hoặc cấu hình window.RagChatbotConfig.apiKey. Gửi"
+  },
+  "console": {
+    "errors": [],
+    "warnings": [
+      {
+        "type": "warning",
+        "text": "cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation"
+      }
+    ]
+  },
+  "network": [
+    {
+      "url": "http://localhost:5173/dist-widget/chatbot-widget.iife.js",
+      "status": 200
+    }
+  ],
+  "screenshots": [
+    "C:\\Users\\ACER\\AppData\\Local\\Temp\\pw23c2_verify\\screenshots_23c2\\initial_port5173.png",
+    "C:\\Users\\ACER\\AppData\\Local\\Temp\\pw23c2_verify\\screenshots_23c2\\panel_port5173.png",
+    "C:\\Users\\ACER\\AppData\\Local\\Temp\\pw23c2_verify\\screenshots_23c2\\chat_port5173.png"
+  ],
+  "conclusion": "FAIL",
+  "staleBundleNote": "Served bundle is legacy (no rag-chatbot-hidden / 56px styles)"
+}

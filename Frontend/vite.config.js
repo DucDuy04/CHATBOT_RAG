@@ -15,7 +15,10 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           if (req.url?.startsWith('/dist-widget/')) {
-            const filePath = resolve(__dirname, req.url.slice(1))
+            // Prefer built bundle over stale copies under public/dist-widget
+            const builtPath = resolve(__dirname, req.url.slice(1))
+            const publicPath = resolve(__dirname, 'public', req.url.slice(1))
+            const filePath = existsSync(builtPath) ? builtPath : publicPath
             if (existsSync(filePath)) {
               const ext = filePath.split('.').pop()
               const contentType = ext === 'css' ? 'text/css'

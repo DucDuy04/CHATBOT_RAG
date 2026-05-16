@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:widget": "vite build --config vite.widget.config.js",
+    "build:widget": "vite build --config vite.widget.config.js && node scripts/sync-widget-to-public.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

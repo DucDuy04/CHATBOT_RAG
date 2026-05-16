@@ -4,11 +4,31 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Public Widget Test</title>
+    <style>
+      /* Host page only — widget UI uses #rag-chatbot-bubble / #rag-chatbot-frame */
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        padding: 1.25rem 1.5rem 6rem;
+        box-sizing: border-box;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      body > h1,
+      body > p {
+        max-width: 42rem;
+      }
+    </style>
   </head>
   <body>
     <h1>Public Widget Test</h1>
     <p>
-      Bubble + iframe widget load từ <code>dist-widget/chatbot-widget.iife.js</code>.
+      Bubble + iframe widget load từ <code>dist-widget/chatbot-widget.iife.js</code>
+      (sau khi chạy <code>npm run build:widget</code> để đồng bộ bundle mới).
       API key là UUID trả về field <code>apiKey</code> duy nhất lúc
       <code>POST /api/chatbots</code> (không hiện lại trong list).
     </p>
@@ -22,10 +42,14 @@
       (function () {
         var qs = new URLSearchParams(window.location.search);
         var key = qs.get("widgetKey") || qs.get("apiKey") || "";
+        var position = qs.get("position");
         window.RagChatbotConfig = {
           widgetKey: key,
-          frontendUrl: "http://localhost:5173",
-          position: "bottom-right",
+          frontendUrl: window.location.origin,
+          position:
+            position === "bottom-left" || position === "bottom-right"
+              ? position
+              : "bottom-right",
           widgetColor: "#2563eb",
           welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
           launcherIcon: "chat",

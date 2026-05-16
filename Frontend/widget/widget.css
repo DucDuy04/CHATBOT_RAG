@@ -1,46 +1,49 @@
+/* Fallback when host links widget.css; primary styles are injected by chatbot-widget.iife.js */
 #rag-chatbot-bubble {
   position: fixed;
+  width: 56px;
+  height: 56px;
   bottom: 24px;
   right: 24px;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background: #2563eb;
-  cursor: pointer;
+  border-radius: 9999px;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-  z-index: 9999;
-  transition: transform 0.2s;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  z-index: 2147483000;
+  transition: transform 0.18s ease;
 }
 
 #rag-chatbot-bubble:hover {
-  transform: scale(1.08);
+  transform: scale(1.06);
 }
 
 #rag-chatbot-bubble svg {
   width: 24px;
   height: 24px;
-  fill: white;
+  min-width: 24px;
+  min-height: 24px;
+  display: block;
+}
+
+#rag-chatbot-bubble svg path {
+  fill: #fff;
 }
 
 #rag-chatbot-frame {
   position: fixed;
-  bottom: 88px;
+  width: min(360px, calc(100vw - 24px));
+  height: min(520px, calc(100vh - 48px));
+  bottom: 24px;
   right: 24px;
-  width: 380px;
-  height: 560px;
-  border: none;
+  border: 0;
   border-radius: 16px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  z-index: 9998;
-  transition: opacity 0.2s, transform 0.2s;
-  background: white;
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.22);
+  background: #fff;
+  z-index: 2147482999;
 }
 
-#rag-chatbot-frame.hidden {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(12px);
+.rag-chatbot-hidden {
+  display: none !important;
 }

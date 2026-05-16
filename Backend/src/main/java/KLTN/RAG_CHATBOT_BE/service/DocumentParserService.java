@@ -148,31 +148,15 @@ public class DocumentParserService {
                 // 4. Append Tabula tables vào pageBuilder
                 for (Table table : tabulaTables) {
                     String headerBeforeConvert = currentHeader[0];
-                    boolean continuationByData = isContinuationTable(table, headerBeforeConvert);
-                    boolean continuationByRepeatedHeader =
-                            isRepeatedHeaderContinuationTable(table, headerBeforeConvert);
-                    boolean canMergeToPrev =
-                            (continuationByData || continuationByRepeatedHeader)
-                                    && pageNum > 1
-                                    && lastTableHeaderPage == (pageNum - 1)
-                                    && pageContents.containsKey(pageNum - 1);
-
-                    if (canMergeToPrev) {
-                        String rowsOnly = continuationByRepeatedHeader
-                                ? convertTableDataRowsOnly(table, 1)
-                                : removeMarkdownHeader(
-                                        convertTableToMarkdown(table, currentHeader),
-                                        headerBeforeConvert);
-                        if (rowsOnly != null && !rowsOnly.isBlank()) {
-                            String prev = pageContents.get(pageNum - 1);
-                            pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
-                            log.info(
-                                    "[Parse] Table MERGED continuation page={} → page={}: mode={} rows={}",
-                                    pageNum,
-                                    pageNum - 1,
-                                    continuationByRepeatedHeader ? "REPEATED_HEADER" : "DATA_ROWS",
-                                    table.getRows() == null ? 0 : table.getRows().size());
-                        }
+                    CrossPageMergeOutcome mergeOutcome = attemptCrossPageMerge(
+                            table, pageNum, lastTableHeaderPage, headerBeforeConvert, currentHeader, pageContents);
+                    if (mergeOutcome.merged()) {
+                        log.info(
+                                "[Parse] Table MERGED continuation page={} → page={}: mode={} rows={}",
+                                pageNum,
+                                pageNum - 1,
+                                mergeOutcome.mode(),
+                                mergeOutcome.sourceRowCount());
                         continue;
                     }
 
@@ -735,15 +719,313 @@ public class DocumentParserService {
         }
         String existingHeaderRow = extractMarkdownHeaderRow(existingHeaderMarkdown);
         String candidateHeaderRow = buildMarkdownHeaderRowLine(firstRow);
-        return normalizeHeaderRow(existingHeaderRow).equals(normalizeHeaderRow(candidateHeaderRow));
+        if (normalizeHeaderRow(existingHeaderRow).equals(normalizeHeaderRow(candidateHeaderRow))) {
+            return true;
+        }
+        // Header row có nhiều cell rỗng (Tabula sparse) — so khớp sau compact
+        List<String> compactFirst = compactRowTexts(firstRow);
+        if (compactFirst.size() >= 2) {
+            String compactHeaderLine = buildMarkdownRowFromCells(compactFirst);
+            return normalizeHeaderRow(existingHeaderRow).equals(normalizeHeaderRow(compactHeaderLine));
+        }
+        return false;
+    }
+
+    /**
+     * Gộp bảng continuation trang N+1 vào bảng đã accept trang N (23B + 23B3 sparse).
+     * Package-visible cho unit test cùng package {@code KLTN.RAG_CHATBOT_BE.service}.
+     */
+    CrossPageMergeOutcome attemptCrossPageMerge(
+            Table table,
+            int pageNum,
+            int lastTableHeaderPage,
+            String headerBeforeConvert,
+            String[] currentHeader,
+            Map<Integer, String> pageContents) {
+        if (table == null || pageNum <= 1 || lastTableHeaderPage != pageNum - 1) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+        if (headerBeforeConvert == null || headerBeforeConvert.isBlank()
+                || !pageContents.containsKey(pageNum - 1)) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        boolean continuationByData = isContinuationTable(table, headerBeforeConvert);
+        boolean continuationByRepeatedHeader =
+                isRepeatedHeaderContinuationTable(table, headerBeforeConvert);
+        String[] headerHolder = { headerBeforeConvert };
+        String previewMarkdown = convertTableToMarkdown(table, headerHolder);
+        boolean continuationBySparse =
+                isSparseContinuationCandidate(table, previewMarkdown, headerBeforeConvert);
+
+        if (!continuationByData && !continuationByRepeatedHeader && !continuationBySparse) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        String mode;
+        String rowsOnly;
+        if (continuationByRepeatedHeader) {
+            rowsOnly = convertTableDataRowsOnly(table, 1);
+            mode = "REPEATED_HEADER";
+        } else if (continuationBySparse) {
+            rowsOnly = convertSparseContinuationRows(table, headerBeforeConvert);
+            mode = "SPARSE_CONTINUATION";
+        } else {
+            rowsOnly = removeMarkdownHeader(
+                    convertTableToMarkdown(table, currentHeader), headerBeforeConvert);
+            mode = "DATA_ROWS";
+        }
+
+        if (rowsOnly == null || rowsOnly.isBlank()) {
+            return CrossPageMergeOutcome.notMerged();
+        }
+
+        String prev = pageContents.get(pageNum - 1);
+        pageContents.put(pageNum - 1, appendRowsIntoLastTable(prev, rowsOnly));
+        int rowCount = table.getRows() == null ? 0 : table.getRows().size();
+        return new CrossPageMergeOutcome(true, mode, rowCount);
+    }
+
+    record CrossPageMergeOutcome(boolean merged, String mode, int sourceRowCount) {
+        static CrossPageMergeOutcome notMerged() {
+            return new CrossPageMergeOutcome(false, null, 0);
+        }
+    }
+
+    /**
+     * Bảng Tabula trang sau bị reject vì quá nhiều cell rỗng / header sparse nhưng vẫn là continuation
+     * của bảng đã accept trang trước (không nới ngưỡng global {@link #isUsableTable}).
+     */
+    private boolean isSparseContinuationCandidate(
+            Table table, String tableMarkdown, String existingHeaderMarkdown) {
+        if (table == null || existingHeaderMarkdown == null || existingHeaderMarkdown.isBlank()) {
+            return false;
+        }
+        if (isUsableTable(table, tableMarkdown)) {
+            return false;
+        }
+        String reason = getTableRejectionReason(table, tableMarkdown);
+        if (reason == null
+                || (!reason.startsWith("too-many-empty-cells")
+                        && !reason.startsWith("header-row-too-sparse"))) {
+            return false;
+        }
+        if (hasIndependentSectionHeadingInTable(table)) {
+            return false;
+        }
+        String rowsOnly = convertSparseContinuationRows(table, existingHeaderMarkdown);
+        return countMarkdownDataRows(rowsOnly) >= 2;
+    }
+
+    /**
+     * Chỉ coi là bảng độc lập mới nếu <em>hàng substantive đầu tiên</em> là heading số (vd 5. Tiêu đề).
+     * Tránh false-negative khi Tabula kéo cả heading mục tiếp theo vào cuối bảng continuation.
+     */
+    private boolean hasIndependentSectionHeadingInTable(Table table) {
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null) {
+            return false;
+        }
+        for (List<RectangularTextContainer> row : rows) {
+            List<String> logical = extractSparseLogicalRowCells(row);
+            if (logical.stream().allMatch(t -> t == null || t.isBlank())) {
+                continue;
+            }
+            if (isMarkdownSeparatorRow(logical)) {
+                continue;
+            }
+            for (String text : logical) {
+                if (text != null && !text.isBlank() && EARLY_HEADING_PATTERN.matcher(text).matches()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private int countMarkdownDataRows(String rowsMarkdown) {
+        if (rowsMarkdown == null || rowsMarkdown.isBlank()) {
+            return 0;
+        }
+        int count = 0;
+        for (String line : rowsMarkdown.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("|") && trimmed.contains("|")) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private List<String> compactRowTexts(List<RectangularTextContainer> row) {
+        List<String> compact = new ArrayList<>();
+        if (row == null) {
+            return compact;
+        }
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            if (!text.isBlank()) {
+                compact.add(text);
+            }
+        }
+        return compact;
+    }
+
+    private int countMarkdownColumns(String headerRowLine) {
+        if (headerRowLine == null || headerRowLine.isBlank()) {
+            return 0;
+        }
+        int pipes = 0;
+        for (int i = 0; i < headerRowLine.length(); i++) {
+            if (headerRowLine.charAt(i) == '|') {
+                pipes++;
+            }
+        }
+        return Math.max(0, pipes - 1);
+    }
+
+    private String buildMarkdownRowFromCells(List<String> cells) {
+        if (cells == null || cells.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("| ");
+        for (String cell : cells) {
+            sb.append(cell).append(" | ");
+        }
+        return sb.toString().trim();
+    }
+
+    private String formatMarkdownRowAligned(List<String> cells, int expectedColumns) {
+        if (cells == null || cells.isEmpty()) {
+            return "";
+        }
+        int cols = Math.max(expectedColumns, cells.size());
+        StringBuilder sb = new StringBuilder("| ");
+        for (int i = 0; i < cols; i++) {
+            sb.append(i < cells.size() ? cells.get(i) : "").append(" | ");
+        }
+        return sb.toString().trim();
+    }
+
+    private boolean isMarkdownSeparatorRow(List<String> cells) {
+        if (cells == null || cells.isEmpty()) {
+            return false;
+        }
+        return cells.stream().allMatch(c -> c == null || c.isBlank() || c.matches("-+"));
+    }
+
+    /**
+     * Với bảng Tabula 3 cột kiểu PDF thesis: cột 0 thường rỗng, cột 1 = mô tả/entity, cột 2 = thuộc tính.
+     */
+    private List<String> extractSparseLogicalRowCells(List<RectangularTextContainer> row) {
+        if (row == null || row.isEmpty()) {
+            return List.of();
+        }
+        List<String> cols = new ArrayList<>();
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            cols.add(text);
+        }
+        if (cols.size() >= 3) {
+            String c0 = cols.get(0);
+            String c1 = cols.get(1);
+            String c2 = cols.get(2);
+            if (c1.isBlank() && !c0.isBlank()) {
+                c1 = c0;
+            }
+            if (!c1.isBlank() && !c2.isBlank()) {
+                return List.of(c1, c2);
+            }
+            if (!c1.isBlank()) {
+                return List.of(c1);
+            }
+            if (c0.isBlank() && c1.isBlank() && !c2.isBlank()) {
+                return List.of("", c2);
+            }
+        }
+        return compactRowTexts(row);
+    }
+
+    /**
+     * Trích data rows từ bảng sparse: bỏ cell rỗng, bỏ header lặp, ghép fragment 1 cột vào hàng trước.
+     */
+    private String convertSparseContinuationRows(Table table, String existingHeaderMarkdown) {
+        if (table == null || table.getRows() == null || existingHeaderMarkdown == null) {
+            return "";
+        }
+        String existingHeaderRow = extractMarkdownHeaderRow(existingHeaderMarkdown);
+        String normalizedExisting = normalizeHeaderRow(existingHeaderRow);
+        int expectedCols = countMarkdownColumns(existingHeaderRow);
+        if (expectedCols < 2) {
+            expectedCols = 2;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (List<RectangularTextContainer> row : table.getRows()) {
+            List<String> logical = extractSparseLogicalRowCells(row);
+            if (logical.isEmpty() || isMarkdownSeparatorRow(logical)) {
+                continue;
+            }
+            if (logical.size() == 1) {
+                String only = logical.get(0);
+                if (only.isBlank()) {
+                    continue;
+                }
+                String compactLine = buildMarkdownRowFromCells(List.of(only));
+                if (normalizeHeaderRow(compactLine).equals(normalizedExisting)) {
+                    continue;
+                }
+            } else {
+                String compactLine = buildMarkdownRowFromCells(logical);
+                if (normalizeHeaderRow(compactLine).equals(normalizedExisting)) {
+                    continue;
+                }
+            }
+
+            if (logical.size() >= 2 && !logical.get(0).isBlank()) {
+                sb.append(formatMarkdownRowAligned(logical, expectedCols)).append("\n");
+                continue;
+            }
+
+            // Fragment thuộc tính (chỉ cột cuối có text) — nối vào hàng markdown trước đó
+            if (logical.size() >= 2 && logical.get(0).isBlank() && !logical.get(1).isBlank()) {
+                String fragment = logical.get(1);
+                int lastNewline = sb.lastIndexOf("\n");
+                if (lastNewline >= 0 && sb.length() > 0) {
+                    int prevLineStart = sb.lastIndexOf("\n", lastNewline - 1);
+                    if (prevLineStart < 0) {
+                        prevLineStart = 0;
+                    } else {
+                        prevLineStart++;
+                    }
+                    String prevLine = sb.substring(prevLineStart, lastNewline + 1);
+                    if (prevLine.contains("|") && !prevLine.strip().endsWith("| |")) {
+                        int lastPipe = prevLine.lastIndexOf("|");
+                        if (lastPipe > 0) {
+                            String merged = prevLine.substring(0, lastPipe).stripTrailing()
+                                    + ", " + fragment + " | \n";
+                            sb.delete(prevLineStart, sb.length());
+                            sb.append(merged);
+                        }
+                    }
+                } else if (!fragment.isBlank()) {
+                    sb.append("| ").append(fragment).append(" | |\n");
+                }
+            } else if (logical.size() == 1 && !logical.get(0).isBlank()) {
+                sb.append("| ").append(logical.get(0)).append(" | |\n");
+            }
+        }
+        return sb.toString();
     }
 
     private String extractMarkdownHeaderRow(String headerMarkdown) {
         if (headerMarkdown == null || headerMarkdown.isBlank()) {
             return "";
         }
-        int newline = headerMarkdown.indexOf('\n');
-        return (newline >= 0 ? headerMarkdown.substring(0, newline) : headerMarkdown).trim();
+        String trimmed = headerMarkdown.stripLeading();
+        int newline = trimmed.indexOf('\n');
+        return (newline >= 0 ? trimmed.substring(0, newline) : trimmed).trim();
     }
 
     private String buildMarkdownHeaderRowLine(List<RectangularTextContainer> row) {
