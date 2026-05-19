@@ -164,6 +164,15 @@ export default function ChatbotConfigPage() {
         },
       }));
       applyUpdateResponse(updated);
+      if (updated?.modelConfig) {
+        setForm((f) => ({
+          ...f,
+          model: updated.modelConfig.model ?? f.model,
+          temperature: updated.modelConfig.temperature ?? f.temperature,
+          topK: updated.modelConfig.topK ?? f.topK,
+          maxTokens: updated.modelConfig.maxTokens ?? f.maxTokens,
+        }));
+      }
       toast.success("Model settings saved!");
     } finally {
       setSavingModel(false);

@@ -577,7 +577,8 @@ export default function PlaygroundPage() {
           )}
         </div>
 
-        {/* Right: Retrieval + Latency + Model overrides (hidden below lg) */}
+        {/* Right: Retrieval + Latency + Model overrides (hidden below lg; hidden in compare mode) */}
+        {!compareMode && (
         <div className="hidden lg:flex w-72 shrink-0 flex-col border-l bg-white overflow-y-auto">
           <div className="border-b">
             <RetrievalPanel
@@ -599,6 +600,7 @@ export default function PlaygroundPage() {
             />
           </div>
         </div>
+        )}
 
       </div>
     </div>
