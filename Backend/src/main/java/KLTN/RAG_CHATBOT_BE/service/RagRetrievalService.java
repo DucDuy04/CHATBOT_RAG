@@ -86,9 +86,20 @@ public class RagRetrievalService {
     private final DocumentSectionRepository documentSectionRepository;
     private final QueryAnalyzerService queryAnalyzerService;
     private final RerankService rerankService;
+    private final KeywordSearchService keywordSearchService;
+    private final PromptBudgetResolver promptBudgetResolver;
 
     @Value("${rag.retrieval.vector-anchor-k:30}")
     private int configuredVectorAnchorK;
+
+    @Value("${rag.retrieval.hybrid.vector-weight:0.35}")
+    private double hybridVectorWeight;
+
+    @Value("${rag.retrieval.hybrid.keyword-weight:0.35}")
+    private double hybridKeywordWeight;
+
+    @Value("${rag.retrieval.hybrid.rerank-weight:0.30}")
+    private double hybridRerankWeight;
 
     public record ScoredChunk(DocumentChunk chunk, double finalScore) {}
 
@@ -227,6 +238,18 @@ public class RagRetrievalService {
         log.info("[RAG] Vector anchors: chunks={} sections={} tables={} docs={}",
                 anchorChunkIds.size(), sectionIds.size(), tableIds.size(), vectorDocumentIds.size());
 
+        // ── STEP 3b: Generic keyword search (parallel branch, supplements vector) ──
+        KeywordSearchService.KeywordSearchResult keywordResult = null;
+        Map<UUID, Double> keywordScoresByChunkId = Map.of();
+        Set<UUID> keywordChunkIds = new LinkedHashSet<>();
+        if (keywordSearchService.isHybridEnabled()) {
+            keywordResult = keywordSearchService.search(question, widgetId);
+            keywordScoresByChunkId = keywordResult.normalizedScoresByChunkId();
+            keywordChunkIds = keywordResult.chunkIds();
+            log.info("[RAG][hybrid] strategy=VECTOR+KEYWORD vectorCandidates={} keywordCandidates={}",
+                    anchorChunkIds.size(), keywordChunkIds.size());
+        }
+
         // ── STEP 4: Build context pool ─────────────────────────────────
         List<DocumentChunk> expanded = new ArrayList<>();
 
@@ -354,7 +377,7 @@ public class RagRetrievalService {
         List<DocumentChunk> dedupedForLock = dedupeCandidates(expanded);
         if (!isLockedScope && rerankService.isEnabled() && !dedupedForLock.isEmpty()) {
             List<ScoredChunk> preliminaryScores = scoreCandidatesForSelection(
-                    question, dedupedForLock, anchorChunkIds, "RERANK_SERVICE");
+                    question, dedupedForLock, anchorChunkIds, "RERANK_SERVICE", keywordScoresByChunkId);
             if (!preliminaryScores.isEmpty()) {
                 double maxScore = preliminaryScores.get(0).finalScore();
                 if (maxScore < RerankService.LOW_CONFIDENCE_THRESHOLD) {
@@ -393,12 +416,30 @@ public class RagRetrievalService {
             }
         }
 
-        log.info("[RAG][candidates] vectorAnchors={} afterExpansion={}",
-                anchorChunkIds.size(), expanded.size());
+        // Inject keyword-only candidates before merge/score (supplements vector pool)
+        if (!keywordChunkIds.isEmpty()) {
+            List<DocumentChunk> keywordChunks = documentChunkRepository
+                    .findByWidgetConfigIdAndIdIn(widgetId, keywordChunkIds);
+            expanded.addAll(keywordChunks);
+        }
+
+        List<DocumentChunk> dedupedPreScore = dedupeCandidates(expanded);
+        int bothSourceCount = 0;
+        if (keywordSearchService.isHybridEnabled() && keywordResult != null) {
+            List<KeywordSearchService.MergedCandidate> mergedPreview = KeywordSearchService.mergeCandidates(
+                    dedupedPreScore, anchorChunkIds, keywordResult);
+            bothSourceCount = KeywordSearchService.countBothSource(mergedPreview);
+            log.info("[RAG][hybrid] mergedCandidates={} dedupedCandidates={} bothSourceCount={}",
+                    expanded.size(), dedupedPreScore.size(), bothSourceCount);
+        }
+
+        log.info("[RAG][candidates] vectorAnchors={} keywordAnchors={} afterExpansion={}",
+                anchorChunkIds.size(), keywordChunkIds.size(), expanded.size());
 
         // ── STEP 6: Dedupe → score all → select top-N by score → document order ──
         List<RetrievedContext> result = selectFinalContexts(
-                expanded, question, queryType, isLockedScope, finalContextTopN, anchorChunkIds);
+                expanded, question, queryType, isLockedScope, finalContextTopN,
+                anchorChunkIds, keywordScoresByChunkId);
 
         // ── STEP 7: Final context log ──────────────────────────────────
         log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
@@ -797,23 +838,72 @@ public class RagRetrievalService {
                                                        QueryAnalyzerService.QueryType queryType,
                                                        boolean isLockedScope,
                                                        int finalContextTopN,
-                                                       Set<UUID> anchorChunkIds) {
+                                                       Set<UUID> anchorChunkIds,
+                                                       Map<UUID, Double> keywordScoresByChunkId) {
         boolean isExpandedQuery = isExpanded(queryType);
         int maxContextChars = resolveMaxContextChars(queryType, isLockedScope);
+        if (promptBudgetResolver.isEnabled()) {
+            int budget = promptBudgetResolver.resolveCharBudget(queryType, isLockedScope);
+            if (budget > 0) {
+                maxContextChars = Math.min(maxContextChars, budget);
+                maxContextChars = Math.min(maxContextChars, promptBudgetResolver.hardMax());
+            }
+        }
 
         List<DocumentChunk> deduped = dedupeCandidates(chunks);
         log.info("[RAG][candidates] deduped={}", deduped.size());
 
         List<ScoredChunk> scored = scoreCandidatesForSelection(
-                question, deduped, anchorChunkIds, null);
-        List<DocumentChunk> selected = selectTopNByScore(scored, finalContextTopN, maxContextChars);
-        List<DocumentChunk> ordered = sortByDocumentOrder(selected, isExpandedQuery || isLockedScope);
+                question, deduped, anchorChunkIds, null, keywordScoresByChunkId);
+        logHybridTopRanks(scored, anchorChunkIds, keywordScoresByChunkId);
+
+        SelectionWithBudget selection = selectTopNByScoreWithBudget(
+                scored, finalContextTopN, maxContextChars);
+        List<DocumentChunk> ordered = sortByDocumentOrder(
+                selection.chunks(), isExpandedQuery || isLockedScope);
+
+        int contextChars = ordered.stream()
+                .mapToInt(c -> c.getContent() == null ? 0 : c.getContent().length())
+                .sum();
+        promptBudgetResolver.logBudget(
+                finalContextTopN, ordered.size(), contextChars, selection.budgetLimited());
 
         log.info("[RAG][select] selectedByScore={} finalContexts={} maxContextChars={}",
-                selected.size(), ordered.size(), maxContextChars);
+                selection.chunks().size(), ordered.size(), maxContextChars);
         log.info("[RAG][prompt-order] sortedByDocumentOrder=true");
 
         return ordered.stream().map(this::toRetrievedContext).toList();
+    }
+
+    record SelectionWithBudget(List<DocumentChunk> chunks, boolean budgetLimited) {}
+
+    private void logHybridTopRanks(List<ScoredChunk> scored,
+                                   Set<UUID> anchorChunkIds,
+                                   Map<UUID, Double> keywordScoresByChunkId) {
+        if (!keywordSearchService.isHybridEnabled() || scored == null || scored.isEmpty()) {
+            return;
+        }
+        int limit = Math.min(5, scored.size());
+        for (int i = 0; i < limit; i++) {
+            ScoredChunk sc = scored.get(i);
+            DocumentChunk c = sc.chunk();
+            if (c.getId() == null) {
+                continue;
+            }
+            boolean fromVector = anchorChunkIds != null && anchorChunkIds.contains(c.getId());
+            boolean fromKeyword = keywordScoresByChunkId != null
+                    && keywordScoresByChunkId.containsKey(c.getId());
+            String source = fromVector && fromKeyword ? "BOTH"
+                    : fromVector ? "VECTOR" : fromKeyword ? "KEYWORD" : "EXPANSION";
+            double kScore = keywordScoresByChunkId != null
+                    ? keywordScoresByChunkId.getOrDefault(c.getId(), 0.0) : 0.0;
+            double vScore = fromVector ? 1.0 : 0.0;
+            log.info("[RAG][hybrid-top] rank={} source={} chunkType={} vScore={} kScore={} rScore={}",
+                    i + 1, source, c.getChunkType(),
+                    String.format("%.3f", vScore),
+                    String.format("%.3f", kScore),
+                    String.format("%.4f", sc.finalScore()));
+        }
     }
 
     static List<DocumentChunk> dedupeCandidates(List<DocumentChunk> chunks) {
@@ -833,7 +923,8 @@ public class RagRetrievalService {
     private List<ScoredChunk> scoreCandidatesForSelection(String question,
                                                           List<DocumentChunk> deduped,
                                                           Set<UUID> anchorChunkIds,
-                                                          String scorerHint) {
+                                                          String scorerHint,
+                                                          Map<UUID, Double> keywordScoresByChunkId) {
         if (deduped.isEmpty()) {
             return List.of();
         }
@@ -857,38 +948,65 @@ public class RagRetrievalService {
                 .mapToDouble(c -> lexicalIdfScore(c, idfByTerm))
                 .max()
                 .orElse(0.0);
+        boolean hybrid = keywordSearchService.isHybridEnabled()
+                && keywordScoresByChunkId != null && !keywordScoresByChunkId.isEmpty();
         List<ScoredChunk> scored = new ArrayList<>();
         for (DocumentChunk chunk : deduped) {
             double lexicalRaw = lexicalIdfScore(chunk, idfByTerm);
             double lexical = maxLexical > 0 ? lexicalRaw / maxLexical : 0.0;
             double vector = anchorChunkIds != null && chunk.getId() != null
                     && anchorChunkIds.contains(chunk.getId()) ? 1.0 : 0.0;
+            double keyword = chunk.getId() != null && keywordScoresByChunkId != null
+                    ? keywordScoresByChunkId.getOrDefault(chunk.getId(), 0.0) : 0.0;
             double rerank = rerankScores.getOrDefault(chunk.getId(), -1.0);
-            double finalScore = rerank >= 0.0
-                    ? 0.6 * rerank + 0.3 * lexical + 0.1 * vector
-                    : 0.7 * lexical + 0.3 * vector;
+            double finalScore;
+            if (hybrid) {
+                if (rerank >= 0.0) {
+                    finalScore = hybridVectorWeight * vector
+                            + hybridKeywordWeight * keyword
+                            + hybridRerankWeight * rerank;
+                } else {
+                    double lexicalWeight = 1.0 - hybridVectorWeight - hybridKeywordWeight;
+                    finalScore = hybridVectorWeight * vector
+                            + hybridKeywordWeight * keyword
+                            + Math.max(0.0, lexicalWeight) * lexical;
+                }
+            } else if (rerank >= 0.0) {
+                finalScore = 0.6 * rerank + 0.3 * lexical + 0.1 * vector;
+            } else {
+                finalScore = 0.7 * lexical + 0.3 * vector;
+            }
             scored.add(new ScoredChunk(chunk, finalScore));
         }
 
         if (scorer == null) {
-            scorer = rerankScores.isEmpty() ? "BM25_IDF|VECTOR_FALLBACK" : "RERANK_SERVICE|BM25_IDF";
+            scorer = hybrid
+                    ? "HYBRID|RERANK|BM25_IDF"
+                    : rerankScores.isEmpty() ? "BM25_IDF|VECTOR_FALLBACK" : "RERANK_SERVICE|BM25_IDF";
         }
         scored = scored.stream()
                 .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
                 .toList();
-        log.info("[RAG][rerank] scorer={} candidates={}", scorer, scored.size());
+        log.info("[RAG][rerank] scorer={} candidates={} hybrid={}", scorer, scored.size(), hybrid);
         return scored;
     }
 
     static List<DocumentChunk> selectTopNByScore(List<ScoredChunk> scored,
                                                    int finalContextTopN,
                                                    int maxContextChars) {
+        return selectTopNByScoreWithBudget(scored, finalContextTopN, maxContextChars).chunks();
+    }
+
+    static SelectionWithBudget selectTopNByScoreWithBudget(List<ScoredChunk> scored,
+                                                           int finalContextTopN,
+                                                           int maxContextChars) {
         if (scored == null || scored.isEmpty()) {
-            return List.of();
+            return new SelectionWithBudget(List.of(), false);
         }
         int limit = Math.max(1, finalContextTopN);
         List<DocumentChunk> selected = new ArrayList<>();
         int totalChars = 0;
+        boolean budgetLimited = false;
         for (ScoredChunk sc : scored) {
             if (selected.size() >= limit) {
                 break;
@@ -896,12 +1014,19 @@ public class RagRetrievalService {
             DocumentChunk c = sc.chunk();
             String content = c.getContent() == null ? "" : c.getContent();
             if (totalChars + content.length() > maxContextChars && !selected.isEmpty()) {
+                budgetLimited = true;
+                break;
+            }
+            if (totalChars + content.length() > maxContextChars && selected.isEmpty()) {
+                selected.add(c);
+                totalChars += content.length();
+                budgetLimited = true;
                 break;
             }
             totalChars += content.length();
             selected.add(c);
         }
-        return selected;
+        return new SelectionWithBudget(selected, budgetLimited);
     }
 
     static List<DocumentChunk> sortByDocumentOrder(List<DocumentChunk> chunks, boolean prioritizeSummaries) {

@@ -23,6 +23,23 @@ groq:
 rag:
   retrieval:
     vector-anchor-k: 30
+    hybrid:
+      enabled: true
+      keyword-top-m: 30
+      max-keyword-scan-chunks: 3000
+      vector-weight: 0.35
+      keyword-weight: 0.35
+      rerank-weight: 0.30
+      exact-match-boost: 2.0
+      phrase-match-boost: 1.5
+      table-row-boost: 1.2
+      table-summary-boost: 0.8
+    prompt-budget:
+      enabled: true
+      fact-context-char-budget: 10000
+      table-context-char-budget: 14000
+      list-context-char-budget: 16000
+      hard-max-context-char-budget: 18000
 
 app:
   upload-dir: ./uploads
