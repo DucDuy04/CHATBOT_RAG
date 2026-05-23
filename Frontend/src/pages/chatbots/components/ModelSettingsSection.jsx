@@ -33,7 +33,7 @@ export default function ModelSettingsSection({
 
   // Validation
   const tempInvalid = temperature < 0 || temperature > 1;
-  const topKInvalid = !Number.isInteger(Number(topK)) || Number(topK) < 1 || Number(topK) > 50;
+  const topKInvalid = !Number.isInteger(Number(topK)) || Number(topK) < 1 || Number(topK) > 30;
   const maxTokInvalid = !Number.isInteger(Number(maxTokens)) || Number(maxTokens) < 100 || Number(maxTokens) > 8000;
   const isInvalid = tempInvalid || topKInvalid || maxTokInvalid;
 
@@ -116,13 +116,13 @@ export default function ModelSettingsSection({
           {/* Top-K */}
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1.5">
-              Top-K{" "}
-              <span className="font-normal text-gray-400">(1–50)</span>
+              Context Top-N{" "}
+              <span className="font-normal text-gray-400">(1–30)</span>
             </label>
             <input
               type="number"
               min={1}
-              max={50}
+              max={30}
               step={1}
               value={topK}
               onChange={(e) => onChange("topK", parseInt(e.target.value, 10))}

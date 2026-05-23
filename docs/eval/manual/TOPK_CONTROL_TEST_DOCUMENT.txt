@@ -1,0 +1,14 @@
+# Alpha
+Mã kiểm tra Alpha là ALPHA-ONLY-111.
+
+# Beta
+Mã kiểm tra Beta là BETA-ONLY-222.
+
+# Gamma
+Mã kiểm tra Gamma là GAMMA-ONLY-333.
+
+# Delta
+Mã kiểm tra Delta là DELTA-ONLY-444.
+
+# Epsilon
+Mã kiểm tra Epsilon là EPSILON-ONLY-555.

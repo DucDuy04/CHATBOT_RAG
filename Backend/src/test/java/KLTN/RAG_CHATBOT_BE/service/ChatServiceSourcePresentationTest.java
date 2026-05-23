@@ -1,5 +1,6 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
+import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import org.junit.jupiter.api.Test;
@@ -44,6 +45,37 @@ class ChatServiceSourcePresentationTest {
     }
 
     @Test
+    void buildSourceDtosForResponse_playgroundCapFollowsTopK() {
+        ChatService service = newMinimalChatService();
+        List<RetrievedContext> contexts = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            contexts.add(ctx(UUID.randomUUID(), "golden.txt", "Section " + i, "text", "body " + i));
+        }
+
+        List<ChatResponse.SourceDto> sources = service.buildSourceDtosForResponse(contexts, 10);
+
+        assertEquals(10, sources.size());
+        assertEquals("body 9", sources.get(9).getChunkText());
+    }
+
+    @Test
+    void resolveSourcePresentationCap_playgroundUsesEffectiveTopK() {
+        ChatRequest request = new ChatRequest();
+        request.setPlaygroundDebugSources(true);
+        ChatService.TopKResolution topK = ChatService.resolveTopK(10, 5);
+
+        assertEquals(10, ChatService.resolveSourcePresentationCap(request, topK));
+    }
+
+    @Test
+    void resolveSourcePresentationCap_productionStaysAtFive() {
+        ChatRequest request = new ChatRequest();
+        ChatService.TopKResolution topK = ChatService.resolveTopK(10, 5);
+
+        assertEquals(ChatService.MAX_RESPONSE_SOURCES, ChatService.resolveSourcePresentationCap(request, topK));
+    }
+
+    @Test
     void applyAnswerAwareSourceCap_refusalTrimsToTwo() {
         ChatService service = newMinimalChatService();
         List<ChatResponse.SourceDto> five = List.of(
@@ -56,7 +88,8 @@ class ChatServiceSourcePresentationTest {
 
         List<ChatResponse.SourceDto> capped = service.applyAnswerAwareSourceCap(
                 "Tôi không tìm thấy thông tin CEO trong tài liệu.",
-                five
+                five,
+                null
         );
 
         assertEquals(2, capped.size());
@@ -77,7 +110,8 @@ class ChatServiceSourcePresentationTest {
 
         List<ChatResponse.SourceDto> capped = service.applyAnswerAwareSourceCap(
                 "Công ty TNHH AlphaDemo.",
-                five
+                five,
+                null
         );
 
         assertEquals(5, capped.size());
@@ -88,6 +122,118 @@ class ChatServiceSourcePresentationTest {
         assertTrue(ChatService.isRefusalLikeAnswer("Tôi không tìm thấy thông tin này trong tài liệu."));
         assertTrue(ChatService.isRefusalLikeAnswer("Không có thông tin về tỷ giá trong tài liệu."));
         assertFalse(ChatService.isRefusalLikeAnswer("Gói Basic có giá 99000 VNĐ."));
+    }
+
+    @Test
+    void applyAnswerAwareSourceCap_playgroundDebugSkipsRefusalCap() {
+        ChatService service = newMinimalChatService();
+        List<ChatResponse.SourceDto> six = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            six.add(source("f", "s" + i));
+        }
+        ChatRequest request = new ChatRequest();
+        request.setPlaygroundDebugSources(true);
+
+        String partialRefusal = "1. Alpha: ALPHA-111\nKhông tìm thấy thông tin về Epsilon và Eta trong tài liệu.";
+        List<ChatResponse.SourceDto> capped = service.applyAnswerAwareSourceCap(partialRefusal, six, request);
+
+        assertEquals(6, capped.size());
+    }
+
+    @Test
+    void applyAnswerAwareSourceCap_partialAnswerWithCodesNotCappedToTwo() {
+        ChatService service = newMinimalChatService();
+        List<ChatResponse.SourceDto> five = List.of(
+                source("f", "s1"),
+                source("f", "s2"),
+                source("f", "s3"),
+                source("f", "s4"),
+                source("f", "s5")
+        );
+
+        String partial = "Mã Alpha là ALPHA-111. Không tìm thấy thông tin về Epsilon trong tài liệu.";
+        List<ChatResponse.SourceDto> capped = service.applyAnswerAwareSourceCap(partial, five, null);
+
+        assertEquals(5, capped.size());
+        assertFalse(ChatService.isPureRefusalLikeAnswer(partial));
+    }
+
+    @Test
+    void isPureRefusalLikeAnswer_pureRefusalWithoutFacts() {
+        assertTrue(ChatService.isPureRefusalLikeAnswer("Tôi không tìm thấy thông tin này trong tài liệu."));
+        assertFalse(ChatService.isPureRefusalLikeAnswer(
+                "1. Alpha: ALPHA-111\nKhông tìm thấy thông tin về Eta."));
+    }
+
+    // ── isLeadingRefusalAnswer ──────────────────────────────────────────────────
+
+    @Test
+    void isLeadingRefusalAnswer_pureOosRefusal() {
+        assertTrue(ChatService.isLeadingRefusalAnswer("Tôi không tìm thấy thông tin này trong tài liệu."));
+    }
+
+    @Test
+    void isLeadingRefusalAnswer_oosPivotAnswer_refusalLeadsBeforeCodes() {
+        String oosPivot =
+                "Tôi không tìm thấy thông tin về tỷ giá USD/VND trong tài liệu. " +
+                "Tuy nhiên, tôi có thể liệt kê các mã chính sách:\n" +
+                "- Alpha: ALPHA-111\n- Beta: BETA-222";
+        assertTrue(ChatService.isLeadingRefusalAnswer(oosPivot));
+    }
+
+    @Test
+    void isLeadingRefusalAnswer_partialInScope_codeBeforeRefusal() {
+        // Factual code comes BEFORE refusal → not a leading refusal
+        String partialInScope = "Mã Alpha là ALPHA-111. Không tìm thấy thông tin về Epsilon trong tài liệu.";
+        assertFalse(ChatService.isLeadingRefusalAnswer(partialInScope));
+    }
+
+    @Test
+    void isLeadingRefusalAnswer_numberedListBeforeRefusal() {
+        // Numbered list item before refusal → not a leading refusal
+        String partialList = "1. Alpha: ALPHA-111\nKhông tìm thấy thông tin về Eta trong tài liệu.";
+        assertFalse(ChatService.isLeadingRefusalAnswer(partialList));
+    }
+
+    @Test
+    void isLeadingRefusalAnswer_factualAnswer_noRefusal() {
+        assertFalse(ChatService.isLeadingRefusalAnswer("Gói Basic có giá 99000 VNĐ."));
+    }
+
+    // ── applyAnswerAwareSourceCap — OOS pivot regression fix ───────────────────
+
+    @Test
+    void applyAnswerAwareSourceCap_oosPivotAnswerCapsToTwo() {
+        // Production path (no playground debug): OOS pivot answer must be capped to ≤2
+        ChatService service = newMinimalChatService();
+        List<ChatResponse.SourceDto> five = List.of(
+                source("f", "s1"), source("f", "s2"), source("f", "s3"),
+                source("f", "s4"), source("f", "s5")
+        );
+        String oosWithPivot =
+                "Tôi không tìm thấy thông tin về tỷ giá USD/VND hôm nay trong tài liệu. " +
+                "Tuy nhiên, tôi có thể liệt kê các mã chính sách:\n" +
+                "- Alpha: ALPHA-111\n- Beta: BETA-222\n- Gamma: GAMMA-333";
+        List<ChatResponse.SourceDto> capped = service.applyAnswerAwareSourceCap(oosWithPivot, five, null);
+        assertEquals(2, capped.size());
+    }
+
+    @Test
+    void applyAnswerAwareSourceCap_playgroundDebugBypasses_evenWithLeadingRefusal() {
+        // Playground debug bypasses cap even when answer has a leading refusal
+        ChatService service = newMinimalChatService();
+        List<ChatResponse.SourceDto> five = List.of(
+                source("f", "s1"), source("f", "s2"), source("f", "s3"),
+                source("f", "s4"), source("f", "s5")
+        );
+        ChatRequest request = new ChatRequest();
+        request.setPlaygroundDebugSources(true);
+        String leadingRefusalWithPivot =
+                "Tôi không tìm thấy thông tin về tỷ giá USD/VND trong tài liệu. " +
+                "Tuy nhiên: - Alpha: ALPHA-111 - Beta: BETA-222";
+        List<ChatResponse.SourceDto> result = service.applyAnswerAwareSourceCap(
+                leadingRefusalWithPivot, five, request);
+        assertEquals(5, result.size());
     }
 
     @Test

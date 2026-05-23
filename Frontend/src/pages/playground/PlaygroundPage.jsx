@@ -10,6 +10,7 @@ import SessionList from "./components/SessionList";
 import ChatWindow from "./components/ChatWindow";
 import RetrievalPanel from "./components/RetrievalPanel";
 import LatencyPanel from "./components/LatencyPanel";
+import TokenUsagePanel from "./components/TokenUsagePanel";
 import ModelOverridePanel from "./components/ModelOverridePanel";
 import CompareModeToggle from "./components/CompareModeToggle";
 import ComparePane from "./components/ComparePane";
@@ -69,6 +70,7 @@ export default function PlaygroundPage() {
   // ── Right panel ────────────────────────────────────────────────────────────────
   const [lastSources, setLastSources] = useState([]);
   const [lastLatency, setLastLatency] = useState(null);
+  const [lastTokenUsage, setLastTokenUsage] = useState(null);
   const [selectedSource, setSelectedSource] = useState(null);
   const [overrideParams, setOverrideParams] = useState(DEFAULT_OVERRIDE_PARAMS);
 
@@ -95,7 +97,7 @@ export default function PlaygroundPage() {
     return o;
   }, [overrideParams, sessionPromptOverride]);
 
-  /** Top-K from override panel — used to cap how many sources we *show* (backend may return more). */
+  /** Context Top-N from override panel — used to cap how many sources we *show* in playground debug. */
   const retrievalTopKLimit = useMemo(() => {
     const n = Number(overrideParams?.topK);
     if (!Number.isFinite(n) || n <= 0) return null;
@@ -358,6 +360,7 @@ export default function PlaygroundPage() {
         });
         setLastSources(sources);
         setLastLatency(latencyVal);
+        setLastTokenUsage(result?.tokenUsage ?? null);
         setIsStreaming(false);
 
         // Capture server-assigned session id if this was a new session
@@ -446,6 +449,7 @@ export default function PlaygroundPage() {
       setLastLatency(
         typeof latA === "number" ? latA : typeof latB === "number" ? latB : null
       );
+      setLastTokenUsage(data?.configA?.tokenUsage ?? data?.configB?.tokenUsage ?? null);
     } catch (e) {
       const msg =
         e?.response?.data?.message ||
@@ -592,6 +596,9 @@ export default function PlaygroundPage() {
           </div>
           <div className="border-b">
             <LatencyPanel latency={lastLatency} />
+          </div>
+          <div className="border-b">
+            <TokenUsagePanel tokenUsage={lastTokenUsage} />
           </div>
           <div>
             <ModelOverridePanel

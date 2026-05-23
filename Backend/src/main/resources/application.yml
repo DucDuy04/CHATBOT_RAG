@@ -20,6 +20,10 @@ server:
 #   api-key: GEMINI_API_KEY_PLACEHOLDER
 groq:
   api-key: ${GROQ_API_KEY}
+rag:
+  retrieval:
+    vector-anchor-k: 30
+
 app:
   upload-dir: ./uploads
   preprocessing:

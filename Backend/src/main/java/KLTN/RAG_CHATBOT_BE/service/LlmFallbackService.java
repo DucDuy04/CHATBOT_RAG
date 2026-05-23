@@ -53,15 +53,19 @@ public class LlmFallbackService {
         for (int i = 0; i < modelsToTry.size(); i++) {
             String modelName = modelsToTry.get(i);
             try {
+                RagTokenAudit.incrementLlmCallIndex();
                 log.info("[LLM] Thử model: {} (attempt {}/{})", modelName, i + 1, modelsToTry.size());
                 OpenAiChatModel model = buildChatModel(modelName, effective);
                 Response<AiMessage> response = model.generate(messages);
+                RagTokenAudit.recordActualFromResponse(response);
+                RagTokenAudit.setResolvedModel(modelName);
                 String answer = response.content().text();
                 if (i > 0) {
                     log.info("[LLM] Fallback thành công với model: {}", modelName);
                 }
                 return answer;
             } catch (Exception e) {
+                RagTokenAudit.recordLlmFailure(e, modelName, i + 1);
                 if (isModelDecommissioned(e)) {
                     log.warn("[LLM] Model '{}' đã bị decommission. Bỏ qua.", modelName);
                 } else if (isTpmException(e)) {
@@ -136,12 +140,17 @@ public class LlmFallbackService {
         for (int i = 0; i < onlyFallbacks.size(); i++) {
             String modelName = onlyFallbacks.get(i);
             try {
+                RagTokenAudit.incrementLlmCallIndex();
                 log.info("[LLM-Fallback] Thử fallback model: {} ({}/{})", modelName, i + 1, onlyFallbacks.size());
                 OpenAiChatModel model = buildChatModel(modelName, effective);
-                String answer = model.generate(messages).content().text();
+                Response<AiMessage> response = model.generate(messages);
+                RagTokenAudit.recordActualFromResponse(response);
+                RagTokenAudit.setResolvedModel(modelName);
+                String answer = response.content().text();
                 log.info("[LLM-Fallback] Thành công với model: {}", modelName);
                 return answer;
             } catch (Exception e) {
+                RagTokenAudit.recordLlmFailure(e, modelName, i + 1);
                 if (isModelDecommissioned(e)) {
                     // Model bị Groq xóa → skip ngay, không retry
                     log.warn("[LLM-Fallback] Model '{}' đã bị decommission. Bỏ qua.", modelName);

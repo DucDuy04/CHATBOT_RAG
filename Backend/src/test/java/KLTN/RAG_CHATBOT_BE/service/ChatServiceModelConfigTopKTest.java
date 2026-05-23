@@ -27,28 +27,28 @@ class ChatServiceModelConfigTopKTest {
     void resolveTopK_backendDefaultWhenBothNull() {
         ChatService.TopKResolution resolution = ChatService.resolveTopK(null, null);
         assertEquals(ChatService.TopKSource.DEFAULT, resolution.source());
-        assertEquals(RagRetrievalService.DEFAULT_ANCHOR_TOP_K, resolution.effective());
+        assertEquals(RagRetrievalService.DEFAULT_FINAL_CONTEXT_TOP_N, resolution.effective());
     }
 
     @Test
     void resolveTopK_clampsRequestAboveMax() {
         ChatService.TopKResolution resolution = ChatService.resolveTopK(999, 5);
         assertEquals(ChatService.TopKSource.REQUEST, resolution.source());
-        assertEquals(RagRetrievalService.MAX_ANCHOR_TOP_K, resolution.effective());
+        assertEquals(RagRetrievalService.MAX_FINAL_CONTEXT_TOP_N, resolution.effective());
     }
 
     @Test
     void resolveTopK_clampsModelConfigAboveMax() {
         ChatService.TopKResolution resolution = ChatService.resolveTopK(null, 999);
         assertEquals(ChatService.TopKSource.MODEL_CONFIG, resolution.source());
-        assertEquals(RagRetrievalService.MAX_ANCHOR_TOP_K, resolution.effective());
+        assertEquals(RagRetrievalService.MAX_FINAL_CONTEXT_TOP_N, resolution.effective());
     }
 
     @Test
     void resolveTopK_clampsModelConfigBelowMin() {
         ChatService.TopKResolution resolution = ChatService.resolveTopK(null, 0);
         assertEquals(ChatService.TopKSource.MODEL_CONFIG, resolution.source());
-        assertEquals(RagRetrievalService.MIN_ANCHOR_TOP_K, resolution.effective());
+        assertEquals(RagRetrievalService.MIN_FINAL_CONTEXT_TOP_N, resolution.effective());
     }
 
     @Test

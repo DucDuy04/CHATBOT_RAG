@@ -49,7 +49,7 @@ export default function ModelOverridePanel({ params, onChange }) {
       {/* Top-K */}
       <div>
         <label className="text-xs text-gray-600 font-medium block mb-1">
-          Top-K (retrieval)
+          Context Top-N
         </label>
         <input
           type="number"
@@ -93,14 +93,14 @@ export default function ModelOverridePanel({ params, onChange }) {
         <strong className="font-medium text-gray-500">Temperature</strong>: độ ngẫu nhiên của câu trả lời — thấp hơn
         thường ổn định/chính xác hơn, cao hơn đa dạng hơn.
         <br />
-        <strong className="font-medium text-gray-500">Top-K</strong>: giới hạn vector search Qdrant mỗi request (1–30,
-        mặc định backend 30 khi không gửi). Panel Sources vẫn có thể hiển thị tối đa K mục theo cấu hình hiển thị.
+        <strong className="font-medium text-gray-500">Context Top-N</strong>: số đoạn context liên quan nhất sau rerank
+        được đưa vào model (1–30). Backend vẫn tự lấy vector anchors cố định từ Qdrant trước khi rerank.
         <br />
         <strong className="font-medium text-gray-500">Max tokens</strong>: giới hạn độ dài (ước lượng) của câu trả lời
         từ model.
         <br />
         <span className="not-italic text-[10px] text-gray-500">
-          Temperature, Top-K và max tokens được gửi xuống backend qua playground chat (request override ưu tiên hơn
+          Temperature, Context Top-N và max tokens được gửi xuống backend qua playground chat (request override ưu tiên hơn
           modelConfig chatbot).
         </span>
       </p>

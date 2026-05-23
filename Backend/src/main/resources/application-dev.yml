@@ -33,14 +33,14 @@ qdrant:
 # Cấu hình Groq
 groq:
   api-key: ${GROQ_API_KEY}
-  chat-model: llama-3.3-70b-versatile   # Model chính (100k TPD)
+  chat-model: meta-llama/llama-4-scout-17b-16e-instruct #llama-3.3-70b-versatile   # Model chính (100k TPD)
   base-url: https://api.groq.com/openai/v1
   # Danh sách model fallback khi model chính bị rate limit.
   # Mỗi model Groq có quota TPD riêng biệt.
   # Thứ tự: thử lần lượt từ trên xuống.
   # Dùng comma-separated string thay vì YAML list để @Value inject đúng
   # gemma2-9b-it đã bị Groq decommission — dùng llama-4-scout và qwen3 thay thế
-  fallback-models: "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
+  fallback-models: "llama-3.3-70b-versatile,openai/gpt-oss-20b"  #"llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
 
 nomic:
   api-key: ${NOMIC_API_KEY}

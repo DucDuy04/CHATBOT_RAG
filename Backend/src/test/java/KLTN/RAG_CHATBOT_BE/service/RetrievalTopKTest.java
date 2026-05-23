@@ -10,24 +10,35 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 class RetrievalTopKTest {
 
     @Test
-    void normalizeAnchorTopK_nullUsesDefault() {
-        assertEquals(RagRetrievalService.DEFAULT_ANCHOR_TOP_K, RagRetrievalService.normalizeAnchorTopK(null));
+    void normalizeFinalContextTopN_nullUsesDefault() {
+        assertEquals(RagRetrievalService.DEFAULT_FINAL_CONTEXT_TOP_N,
+                RagRetrievalService.normalizeFinalContextTopN(null));
     }
 
     @Test
-    void normalizeAnchorTopK_clampsBelowMin() {
-        assertEquals(RagRetrievalService.MIN_ANCHOR_TOP_K, RagRetrievalService.normalizeAnchorTopK(0));
+    void normalizeFinalContextTopN_clampsBelowMin() {
+        assertEquals(RagRetrievalService.MIN_FINAL_CONTEXT_TOP_N,
+                RagRetrievalService.normalizeFinalContextTopN(0));
     }
 
     @Test
-    void normalizeAnchorTopK_clampsAboveMax() {
-        assertEquals(RagRetrievalService.MAX_ANCHOR_TOP_K, RagRetrievalService.normalizeAnchorTopK(999));
+    void normalizeFinalContextTopN_clampsAboveMax() {
+        assertEquals(RagRetrievalService.MAX_FINAL_CONTEXT_TOP_N,
+                RagRetrievalService.normalizeFinalContextTopN(999));
     }
 
     @Test
-    void normalizeAnchorTopK_passesThroughInRange() {
-        assertEquals(3, RagRetrievalService.normalizeAnchorTopK(3));
-        assertEquals(10, RagRetrievalService.normalizeAnchorTopK(10));
+    void normalizeFinalContextTopN_passesThroughInRange() {
+        assertEquals(3, RagRetrievalService.normalizeFinalContextTopN(3));
+        assertEquals(10, RagRetrievalService.normalizeFinalContextTopN(10));
+    }
+
+    @Test
+    void fixedVectorAnchorK_ignoresUiTopK() {
+        assertEquals(RagRetrievalService.DEFAULT_VECTOR_ANCHOR_K,
+                RagRetrievalService.normalizeAnchorTopK(5));
+        assertEquals(RagRetrievalService.DEFAULT_VECTOR_ANCHOR_K,
+                RagRetrievalService.normalizeAnchorTopK(null));
     }
 
     @Test

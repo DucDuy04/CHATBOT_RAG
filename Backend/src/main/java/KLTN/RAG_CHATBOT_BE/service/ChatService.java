@@ -10,6 +10,7 @@ import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
 import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
+import KLTN.RAG_CHATBOT_BE.dto.TokenUsageDto;
 import KLTN.RAG_CHATBOT_BE.service.QueryAnalyzerService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -38,6 +39,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -63,8 +66,9 @@ public class ChatService {
     }
 
     record TopKResolution(TopKSource source, Integer requested, Integer configured, Integer candidate) {
+        /** Resolved final context top-N (UI field {@code topK}). */
         int effective() {
-            return RagRetrievalService.normalizeAnchorTopK(candidate);
+            return RagRetrievalService.normalizeFinalContextTopN(candidate);
         }
     }
 
@@ -86,6 +90,11 @@ public class ChatService {
             "không tìm thấy thông tin",
             "không có thông tin"
     );
+
+    /** Policy-style codes in answers (e.g. ALPHA-111) indicate factual partial responses. */
+    private static final Pattern FACTUAL_POLICY_CODE = Pattern.compile("\\b[A-Z][A-Z0-9]*-\\d+\\b");
+
+    private static final Pattern NUMBERED_LIST_ITEM = Pattern.compile("(?m)^\\s*\\d+\\.\\s+\\S");
 
     private final PromptBuilderService promptBuilderService;
     private final OpenAiChatModel chatModel;
@@ -115,7 +124,10 @@ public class ChatService {
         String question = request.getMessage();
 
         ChatSession session = getOrCreateSession(request.getSessionId(), widgetId);
+        RagTokenAudit.Mode auditMode = resolveAuditMode(request);
+        RagTokenAudit.begin(auditMode, widgetId, session.getSessionKey().toString());
 
+        try {
         log.info("[Chat] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
 
         saveChatMessage(session, MessageRole.USER, question, null);
@@ -151,6 +163,9 @@ public class ChatService {
 
         if (contexts.isEmpty()) {
             answer = "Tôi không tìm thấy thông tin này trong tài liệu.";
+            recordPreLlmMetrics(
+                    request, topKResolution, contexts, List.of(), question, "", promptBuilderService.getSystemPrompt(), resolveLlmGenerationOptions(widgetId, request));
+            RagTokenAudit.finish(true);
         } else {
             List<ChatMessage> chatHistory =
                     chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
@@ -171,10 +186,13 @@ public class ChatService {
             );
 
             LlmGenerationResolution llmOptions = resolveLlmGenerationOptions(widgetId, request);
+            recordPreLlmMetrics(
+                    request, topKResolution, contexts, chatHistory, question, userPrompt, systemPrompt, llmOptions);
             answer = llmFallbackService.generateWithFallback(messages, llmOptions.effective());
+            RagTokenAudit.finish(!isOverloadAnswer(answer));
         }
 
-        sources = applyAnswerAwareSourceCap(answer, sources);
+        sources = applyAnswerAwareSourceCap(answer, sources, request);
 
         saveChatMessage(session, MessageRole.ASSISTANT, answer, sources);
 
@@ -182,6 +200,11 @@ public class ChatService {
                 .answer(answer)
                 .sources(sources)
                 .build();
+        } finally {
+            if (RagTokenAudit.hasActiveState()) {
+                RagTokenAudit.finish(false);
+            }
+        }
     }
 
     public SseEmitter chatStream(ChatRequest request, UUID widgetId) {
@@ -189,8 +212,11 @@ public class ChatService {
         String question = request.getMessage();
 
         ChatSession session = getOrCreateSession(request.getSessionId(), widgetId);
+        RagTokenAudit.Mode streamAuditMode = resolveAuditMode(request);
 
         streamingExecutor.execute(() -> {
+            RagTokenAudit.begin(streamAuditMode, widgetId, session.getSessionKey().toString());
+            AtomicBoolean tokenUsageFinished = new AtomicBoolean(false);
             try {
                 log.info("[Stream] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
 
@@ -206,7 +232,8 @@ public class ChatService {
                 log.info("[Stream] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
                         contexts.size(), widgetId, streamLockedScope != null ? streamLockedScope : "none");
 
-                List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts);
+                int sourcePresentationCap = resolveSourcePresentationCap(request, streamTopK);
+                List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts, sourcePresentationCap);
 
                 boolean streamHasTableLikeChunk = contexts.stream()
                         .anyMatch(ctx -> "text_table_like".equals(ctx.getChunkType()));
@@ -225,6 +252,11 @@ public class ChatService {
 
                 if (contexts.isEmpty()) {
                     String noContext = "Tôi không tìm thấy thông tin này trong tài liệu.";
+                    LlmGenerationResolution emptyLlmOptions = resolveLlmGenerationOptions(widgetId, request);
+                    recordPreLlmMetrics(
+                            request, streamTopK, contexts, List.of(), question, "", promptBuilderService.getSystemPrompt(), emptyLlmOptions);
+                    TokenUsageDto emptyUsage = RagTokenAudit.finish(true);
+                    tokenUsageFinished.set(true);
 
                     emitter.send(
                             SseEmitter.event()
@@ -235,7 +267,8 @@ public class ChatService {
                     emitter.send(
                             SseEmitter.event()
                                     .name("done")
-                                    .data("[]", MediaType.TEXT_PLAIN)
+                                    .data(buildStreamDonePayload(List.of(), emptyUsage, request),
+                                            playgroundDoneMediaType(request))
                     );
 
                     emitter.complete();
@@ -266,6 +299,9 @@ public class ChatService {
                 AtomicBoolean emitterDone = new AtomicBoolean(false);
 
                 LlmGenerationResolution streamLlmOptions = resolveLlmGenerationOptions(widgetId, request);
+                recordPreLlmMetrics(
+                        request, streamTopK, contexts, chatHistory, question, userPrompt, systemPrompt, streamLlmOptions);
+                RagTokenAudit.incrementLlmCallIndex();
                 OpenAiStreamingChatModel streamingModel =
                         llmFallbackService.buildStreamingModel(groqChatModel, streamLlmOptions.effective());
 
@@ -289,12 +325,17 @@ public class ChatService {
                     public void onComplete(Response<AiMessage> response) {
                         if (!emitterDone.compareAndSet(false, true)) return;
                         try {
+                            RagTokenAudit.recordActualFromResponse(response);
+                            RagTokenAudit.setResolvedModel(groqChatModel);
+                            TokenUsageDto usage = RagTokenAudit.finish(true);
+                            tokenUsageFinished.set(true);
                             List<ChatResponse.SourceDto> responseSources =
-                                    applyAnswerAwareSourceCap(fullAnswer.toString(), sources);
+                                    applyAnswerAwareSourceCap(fullAnswer.toString(), sources, request);
                             emitter.send(
                                     SseEmitter.event()
                                             .name("done")
-                                            .data(buildSourcesJson(responseSources), MediaType.TEXT_PLAIN)
+                                            .data(buildStreamDonePayload(responseSources, usage, request),
+                                                    playgroundDoneMediaType(request))
                             );
                             emitter.complete();
                             saveChatMessage(session, MessageRole.ASSISTANT, fullAnswer.toString(), responseSources);
@@ -319,6 +360,8 @@ public class ChatService {
                         try {
                             String fallbackAnswer = llmFallbackService.generateFallbackAnswer(
                                     messages, streamLlmOptions.effective());
+                            TokenUsageDto usage = RagTokenAudit.finish(!isOverloadAnswer(fallbackAnswer));
+                            tokenUsageFinished.set(true);
                             fullAnswer.setLength(0);
                             fullAnswer.append(fallbackAnswer);
 
@@ -332,11 +375,12 @@ public class ChatService {
                                     );
                                 }
                                 List<ChatResponse.SourceDto> responseSources =
-                                        applyAnswerAwareSourceCap(fallbackAnswer, sources);
+                                        applyAnswerAwareSourceCap(fallbackAnswer, sources, request);
                                 emitter.send(
                                         SseEmitter.event()
                                                 .name("done")
-                                                .data(buildSourcesJson(responseSources), MediaType.TEXT_PLAIN)
+                                                .data(buildStreamDonePayload(responseSources, usage, request),
+                                                        playgroundDoneMediaType(request))
                                 );
                                 emitter.complete();
                                 saveChatMessage(session, MessageRole.ASSISTANT, fallbackAnswer, responseSources);
@@ -353,14 +397,125 @@ public class ChatService {
             } catch (Exception e) {
                 log.error("[Stream] Lỗi chatStream: {}", e.getMessage(), e);
                 emitter.completeWithError(e);
+            } finally {
+                if (!tokenUsageFinished.get() && RagTokenAudit.hasActiveState()) {
+                    RagTokenAudit.finish(false);
+                }
             }
         });
 
         return emitter;
     }
 
+    private static RagTokenAudit.Mode resolveAuditMode(ChatRequest request) {
+        if (request != null && Boolean.TRUE.equals(request.getPlaygroundDebugSources())) {
+            return RagTokenAudit.Mode.PLAYGROUND;
+        }
+        return RagTokenAudit.Mode.CHAT;
+    }
+
+    static boolean isOverloadAnswer(String answer) {
+        return answer != null && answer.contains("quá tải");
+    }
+
+    private void recordPreLlmMetrics(
+            ChatRequest request,
+            TopKResolution topKResolution,
+            List<RetrievedContext> contexts,
+            List<ChatMessage> chatHistory,
+            String question,
+            String userPrompt,
+            String systemPrompt,
+            LlmGenerationResolution llmOptions
+    ) {
+        boolean compareMode = request != null && Boolean.TRUE.equals(request.getPlaygroundDebugSources());
+        RagTokenAudit.recordPreLlm(
+                groqChatModel,
+                llmOptions.effective().temperature(),
+                llmOptions.effective().maxTokens(),
+                topKResolution.effective(),
+                contexts != null ? contexts.size() : 0,
+                systemPrompt,
+                chatHistory,
+                RagTokenAudit.contextCharsFromRetrieved(contexts),
+                question,
+                userPrompt
+        );
+        if (compareMode) {
+            RagTokenAudit.markCompareMode(true);
+        }
+    }
+
+    private boolean isPlaygroundDebugRequest(ChatRequest request) {
+        return request != null && Boolean.TRUE.equals(request.getPlaygroundDebugSources());
+    }
+
+    private MediaType playgroundDoneMediaType(ChatRequest request) {
+        return isPlaygroundDebugRequest(request) ? MediaType.APPLICATION_JSON : MediaType.TEXT_PLAIN;
+    }
+
+    private String buildStreamDonePayload(
+            List<ChatResponse.SourceDto> sources,
+            TokenUsageDto tokenUsage,
+            ChatRequest request
+    ) {
+        if (isPlaygroundDebugRequest(request)) {
+            return buildStreamDoneData(sources, tokenUsage);
+        }
+        return buildSourcesJson(sources);
+    }
+
+    private String buildStreamDoneData(List<ChatResponse.SourceDto> sources, TokenUsageDto tokenUsage) {
+        return "{\"sources\":" + buildSourcesJson(sources) + ",\"tokenUsage\":" + tokenUsageToJson(tokenUsage) + "}";
+    }
+
+    private String tokenUsageToJson(TokenUsageDto u) {
+        if (u == null) {
+            return "null";
+        }
+        return "{"
+                + "\"estimatedInputTokens\":" + jsonInt(u.getEstimatedInputTokens())
+                + ",\"reservedOutputTokens\":" + jsonInt(u.getReservedOutputTokens())
+                + ",\"estimatedTotalRequestTokens\":" + jsonInt(u.getEstimatedTotalRequestTokens())
+                + ",\"actualPromptTokens\":" + jsonNullableInt(u.getActualPromptTokens())
+                + ",\"actualCompletionTokens\":" + jsonNullableInt(u.getActualCompletionTokens())
+                + ",\"actualTotalTokens\":" + jsonNullableInt(u.getActualTotalTokens())
+                + ",\"providerRequestedTokens\":" + jsonNullableInt(u.getProviderRequestedTokens())
+                + ",\"systemChars\":" + jsonInt(u.getSystemChars())
+                + ",\"historyChars\":" + jsonInt(u.getHistoryChars())
+                + ",\"contextChars\":" + jsonInt(u.getContextChars())
+                + ",\"questionChars\":" + jsonInt(u.getQuestionChars())
+                + ",\"promptChars\":" + jsonInt(u.getPromptChars())
+                + ",\"historyMessages\":" + jsonInt(u.getHistoryMessages())
+                + ",\"finalContexts\":" + jsonInt(u.getFinalContexts())
+                + ",\"contextTopN\":" + jsonInt(u.getContextTopN())
+                + ",\"embeddingCalls\":" + jsonInt(u.getEmbeddingCalls())
+                + ",\"rerankCalls\":" + jsonInt(u.getRerankCalls())
+                + ",\"llmCallIndex\":" + jsonInt(u.getLlmCallIndex())
+                + ",\"model\":\"" + escapeJson(u.getModel()) + "\""
+                + ",\"provider\":\"" + escapeJson(u.getProvider()) + "\""
+                + ",\"requestId\":\"" + escapeJson(u.getRequestId()) + "\""
+                + ",\"compareMode\":" + (Boolean.TRUE.equals(u.getCompareMode()) ? "true" : "false")
+                + ",\"success\":" + (Boolean.TRUE.equals(u.getSuccess()) ? "true" : "false")
+                + ",\"errorType\":" + jsonNullableString(u.getErrorType())
+                + ",\"errorCode\":" + jsonNullableString(u.getErrorCode())
+                + "}";
+    }
+
+    private static String jsonInt(Integer value) {
+        return value == null ? "0" : String.valueOf(value);
+    }
+
+    private static String jsonNullableInt(Integer value) {
+        return value == null ? "null" : String.valueOf(value);
+    }
+
+    private static String jsonNullableString(String value) {
+        return value == null ? "null" : "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
     /**
-     * Precedence: request topK → {@code uiConfig.modelConfig.topK} → backend default (via normalize).
+     * Precedence: request topK → {@code uiConfig.modelConfig.topK} → query-type default in retrieval.
      */
     static TopKResolution resolveTopK(Integer requestTopK, Integer configuredTopK) {
         if (requestTopK != null) {
@@ -380,7 +535,7 @@ public class ChatService {
                     .orElse(null);
         }
         TopKResolution resolution = resolveTopK(requestTopK, configuredTopK);
-        log.info("[RAG] retrieval topK source={} requested={} configured={} effective={}",
+        log.info("[RAG][topN] finalContextTopN source={} requested={} configured={} effective={}",
                 resolution.source(), resolution.requested(), resolution.configured(), resolution.effective());
         return resolution;
     }
@@ -482,21 +637,33 @@ public class ChatService {
                 });
     }
 
+    static int resolveSourcePresentationCap(ChatRequest request, TopKResolution topKResolution) {
+        if (Boolean.TRUE.equals(request.getPlaygroundDebugSources()) && topKResolution != null) {
+            return topKResolution.effective();
+        }
+        return MAX_RESPONSE_SOURCES;
+    }
+
     /**
      * Maps retrieved contexts to API sources with dedupe + cap only (no answer-aware trim).
      */
     List<ChatResponse.SourceDto> buildSourceDtosForResponse(List<RetrievedContext> contexts) {
+        return buildSourceDtosForResponse(contexts, MAX_RESPONSE_SOURCES);
+    }
+
+    List<ChatResponse.SourceDto> buildSourceDtosForResponse(List<RetrievedContext> contexts, int maxSources) {
         if (contexts == null || contexts.isEmpty()) {
             return List.of();
         }
 
+        int cap = Math.max(1, maxSources);
         List<RetrievedContext> deduped = dedupeContextsForPresentation(contexts);
-        int limit = Math.min(deduped.size(), MAX_RESPONSE_SOURCES);
+        int limit = Math.min(deduped.size(), cap);
         List<RetrievedContext> limited = deduped.subList(0, limit);
 
         if (limited.size() < contexts.size()) {
-            log.info("[Chat] Response sources capped: {} retrieved → {} deduped → {} returned",
-                    contexts.size(), deduped.size(), limited.size());
+            log.info("[Chat] Response sources capped: {} retrieved → {} deduped → {} returned (cap={})",
+                    contexts.size(), deduped.size(), limited.size(), cap);
         }
 
         return limited.stream().map(this::toSourceDto).toList();
@@ -504,18 +671,22 @@ public class ChatService {
 
     List<ChatResponse.SourceDto> applyAnswerAwareSourceCap(
             String answer,
-            List<ChatResponse.SourceDto> sources
+            List<ChatResponse.SourceDto> sources,
+            ChatRequest request
     ) {
         if (sources == null || sources.isEmpty()) {
             return List.of();
         }
-        if (!isRefusalLikeAnswer(answer)) {
+        if (request != null && Boolean.TRUE.equals(request.getPlaygroundDebugSources())) {
+            return sources;
+        }
+        if (!isLeadingRefusalAnswer(answer)) {
             return sources;
         }
         if (sources.size() <= MAX_REFUSAL_RESPONSE_SOURCES) {
             return sources;
         }
-        log.info("[Chat] Refusal-like answer → response sources {} → {}",
+        log.info("[Chat] Leading refusal-like answer (OOS/pivot) → response sources {} → {}",
                 sources.size(), MAX_REFUSAL_RESPONSE_SOURCES);
         return List.copyOf(sources.subList(0, MAX_REFUSAL_RESPONSE_SOURCES));
     }
@@ -531,6 +702,79 @@ public class ChatService {
             }
         }
         return false;
+    }
+
+    /**
+     * Refusal cap (≤2 sources) applies only when the answer is refusal-like and lacks substantive facts
+     * (e.g. policy codes, numbered list). Partial answers that mention missing items but list real codes
+     * are not treated as pure refusal.
+     *
+     * <p>Note: production source-cap path uses {@link #isLeadingRefusalAnswer} which additionally
+     * handles OOS pivot answers. This method is retained for unit-test coverage.
+     */
+    static boolean isPureRefusalLikeAnswer(String answer) {
+        if (!isRefusalLikeAnswer(answer)) {
+            return false;
+        }
+        return !hasSubstantiveFactualContent(answer);
+    }
+
+    /**
+     * Returns {@code true} when the answer opens with an OOS/refusal statement before any factual
+     * content. This covers both pure OOS refusals and "pivot" answers where the LLM refuses the
+     * actual question then pivots to listing unrelated document content.
+     *
+     * <p>Rule: if the first occurrence of a refusal marker appears <em>before</em> the first
+     * policy code ({@code WORD-123}) or numbered list item, the answer is treated as a leading
+     * refusal and the OOS source cap (≤{@value MAX_REFUSAL_RESPONSE_SOURCES}) is applied.
+     *
+     * <p>Partial in-scope answers ("ALPHA-111 found. Không tìm thấy Eta.") are NOT matched because
+     * the factual code precedes the refusal phrase.
+     *
+     * <p>Playground debug path bypasses this check entirely via {@code playgroundDebugSources}.
+     */
+    static boolean isLeadingRefusalAnswer(String answer) {
+        if (!isRefusalLikeAnswer(answer)) {
+            return false;
+        }
+        String normalized = answer.toLowerCase(Locale.ROOT);
+        int refusalPos = Integer.MAX_VALUE;
+        for (String marker : REFUSAL_ANSWER_MARKERS) {
+            int pos = normalized.indexOf(marker);
+            if (pos >= 0) {
+                refusalPos = Math.min(refusalPos, pos);
+            }
+        }
+        // Any policy code appearing BEFORE the first refusal marker means factual content
+        // leads → this is a partial in-scope answer, not an OOS/pivot answer.
+        Matcher codeMatcher = FACTUAL_POLICY_CODE.matcher(answer);
+        while (codeMatcher.find()) {
+            if (codeMatcher.start() < refusalPos) {
+                return false;
+            }
+        }
+        // Same logic for numbered list items (e.g. "1. Alpha: …").
+        Matcher listMatcher = NUMBERED_LIST_ITEM.matcher(answer);
+        while (listMatcher.find()) {
+            if (listMatcher.start() < refusalPos) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static boolean hasSubstantiveFactualContent(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return false;
+        }
+        if (FACTUAL_POLICY_CODE.matcher(answer).find()) {
+            return true;
+        }
+        if (NUMBERED_LIST_ITEM.matcher(answer).find()) {
+            return true;
+        }
+        long colonLines = answer.lines().filter(line -> line.contains(":")).count();
+        return colonLines >= 3;
     }
 
     static List<RetrievedContext> dedupeContextsForPresentation(List<RetrievedContext> contexts) {

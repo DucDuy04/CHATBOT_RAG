@@ -130,6 +130,7 @@ public class EmbeddingService {
             return List.of();
         }
 
+        RagTokenAudit.incrementEmbeddingCalls();
         Embedding queryEmbedding = embeddingModel.embedAll(List.of(TextSegment.from(query))).content().get(0);
         if (queryEmbedding.dimension() == 0) {
             log.warn("[EmbeddingSearch] Query embedding is empty for query='{}'", query);

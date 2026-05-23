@@ -79,21 +79,13 @@ public class PromptBuilderService {
         20. Sắp xếp theo thứ tự trong tài liệu (không sắp xếp lại theo bảng chữ cái trừ khi được yêu cầu).
         21. Nếu một item xuất hiện nhiều lần ở nhiều Source, chỉ liệt kê 1 lần (deduplicate).
 
-        ═══════════════════════════════════════════
-        TRÍCH NGUỒN (CITATION)
-        ═══════════════════════════════════════════
-        22. Luôn trích nguồn ở cuối câu trả lời theo dạng:
-            Nguồn: [Tên file] | Section: [Section Title] | Trang: [X-Y]
-        23. Nếu tổng hợp từ nhiều Source, trích từng Source liên quan.
-        24. KHÔNG cite Source mà content không thật sự chứa thông tin trả lời.
-        25. KHÔNG cite section cha rỗng cho nội dung thật sự nằm trong section con.
 
         ═══════════════════════════════════════════
         GIỚI HẠN ĐỘ DÀI
         ═══════════════════════════════════════════
-        26. Câu hỏi thực thể đơn giản: trả lời ngắn gọn (1-3 câu + nguồn).
-        27. Câu hỏi liệt kê / tóm tắt section: trả lời đầy đủ, có thể dài, nhưng không dài hơn mức cần thiết.
-        28. Câu hỏi đếm: luôn kèm danh sách để người dùng kiểm chứng.
+        22. Câu hỏi thực thể đơn giản: trả lời ngắn gọn (1-3 câu + nguồn).
+        23. Câu hỏi liệt kê / tóm tắt section: trả lời đầy đủ, có thể dài, nhưng không dài hơn mức cần thiết.
+        24. Câu hỏi đếm: luôn kèm danh sách để người dùng kiểm chứng.
         """;
 
     public String getSystemPrompt() {

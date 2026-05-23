@@ -9,12 +9,15 @@ import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundCompareResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundCompareResult;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundExportResponse;
+import KLTN.RAG_CHATBOT_BE.dto.TokenUsageDto;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundMessageResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundSessionResponse;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -24,9 +27,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class PlaygroundService {
+
+    @Value("${groq.chat-model}")
+    private String groqChatModel;
 
     private final ChatSessionRepository chatSessionRepository;
     private final ChatMessageRepository chatMessageRepository;
@@ -93,14 +100,21 @@ public class PlaygroundService {
                                              Map<String, Object> configA,
                                              Map<String, Object> configB) {
         return PlaygroundCompareResponse.builder()
-                .configA(runCompareOnce(chatbotId, message, safeConfig(configA)))
-                .configB(runCompareOnce(chatbotId, message, safeConfig(configB)))
+                .configA(runCompareOnce(chatbotId, message, safeConfig(configA), RagTokenAudit.Mode.COMPARE_A))
+                .configB(runCompareOnce(chatbotId, message, safeConfig(configB), RagTokenAudit.Mode.COMPARE_B))
                 .build();
     }
 
-    private PlaygroundCompareResult runCompareOnce(UUID chatbotId, String question, Map<String, Object> config) {
+    private PlaygroundCompareResult runCompareOnce(
+            UUID chatbotId,
+            String question,
+            Map<String, Object> config,
+            RagTokenAudit.Mode auditMode
+    ) {
         long start = System.currentTimeMillis();
+        RagTokenAudit.begin(auditMode, chatbotId, null);
 
+        try {
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, chatbotId);
         Integer topKOverride = RagRetrievalService.parseTopKOverride(config);
         RagRetrievalService.RetrievalResult retrievalResult =
@@ -109,8 +123,24 @@ public class PlaygroundService {
         List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 
         String answer;
+        TokenUsageDto tokenUsage;
         if (contexts.isEmpty()) {
             answer = "Tôi không tìm thấy thông tin này trong tài liệu.";
+            LlmGenerationOptions emptyLlmOptions = resolveCompareLlmOptions(chatbotId, config);
+            int contextTopN = RagRetrievalService.normalizeFinalContextTopN(topKOverride);
+            RagTokenAudit.recordPreLlm(
+                    groqChatModel,
+                    emptyLlmOptions.temperature(),
+                    emptyLlmOptions.maxTokens(),
+                    contextTopN,
+                    0,
+                    promptBuilderService.getSystemPrompt(),
+                    List.of(),
+                    0,
+                    question,
+                    ""
+            );
+            tokenUsage = RagTokenAudit.finish(true);
         } else {
             String userPrompt = promptBuilderService.buildUserPromptFromRetrievedContexts(
                     question,
@@ -122,10 +152,24 @@ public class PlaygroundService {
 
             String systemPrompt = promptBuilderService.getSystemPrompt();
             LlmGenerationOptions llmOptions = resolveCompareLlmOptions(chatbotId, config);
+            int contextTopN = RagRetrievalService.normalizeFinalContextTopN(topKOverride);
+            RagTokenAudit.recordPreLlm(
+                    groqChatModel,
+                    llmOptions.temperature(),
+                    llmOptions.maxTokens(),
+                    contextTopN,
+                    contexts.size(),
+                    systemPrompt,
+                    List.of(),
+                    RagTokenAudit.contextCharsFromRetrieved(contexts),
+                    question,
+                    userPrompt
+            );
             answer = llmFallbackService.generateWithFallback(List.of(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userPrompt)
             ), llmOptions);
+            tokenUsage = RagTokenAudit.finish(!ChatService.isOverloadAnswer(answer));
         }
 
         long elapsed = System.currentTimeMillis() - start;
@@ -134,7 +178,13 @@ public class PlaygroundService {
                 .sources(sources)
                 .latency(elapsed)
                 .config(config)
+                .tokenUsage(tokenUsage)
                 .build();
+        } finally {
+            if (RagTokenAudit.hasActiveState()) {
+                RagTokenAudit.finish(false);
+            }
+        }
     }
 
     private List<PlaygroundMessageResponse> mapMessages(List<ChatMessage> messages) {

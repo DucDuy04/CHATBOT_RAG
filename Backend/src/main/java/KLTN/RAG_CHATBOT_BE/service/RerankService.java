@@ -65,6 +65,11 @@ public class RerankService {
     }
 
     /**
+     * Chunk với điểm relevance từ Cohere (hoặc fallback).
+     */
+    public record ScoredChunk(DocumentChunk chunk, double score) {}
+
+    /**
      * Rerank danh sách chunks theo độ liên quan với query.
      *
      * @param query  Câu hỏi gốc của người dùng.
@@ -149,6 +154,7 @@ public class RerankService {
 
             if (minScore == Double.MAX_VALUE) minScore = 0.0;
 
+            RagTokenAudit.incrementRerankCalls();
             log.info("[Rerank] {} chunks → top {} (model={}) | maxScore={} minScore={}",
                     toRerank.size(), reranked.size(), rerankModel,
                     String.format("%.4f", maxScore), String.format("%.4f", minScore));
@@ -162,5 +168,82 @@ public class RerankService {
 
     public boolean isEnabled() {
         return rerankEnabled && cohereApiKey != null && !cohereApiKey.isBlank();
+    }
+
+    /**
+     * Chấm điểm toàn bộ candidate pool (tối đa {@link #MAX_DOCS_TO_RERANK}).
+     * Trả về danh sách có score, sắp xếp cao → thấp.
+     */
+    public List<ScoredChunk> scoreCandidates(String query, List<DocumentChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+
+        Map<UUID, DocumentChunk> uniqueMap = new LinkedHashMap<>();
+        for (DocumentChunk c : chunks) {
+            if (c.getId() != null) {
+                uniqueMap.putIfAbsent(c.getId(), c);
+            }
+        }
+        List<DocumentChunk> uniqueList = new ArrayList<>(uniqueMap.values());
+        if (uniqueList.isEmpty()) {
+            return List.of();
+        }
+
+        if (!isEnabled()) {
+            return List.of();
+        }
+
+        List<DocumentChunk> toScore = uniqueList.size() > MAX_DOCS_TO_RERANK
+                ? uniqueList.subList(0, MAX_DOCS_TO_RERANK)
+                : uniqueList;
+
+        List<String> documents = toScore.stream()
+                .map(c -> {
+                    String title = c.getSectionTitle() != null
+                            ? c.getSectionTitle().trim() + ". " : "";
+                    String content = c.getContent() != null ? c.getContent() : "";
+                    return title + content;
+                })
+                .toList();
+
+        int topN = toScore.size();
+        Map<String, Object> requestBody = new LinkedHashMap<>();
+        requestBody.put("model", rerankModel);
+        requestBody.put("query", query);
+        requestBody.put("documents", documents);
+        requestBody.put("top_n", topN);
+        requestBody.put("return_documents", false);
+
+        try {
+            Map<?, ?> response = restClient.post()
+                    .uri(COHERE_RERANK_URL)
+                    .header("Authorization", "Bearer " + cohereApiKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(Map.class);
+
+            if (response == null || !response.containsKey("results")) {
+                log.warn("[Rerank] scoreCandidates: response rỗng, không có score.");
+                return List.of();
+            }
+
+            List<?> results = (List<?>) response.get("results");
+            List<ScoredChunk> scored = new ArrayList<>();
+            for (Object item : results) {
+                Map<?, ?> resultMap = (Map<?, ?>) item;
+                int index = ((Number) resultMap.get("index")).intValue();
+                double score = ((Number) resultMap.get("relevance_score")).doubleValue();
+                scored.add(new ScoredChunk(toScore.get(index), score));
+            }
+            scored.sort(Comparator.comparingDouble(ScoredChunk::score).reversed());
+            RagTokenAudit.incrementRerankCalls();
+            log.info("[Rerank] scoreCandidates: {} docs scored (model={})", scored.size(), rerankModel);
+            return scored;
+        } catch (Exception e) {
+            log.error("[Rerank] scoreCandidates API lỗi: {}", e.getMessage());
+            return List.of();
+        }
     }
 }

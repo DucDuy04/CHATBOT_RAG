@@ -8,6 +8,7 @@ import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import dev.langchain4j.data.segment.TextSegment;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
@@ -21,12 +22,27 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class RagRetrievalService {
 
-    /** Default Qdrant vector candidate limit when request does not specify topK. */
-    public static final int DEFAULT_ANCHOR_TOP_K = 30;
+    /** Fixed Qdrant vector anchor limit — not controlled by UI topK. */
+    public static final int DEFAULT_VECTOR_ANCHOR_K = 30;
 
-    public static final int MIN_ANCHOR_TOP_K = 1;
+    /** Default final contexts after rerank when request/modelConfig omit topK. */
+    public static final int DEFAULT_FINAL_CONTEXT_TOP_N = 10;
 
-    public static final int MAX_ANCHOR_TOP_K = 30;
+    public static final int MIN_FINAL_CONTEXT_TOP_N = 1;
+
+    public static final int MAX_FINAL_CONTEXT_TOP_N = 30;
+
+    /** @deprecated use {@link #DEFAULT_VECTOR_ANCHOR_K} */
+    @Deprecated
+    public static final int DEFAULT_ANCHOR_TOP_K = DEFAULT_VECTOR_ANCHOR_K;
+
+    /** @deprecated use {@link #MIN_FINAL_CONTEXT_TOP_N} */
+    @Deprecated
+    public static final int MIN_ANCHOR_TOP_K = MIN_FINAL_CONTEXT_TOP_N;
+
+    /** @deprecated use {@link #MAX_FINAL_CONTEXT_TOP_N} */
+    @Deprecated
+    public static final int MAX_ANCHOR_TOP_K = MAX_FINAL_CONTEXT_TOP_N;
 
     // --- Giới hạn cho query thông thường ---
     private static final int FINAL_LIMIT = 10;
@@ -71,6 +87,11 @@ public class RagRetrievalService {
     private final QueryAnalyzerService queryAnalyzerService;
     private final RerankService rerankService;
 
+    @Value("${rag.retrieval.vector-anchor-k:30}")
+    private int configuredVectorAnchorK;
+
+    public record ScoredChunk(DocumentChunk chunk, double finalScore) {}
+
     // ================================================================
     // RESULT WRAPPER
     // ================================================================
@@ -99,16 +120,19 @@ public class RagRetrievalService {
     }
 
     /**
-     * Full entry point with optional per-request anchor top-K override for Qdrant vector search.
+     * Full entry point with optional per-request final context top-N (UI field {@code topK}).
      *
-     * @param topKOverride requested limit from client; null uses {@link #DEFAULT_ANCHOR_TOP_K}
+     * @param finalContextTopNOverride số context cuối sau rerank; null → query-type default
      */
-    public RetrievalResult retrieveWithMetadata(String question, UUID widgetId, Integer topKOverride) {
-        int effectiveAnchorTopK = normalizeAnchorTopK(topKOverride);
-        log.info("[RAG] retrieval topK requested={}, effective={}", topKOverride, effectiveAnchorTopK);
+    public RetrievalResult retrieveWithMetadata(String question, UUID widgetId, Integer finalContextTopNOverride) {
+        int fixedVectorAnchorK = fixedVectorAnchorK();
+        log.info("[RAG][anchor] fixedVectorAnchorK={}", fixedVectorAnchorK);
 
         // ── STEP 0: Intent detection ───────────────────────────────────
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
+        int finalContextTopN = resolveFinalContextTopN(finalContextTopNOverride, queryType);
+        String topNSource = finalContextTopNOverride != null ? "REQUEST|MODEL_CONFIG" : "DEFAULT";
+        log.info("[RAG][topN] finalContextTopN source={} value={}", topNSource, finalContextTopN);
         boolean isExpandedQuery = isExpanded(queryType);
         log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
 
@@ -162,7 +186,7 @@ public class RagRetrievalService {
         for (String variant : queryVariants) {
             List<TextSegment> anchors;
             try {
-                anchors = embeddingService.search(variant, effectiveAnchorTopK, widgetId);
+                anchors = embeddingService.search(variant, fixedVectorAnchorK, widgetId);
             } catch (Exception e) {
                 log.error("[RAG] Qdrant error for variant='{}': {}", variant, e.getMessage());
                 continue;
@@ -251,7 +275,7 @@ public class RagRetrievalService {
                     .count();
             if (outOfScopeCount > 0) {
                 log.warn("[RAG] GUARDRAIL: {} chunk(s) in expanded pool are outside locked scope {} — " +
-                        "will be excluded by dedupeSortBudget scope filter.",
+                        "will be excluded by final context selection scope filter.",
                         outOfScopeCount, lockedSectionKey);
             }
         }
@@ -325,79 +349,56 @@ public class RagRetrievalService {
             }
         }
 
-        // ── STEP 5: Rerank — chấm điểm lại từng cặp (query, chunk) bằng Cross-Encoder ──
-        // topN = FINAL_LIMIT * 1.3 (buffer nhỏ) để reranker thực sự lọc bớt,
-        // không phải giữ nguyên toàn bộ pool như cũ (topN = FINAL_LIMIT * 2).
+        // ── STEP 5: Rerank-guided scope lock (preliminary scoring, không cắt final top-N) ──
         boolean isLockedScope = !lockedSectionIds.isEmpty();
-        if (!isLockedScope && rerankService.isEnabled() && !expanded.isEmpty()) {
-            int baseLimit = isExpandedQuery ? FINAL_LIMIT_EXPANDED : FINAL_LIMIT;
-            int rerankTopN = (int) Math.ceil(baseLimit * 1.3);
-            RerankService.RerankResult rerankResult = rerankService.rerank(question, expanded, rerankTopN);
-            expanded = rerankResult.chunks();
-            log.info("[RAG] Sau rerank: {} chunks (maxScore={}, minScore={})",
-                    expanded.size(),
-                    String.format("%.4f", rerankResult.maxScore()),
-                    String.format("%.4f", rerankResult.minScore()));
+        List<DocumentChunk> dedupedForLock = dedupeCandidates(expanded);
+        if (!isLockedScope && rerankService.isEnabled() && !dedupedForLock.isEmpty()) {
+            List<ScoredChunk> preliminaryScores = scoreCandidatesForSelection(
+                    question, dedupedForLock, anchorChunkIds, "RERANK_SERVICE");
+            if (!preliminaryScores.isEmpty()) {
+                double maxScore = preliminaryScores.get(0).finalScore();
+                if (maxScore < RerankService.LOW_CONFIDENCE_THRESHOLD) {
+                    log.warn("[RAG] LOW CONFIDENCE: max score={} < threshold={} cho query='{}'.",
+                            String.format("%.4f", maxScore),
+                            RerankService.LOW_CONFIDENCE_THRESHOLD, question);
+                }
 
-            if (rerankResult.maxScore() < RerankService.LOW_CONFIDENCE_THRESHOLD) {
-                log.warn("[RAG] LOW CONFIDENCE: max rerank score={} < threshold={} cho query='{}'. " +
-                        "Có thể query có typo, quá mơ hồ, hoặc tài liệu không chứa thông tin này.",
-                        String.format("%.4f", rerankResult.maxScore()),
-                        RerankService.LOW_CONFIDENCE_THRESHOLD, question);
-            }
+                boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
+                        && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
+                        && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
+                if (allowRerankScopeLock && maxScore >= RERANK_LOCK_THRESHOLD) {
+                    DocumentChunk topChunk = preliminaryScores.get(0).chunk();
+                    String topSectionId = topChunk.getSectionId();
 
-            // ── STEP 5.5: Rerank-Guided Scope Lock ────────────────────────
-            // Khi heading match ban đầu thất bại (isLockedScope=false) NHƯNG
-            // reranker tìm thấy top chunk với score rất cao (≥ RERANK_LOCK_THRESHOLD),
-            // đây là tín hiệu rõ ràng về section đúng → lock scope về section đó
-            // và re-fetch toàn bộ chunks từ section tree để context sạch hơn.
-            //
-            // Ví dụ (từ log):
-            //   query: "mục tiêu của hệ thống" → heading match: FAIL
-            //   rerank top: sec_2=0.8658, sec_1=0.0497, sec_7.2=0.0058
-            //   → lock sec_2 → re-fetch [sec_2, sec_2.1, sec_2.2] = 3 chunks
-            //   INSTEAD OF 20 chunks từ 33 sections trên toàn tài liệu.
-            //
-            // MVP guard: KHÔNG kích hoạt lock cho câu hỏi tổng hợp (list/count/table),
-            // vì top-1 rerank thường là một use case / một bảng con → lock sẽ loại bỏ
-            // các chunk còn lại và bot chỉ trả một phần (vd chỉ Use Case 4).
-            boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
-                    && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
-                    && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
-            if (allowRerankScopeLock
-                    && rerankResult.maxScore() >= RERANK_LOCK_THRESHOLD && !rerankResult.chunks().isEmpty()) {
-                DocumentChunk topChunk = rerankResult.chunks().get(0);
-                String topSectionId = topChunk.getSectionId();
+                    if (topSectionId != null && !topSectionId.isBlank()) {
+                        String lockRootId = findReasonableLockRoot(topSectionId, allSections);
+                        Set<String> rerankScope = expandDescendantSectionIds(lockRootId, allSections);
 
-                if (topSectionId != null && !topSectionId.isBlank()) {
-                    // Leo lên 1 cấp nếu top chunk là leaf (sec_2.1 → sec_2),
-                    // giữ nguyên nếu đã là root (sec_2 → sec_2).
-                    String lockRootId = findReasonableLockRoot(topSectionId, allSections);
-                    Set<String> rerankScope = expandDescendantSectionIds(lockRootId, allSections);
+                        List<DocumentChunk> rerankScopeChunks = documentChunkRepository
+                                .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                                        widgetId, rerankScope);
 
-                    List<DocumentChunk> rerankScopeChunks = documentChunkRepository
-                            .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
-                                    widgetId, rerankScope);
-
-                    if (!rerankScopeChunks.isEmpty()) {
-                        log.info("[RAG] Rerank-Guided Lock ACTIVATED: score={} topSection='{}' " +
-                                "→ lockRoot='{}' scope={} ({} chunks) — replaced {} chunk pool",
-                                String.format("%.4f", rerankResult.maxScore()),
-                                topSectionId, lockRootId, rerankScope,
-                                rerankScopeChunks.size(), expanded.size());
-                        expanded = rerankScopeChunks;
-                        isLockedScope = true;
-                        lockedSectionLabel = "rerank-lock: '" + lockRootId + "'";
-                    } else {
-                        log.warn("[RAG] Rerank-Guided Lock: lockRoot='{}' returned 0 chunks — " +
-                                "keeping reranked pool as-is.", lockRootId);
+                        if (!rerankScopeChunks.isEmpty()) {
+                            log.info("[RAG] Rerank-Guided Lock ACTIVATED: score={} topSection='{}' " +
+                                    "→ lockRoot='{}' scope={} ({} chunks) — replaced {} chunk pool",
+                                    String.format("%.4f", maxScore),
+                                    topSectionId, lockRootId, rerankScope,
+                                    rerankScopeChunks.size(), expanded.size());
+                            expanded = rerankScopeChunks;
+                            isLockedScope = true;
+                            lockedSectionLabel = "rerank-lock: '" + lockRootId + "'";
+                        }
                     }
                 }
             }
         }
 
-        // ── STEP 6: Dedup, sort, apply budget ─────────────────────────
-        List<RetrievedContext> result = dedupeSortBudget(expanded, queryType, isLockedScope, question);
+        log.info("[RAG][candidates] vectorAnchors={} afterExpansion={}",
+                anchorChunkIds.size(), expanded.size());
+
+        // ── STEP 6: Dedupe → score all → select top-N by score → document order ──
+        List<RetrievedContext> result = selectFinalContexts(
+                expanded, question, queryType, isLockedScope, finalContextTopN, anchorChunkIds);
 
         // ── STEP 7: Final context log ──────────────────────────────────
         log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
@@ -788,37 +789,37 @@ public class RagRetrievalService {
     }
 
     // ================================================================
-    // DEDUP → SORT → BUDGET
+    // DEDUP → SCORE → SELECT TOP-N → DOCUMENT ORDER
     // ================================================================
 
-    /**
-     * Dedup → sắp xếp theo thứ tự tài liệu (sectionOrder ASC, orderIndex ASC) → cắt budget.
-     *
-     * Quan trọng: phải sắp xếp theo thứ tự tài liệu GỐC trước khi đưa cho LLM,
-     * để LLM đọc context theo đúng trình tự logic, tránh hiểu nhầm do context lộn xộn.
-     *
-     * @param isLockedScope true nếu retrieval đã lock vào một section cụ thể → budget rộng hơn.
-     */
-    private List<RetrievedContext> dedupeSortBudget(List<DocumentChunk> chunks,
-                                                     QueryAnalyzerService.QueryType queryType,
-                                                     boolean isLockedScope,
-                                                     String question) {
+    private List<RetrievedContext> selectFinalContexts(List<DocumentChunk> chunks,
+                                                       String question,
+                                                       QueryAnalyzerService.QueryType queryType,
+                                                       boolean isLockedScope,
+                                                       int finalContextTopN,
+                                                       Set<UUID> anchorChunkIds) {
         boolean isExpandedQuery = isExpanded(queryType);
+        int maxContextChars = resolveMaxContextChars(queryType, isLockedScope);
 
-        int finalLimit;
-        int maxContextChars;
-        if (isLockedScope) {
-            finalLimit = FINAL_LIMIT_LOCKED;
-            maxContextChars = MAX_CONTEXT_CHARS_LOCKED;
-        } else if (isExpandedQuery) {
-            finalLimit = FINAL_LIMIT_EXPANDED;
-            maxContextChars = MAX_CONTEXT_CHARS_EXPANDED;
-        } else {
-            finalLimit = FINAL_LIMIT;
-            maxContextChars = MAX_CONTEXT_CHARS;
+        List<DocumentChunk> deduped = dedupeCandidates(chunks);
+        log.info("[RAG][candidates] deduped={}", deduped.size());
+
+        List<ScoredChunk> scored = scoreCandidatesForSelection(
+                question, deduped, anchorChunkIds, null);
+        List<DocumentChunk> selected = selectTopNByScore(scored, finalContextTopN, maxContextChars);
+        List<DocumentChunk> ordered = sortByDocumentOrder(selected, isExpandedQuery || isLockedScope);
+
+        log.info("[RAG][select] selectedByScore={} finalContexts={} maxContextChars={}",
+                selected.size(), ordered.size(), maxContextChars);
+        log.info("[RAG][prompt-order] sortedByDocumentOrder=true");
+
+        return ordered.stream().map(this::toRetrievedContext).toList();
+    }
+
+    static List<DocumentChunk> dedupeCandidates(List<DocumentChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
         }
-
-        // Dedup theo chunk ID
         Map<UUID, DocumentChunk> unique = chunks.stream()
                 .filter(c -> c.getId() != null)
                 .collect(Collectors.toMap(
@@ -826,60 +827,175 @@ public class RagRetrievalService {
                         c -> c,
                         (a, b) -> a,
                         LinkedHashMap::new));
+        return new ArrayList<>(unique.values());
+    }
 
-        // Sắp xếp theo thứ tự tài liệu gốc: (documentId, sectionOrder, orderIndex)
-        List<DocumentChunk> sorted = unique.values().stream()
+    private List<ScoredChunk> scoreCandidatesForSelection(String question,
+                                                          List<DocumentChunk> deduped,
+                                                          Set<UUID> anchorChunkIds,
+                                                          String scorerHint) {
+        if (deduped.isEmpty()) {
+            return List.of();
+        }
+
+        Map<UUID, Double> rerankScores = new HashMap<>();
+        String scorer = scorerHint;
+        if (rerankService.isEnabled()) {
+            List<RerankService.ScoredChunk> reranked = rerankService.scoreCandidates(question, deduped);
+            for (RerankService.ScoredChunk rc : reranked) {
+                if (rc.chunk().getId() != null) {
+                    rerankScores.put(rc.chunk().getId(), rc.score());
+                }
+            }
+            if (!rerankScores.isEmpty()) {
+                scorer = "RERANK_SERVICE";
+            }
+        }
+
+        Map<String, Double> idfByTerm = computeIdfWeights(deduped, extractQueryTermsForScoring(question));
+        double maxLexical = deduped.stream()
+                .mapToDouble(c -> lexicalIdfScore(c, idfByTerm))
+                .max()
+                .orElse(0.0);
+        List<ScoredChunk> scored = new ArrayList<>();
+        for (DocumentChunk chunk : deduped) {
+            double lexicalRaw = lexicalIdfScore(chunk, idfByTerm);
+            double lexical = maxLexical > 0 ? lexicalRaw / maxLexical : 0.0;
+            double vector = anchorChunkIds != null && chunk.getId() != null
+                    && anchorChunkIds.contains(chunk.getId()) ? 1.0 : 0.0;
+            double rerank = rerankScores.getOrDefault(chunk.getId(), -1.0);
+            double finalScore = rerank >= 0.0
+                    ? 0.6 * rerank + 0.3 * lexical + 0.1 * vector
+                    : 0.7 * lexical + 0.3 * vector;
+            scored.add(new ScoredChunk(chunk, finalScore));
+        }
+
+        if (scorer == null) {
+            scorer = rerankScores.isEmpty() ? "BM25_IDF|VECTOR_FALLBACK" : "RERANK_SERVICE|BM25_IDF";
+        }
+        scored = scored.stream()
+                .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
+                .toList();
+        log.info("[RAG][rerank] scorer={} candidates={}", scorer, scored.size());
+        return scored;
+    }
+
+    static List<DocumentChunk> selectTopNByScore(List<ScoredChunk> scored,
+                                                   int finalContextTopN,
+                                                   int maxContextChars) {
+        if (scored == null || scored.isEmpty()) {
+            return List.of();
+        }
+        int limit = Math.max(1, finalContextTopN);
+        List<DocumentChunk> selected = new ArrayList<>();
+        int totalChars = 0;
+        for (ScoredChunk sc : scored) {
+            if (selected.size() >= limit) {
+                break;
+            }
+            DocumentChunk c = sc.chunk();
+            String content = c.getContent() == null ? "" : c.getContent();
+            if (totalChars + content.length() > maxContextChars && !selected.isEmpty()) {
+                break;
+            }
+            totalChars += content.length();
+            selected.add(c);
+        }
+        return selected;
+    }
+
+    static List<DocumentChunk> sortByDocumentOrder(List<DocumentChunk> chunks, boolean prioritizeSummaries) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        List<DocumentChunk> sorted = chunks.stream()
                 .sorted(Comparator
                         .comparing((DocumentChunk c) -> c.getDocument() != null
                                 ? c.getDocument().getId().toString() : "")
                         .thenComparingInt(c -> Optional.ofNullable(c.getSectionOrder()).orElse(0))
                         .thenComparingInt(c -> Optional.ofNullable(c.getOrderIndex()).orElse(0)))
                 .toList();
-
-        // section_summary và table_summary nên được đưa lên đầu trong expanded/locked query
-        if (isExpandedQuery || isLockedScope) {
-            sorted = prioritizeSummaryChunks(sorted);
+        if (prioritizeSummaries) {
+            return prioritizeSummaryChunks(sorted);
         }
+        return sorted;
+    }
 
-        List<RetrievedContext> result = new ArrayList<>();
-        int totalChars = 0;
-
-        for (DocumentChunk c : sorted) {
-            if (result.size() >= finalLimit) {
-                log.info("[RAG] Budget: finalLimit={} reached; {} chunks excluded by count limit",
-                        finalLimit, sorted.size() - result.size());
-                break;
-            }
-
-            String content = c.getContent() == null ? "" : c.getContent();
-            if (totalChars + content.length() > maxContextChars) {
-                log.info("[RAG] Budget: maxContextChars={} reached at chunk #{}, {} chunks excluded by char limit",
-                        maxContextChars, result.size(), sorted.size() - result.size());
-                break;
-            }
-
-            totalChars += content.length();
-
-            result.add(RetrievedContext.builder()
-                    .chunkId(c.getId())
-                    .documentId(c.getDocument().getId())
-                    .fileName(c.getSourceFile())
-                    .content(content)
-                    .chunkType(c.getChunkType())
-                    .sectionId(c.getSectionId())
-                    .sectionTitle(c.getSectionTitle())
-                    .headingPathText(c.getHeadingPathText())
-                    .pageStart(c.getPageStart())
-                    .pageEnd(c.getPageEnd())
-                    .build());
+    private int resolveMaxContextChars(QueryAnalyzerService.QueryType queryType, boolean isLockedScope) {
+        if (isLockedScope) {
+            return MAX_CONTEXT_CHARS_LOCKED;
         }
+        if (isExpanded(queryType)) {
+            return MAX_CONTEXT_CHARS_EXPANDED;
+        }
+        return MAX_CONTEXT_CHARS;
+    }
 
-        log.info("[RAG] dedupeSortBudget: input={} unique={} output={} totalChars={} " +
-                        "limit={}/{} locked={}",
-                chunks.size(), unique.size(), result.size(), totalChars,
-                finalLimit, maxContextChars, isLockedScope);
+    private RetrievedContext toRetrievedContext(DocumentChunk c) {
+        String content = c.getContent() == null ? "" : c.getContent();
+        return RetrievedContext.builder()
+                .chunkId(c.getId())
+                .documentId(c.getDocument().getId())
+                .fileName(c.getSourceFile())
+                .content(content)
+                .chunkType(c.getChunkType())
+                .sectionId(c.getSectionId())
+                .sectionTitle(c.getSectionTitle())
+                .headingPathText(c.getHeadingPathText())
+                .pageStart(c.getPageStart())
+                .pageEnd(c.getPageEnd())
+                .build();
+    }
 
-        return result;
+    private List<String> extractQueryTermsForScoring(String question) {
+        if (question == null || question.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(normalizeForSearch(question).split("[^\\p{L}\\p{N}]+"))
+                .map(String::trim)
+                .filter(term -> term.length() >= 2)
+                .distinct()
+                .toList();
+    }
+
+    private Map<String, Double> computeIdfWeights(List<DocumentChunk> candidates, List<String> terms) {
+        if (terms.isEmpty() || candidates.isEmpty()) {
+            return Map.of();
+        }
+        int n = candidates.size();
+        Map<String, Double> idf = new LinkedHashMap<>();
+        for (String term : terms) {
+            String t = normalizeForSearch(term);
+            if (t.isBlank()) {
+                continue;
+            }
+            long df = candidates.stream()
+                    .filter(c -> chunkHaystack(c).contains(t))
+                    .count();
+            idf.put(t, Math.log((n + 1.0) / (df + 1.0)));
+        }
+        return idf;
+    }
+
+    private double lexicalIdfScore(DocumentChunk chunk, Map<String, Double> idfByTerm) {
+        if (idfByTerm.isEmpty()) {
+            return 0.0;
+        }
+        String haystack = chunkHaystack(chunk);
+        double score = 0.0;
+        for (Map.Entry<String, Double> entry : idfByTerm.entrySet()) {
+            if (haystack.contains(entry.getKey())) {
+                score += entry.getValue();
+            }
+        }
+        return score;
+    }
+
+    private String chunkHaystack(DocumentChunk chunk) {
+        String content = normalizeForSearch(Optional.ofNullable(chunk.getContent()).orElse(""));
+        String heading = normalizeForSearch(Optional.ofNullable(chunk.getHeadingPathText()).orElse(""));
+        String sectionTitle = normalizeForSearch(Optional.ofNullable(chunk.getSectionTitle()).orElse(""));
+        return (heading + " " + sectionTitle + " " + content).trim();
     }
 
     // ================================================================
@@ -970,7 +1086,7 @@ public class RagRetrievalService {
      * theo sau bởi các chunks còn lại theo thứ tự tài liệu.
      * Giúp LLM có context tổng quan trước khi đọc detail chunks.
      */
-    private List<DocumentChunk> prioritizeSummaryChunks(List<DocumentChunk> sorted) {
+    private static List<DocumentChunk> prioritizeSummaryChunks(List<DocumentChunk> sorted) {
         List<DocumentChunk> summaries = sorted.stream()
                 .filter(c -> "section_summary".equals(c.getChunkType())
                         || "table_summary".equals(c.getChunkType())
@@ -988,14 +1104,44 @@ public class RagRetrievalService {
     }
 
     // ================================================================
-    // TOP-K (per-request vector search limit)
+    // TOP-N (final contexts) & fixed vector anchor K
     // ================================================================
 
-    public static int normalizeAnchorTopK(Integer requestedTopK) {
-        if (requestedTopK == null) {
-            return DEFAULT_ANCHOR_TOP_K;
+    int fixedVectorAnchorK() {
+        return Math.max(1, Math.min(30, configuredVectorAnchorK));
+    }
+
+    public static int normalizeFinalContextTopN(Integer requestedTopN) {
+        if (requestedTopN == null) {
+            return DEFAULT_FINAL_CONTEXT_TOP_N;
         }
-        return Math.max(MIN_ANCHOR_TOP_K, Math.min(MAX_ANCHOR_TOP_K, requestedTopK));
+        return Math.max(MIN_FINAL_CONTEXT_TOP_N, Math.min(MAX_FINAL_CONTEXT_TOP_N, requestedTopN));
+    }
+
+    public static int resolveFinalContextTopN(Integer override, QueryAnalyzerService.QueryType queryType) {
+        if (override != null) {
+            return normalizeFinalContextTopN(override);
+        }
+        return defaultFinalContextTopNForQueryType(queryType);
+    }
+
+    static int defaultFinalContextTopNForQueryType(QueryAnalyzerService.QueryType queryType) {
+        if (queryType == null) {
+            return DEFAULT_FINAL_CONTEXT_TOP_N;
+        }
+        return switch (queryType) {
+            case LIST_ALL, COUNT_QUERY, SECTION_SUMMARY -> 20;
+            case TABLE_LOOKUP -> 10;
+            default -> DEFAULT_FINAL_CONTEXT_TOP_N;
+        };
+    }
+
+    /**
+     * @deprecated UI topK is final context top-N; vector anchor K is fixed via config.
+     */
+    @Deprecated
+    public static int normalizeAnchorTopK(Integer ignored) {
+        return DEFAULT_VECTOR_ANCHOR_K;
     }
 
     /**

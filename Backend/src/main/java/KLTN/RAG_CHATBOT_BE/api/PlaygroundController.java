@@ -75,6 +75,7 @@ public class PlaygroundController {
             maxTokens = LlmGenerationOptions.parseMaxTokensOverride(request.getOverrideParams());
         }
         chatRequest.setMaxTokens(maxTokens);
+        chatRequest.setPlaygroundDebugSources(true);
 
         return chatService.chatStream(chatRequest, widgetId);
     }

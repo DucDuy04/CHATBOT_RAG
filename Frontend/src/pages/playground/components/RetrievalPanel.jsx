@@ -33,7 +33,7 @@ export default function RetrievalPanel({
 
       {topKLimit != null && (
         <p className="text-[10px] text-gray-500 mb-2 leading-snug">
-          Hiển thị tối đa <span className="font-medium">{topKLimit}</span> nguồn theo Top-K playground
+          Hiển thị tối đa <span className="font-medium">{topKLimit}</span> nguồn theo Context Top-N playground
           {hidden > 0 ? ` (${hidden} nguồn khác từ retrieval vẫn được dùng cho câu trả lời, chỉ ẩn ở UI).` : "."}
         </p>
       )}
