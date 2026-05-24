@@ -92,7 +92,9 @@ class ParserAndOrderingTests {
         assertThat(buoc2Chunk.header()).contains("Quy trình");
 
         boolean tableInBangGoi = chunks.stream()
-                .anyMatch(c -> ("table_summary".equals(c.chunkType()) || "table_row_group".equals(c.chunkType()))
+                .anyMatch(c -> ("table_summary".equals(c.chunkType())
+                        || "normalized_table_row".equals(c.chunkType())
+                        || "table_row_group".equals(c.chunkType()))
                         && c.header() != null && c.header().contains("Bảng gói dịch vụ"));
         assertThat(tableInBangGoi).as("Table chunk phải thuộc section Bảng gói dịch vụ").isTrue();
 
@@ -390,9 +392,10 @@ class ParserAndOrderingTests {
         List<DocumentChunk> chunks = chunker.processSections2(fakeSections);
         boolean hasTableChunk = chunks.stream()
                 .anyMatch(c -> "table_summary".equals(c.chunkType())
+                        || "normalized_table_row".equals(c.chunkType())
                         || "table_row_group".equals(c.chunkType()));
         assertThat(hasTableChunk)
-                .as("Pseudo-table phải tạo ra table_summary hoặc table_row_group chunk")
+                .as("Pseudo-table phải tạo ra table_summary hoặc normalized_table_row chunk")
                 .isTrue();
     }
 
@@ -575,7 +578,8 @@ class ParserAndOrderingTests {
         List<DocumentChunk> chunks = chunker.processSections2(sections);
 
         String allTableText = chunks.stream()
-                .filter(c -> c.chunkType() != null && c.chunkType().startsWith("table"))
+                .filter(c -> "normalized_table_row".equals(c.chunkType())
+                        || "table_row_group".equals(c.chunkType()))
                 .map(DocumentChunk::content)
                 .reduce("", String::concat);
 

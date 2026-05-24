@@ -122,11 +122,32 @@ public class DocumentService {
         List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks =
                 chunkingService2.processSections2(sections);
 
+        TableIngestMetrics tableMetrics = chunkingService2.getLastIngestMetrics();
         log.info(
-                "Parse document={} được {} sections, chunk được {} chunks",
+                "Parse document={} sections={} chunks={} tableIngest: detected={} normalized={} failed={} " +
+                        "normalizedRows={} suppressedRawChars={} suppressedLines={} droppedLeakyTextChunks={} " +
+                        "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
+                        "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
+                        "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={}",
                 document.getFileName(),
                 sections.size(),
-                chunks.size()
+                chunks.size(),
+                tableMetrics.getDetectedTables(),
+                tableMetrics.getNormalizedTables(),
+                tableMetrics.getFailedTables(),
+                tableMetrics.getNormalizedRows(),
+                tableMetrics.getSuppressedRawTableTextChars(),
+                tableMetrics.getSuppressedLines(),
+                tableMetrics.getDroppedLeakyTextChunks(),
+                tableMetrics.getRowsWithCellsJson(),
+                tableMetrics.getRowsWithOnlyOneNonEmptyCell(),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getRowsWithEmptyCellsRatio()),
+                tableMetrics.getRowsWithGenericColumnKeys(),
+                tableMetrics.getContinuationRowsMerged(),
+                tableMetrics.getMultiRowHeadersMerged(),
+                tableMetrics.getCrossPageHeaderCarryCount(),
+                tableMetrics.getSparseRowsRepaired(),
+                tableMetrics.getDroppedCellFragments()
         );
 
         UUID widgetId = document.getWidgetConfig().getId();
@@ -161,6 +182,8 @@ public class DocumentService {
                 document.getFileName(),
                 widgetId
         );
+
+        tableMetrics.setQdrantPoints(savedChunks.size());
 
         document.setStatus(DocumentStatus.COMPLETED);
         document.setChunkCount(savedChunks.size());
@@ -616,13 +639,17 @@ public class DocumentService {
 
             DocumentSection sectionEntity = sectionMap.get(chunk.sectionId());
 
+            String tableTitle = chunk.tableName() != null && !chunk.tableName().isBlank()
+                    ? chunk.tableName()
+                    : safeText(chunk.header(), "Table");
+
             DocumentTable tableEntity = DocumentTable.builder()
                     .document(document)
                     .widgetConfig(widgetConfig)
                     .section(sectionEntity)
                     .tableKey(chunk.tableId())
                     .sectionKey(chunk.sectionId())
-                    .title(safeText(chunk.header(), "Table"))
+                    .title(tableTitle)
                     .pageStart(chunk.startPage())
                     .pageEnd(chunk.endPage())
                     .orderIndex(chunk.orderIndex())
@@ -678,6 +705,11 @@ public class DocumentService {
                             .childSectionIds(chunk.childSectionIds())
                             .sourceFile(document.getFileName())
                             .build();
+
+            chunkEntity.setTableName(chunk.tableName());
+            chunkEntity.setRowIndex(chunk.rowIndex());
+            chunkEntity.setCellsJson(chunk.cellsJson());
+            chunkEntity.setGroupContext(chunk.groupContext());
 
             entities.add(chunkEntity);
         }

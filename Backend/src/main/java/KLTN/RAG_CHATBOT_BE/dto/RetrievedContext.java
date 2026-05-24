@@ -12,6 +12,7 @@ public class RetrievedContext {
     private UUID documentId;
     private String fileName;
     private String content;
+    private String cellsJson;
     private String chunkType;
     private String sectionId;
     private String sectionTitle;

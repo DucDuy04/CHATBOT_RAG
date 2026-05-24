@@ -15,7 +15,11 @@ public class PromptBuilderService {
      * Nhắc thêm khi đã biết context có chunk bảng — tránh LLM từ chối dù evidence có trong Source.
      */
     private static final String TABLE_LOOKUP_TABLE_SOURCES_PRESENT_NOTE = """
-            [NHẮN NGỮ CẢNH BẢNG: Trong danh sách Source bên dưới có ít nhất một mục loại bảng (table_summary / table_row_group / text_table_like) hoặc nội dung dạng bảng Markdown. Bạn phải đọc các Source đó trước khi kết luận không có thông tin.]
+            [NHẮN NGỮ CẢNH BẢNG: Trong danh sách Source bên dưới có ít nhất một mục loại bảng (table_summary / normalized_table_row / table_row_group) hoặc nội dung dạng bảng Markdown. Bạn phải đọc các Source đó trước khi kết luận không có thông tin.]
+            """;
+
+    private static final String NORMALIZED_ROW_SOURCE_NOTE = """
+            [DÒNG BẢNG CHUẨN HÓA: Có Source Type=normalized_table_row — mỗi Source là MỘT dòng bảng với các cột (Key: giá trị). Trả lời trực tiếp từ giá trị cột của đúng dòng đó; không trộn dữ liệu giữa các dòng hoặc các nhóm khác nhau.]
             """;
 
     private static final String SYSTEM_PROMPT = """
@@ -140,6 +144,10 @@ public class PromptBuilderService {
             prompt.append("\n\n");
         }
 
+        if (contextsContainNormalizedTableRow(contexts)) {
+            prompt.append(NORMALIZED_ROW_SOURCE_NOTE.trim()).append("\n\n");
+        }
+
         prompt.append("[TÀI LIỆU THAM KHẢO]\n");
 
         for (int i = 0; i < contexts.size(); i++) {
@@ -260,6 +268,15 @@ public class PromptBuilderService {
     /**
      * True nếu có chunk loại bảng hoặc nội dung giống bảng Markdown (không gọi DB/Qdrant).
      */
+    private boolean contextsContainNormalizedTableRow(List<RetrievedContext> contexts) {
+        if (contexts == null || contexts.isEmpty()) {
+            return false;
+        }
+        return contexts.stream()
+                .anyMatch(c -> c != null && "normalized_table_row".equalsIgnoreCase(
+                        nullSafe(c.getChunkType()).trim()));
+    }
+
     private boolean contextsContainTableLikeChunks(List<RetrievedContext> contexts) {
         if (contexts == null || contexts.isEmpty()) {
             return false;
@@ -271,7 +288,8 @@ public class PromptBuilderService {
             String chunkType = c.getChunkType();
             if (chunkType != null) {
                 String t = chunkType.trim().toLowerCase(Locale.ROOT);
-                if ("table_summary".equals(t) || "table_row_group".equals(t) || "text_table_like".equals(t)) {
+                if ("table_summary".equals(t) || "normalized_table_row".equals(t)
+                        || "table_row_group".equals(t) || "text_table_like".equals(t)) {
                     return true;
                 }
             }

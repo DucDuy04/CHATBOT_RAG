@@ -1,7 +1,6 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
 import java.text.Normalizer;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -10,14 +9,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Generic query signal extraction for hybrid keyword search (task 23I).
- * Domain-agnostic: no file-specific or testcase hardcoding.
+ * Generic query signal extraction for hybrid keyword search.
  */
 public final class QuerySignalExtractor {
 
     private QuerySignalExtractor() {}
 
-    /** Alphanumeric identifiers (mixed case preserved in raw form). */
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(
             "\\b([A-Za-z]{1,8}[0-9][A-Za-z0-9\\-]{1,20}|[0-9]{2,}[A-Za-z][A-Za-z0-9\\-]{0,20}|[A-Z]{2,}[0-9]{2,}[A-Za-z0-9\\-]*)\\b");
 
@@ -28,17 +25,8 @@ public final class QuerySignalExtractor {
     private static final Pattern DATE_DM = Pattern.compile(
             "\\b(\\d{1,2}[/.\\-]\\d{1,2})\\b");
 
-    /** Structured labels: Nhóm N, HK N, Lớp N, Phòng X, Điều/Mục/Section/Chapter N. */
-    private static final Pattern STRUCTURED_LABEL = Pattern.compile(
-            "(?i)\\b(nhom|nhóm|group|lop|lớp|class|hk|hoc\\s*ky|học\\s*kỳ|ky|kỳ|phong|phòng|room|dieu|điều|muc|mục|section|chapter|chuong|chương)\\s*[#:]?\\s*(\\d+[a-zA-Z]?|[A-Za-z]\\d+)\\b");
-
     private static final Pattern NUMERIC_TOKEN = Pattern.compile(
             "\\b\\d{1,4}(?:[.,]\\d+)?%?\\b");
-
-    private static final Set<String> MINIMAL_FUNCTION_WORDS = Set.of(
-            "la", "là", "va", "và", "cua", "của", "the", "is", "are", "what", "when", "where", "how",
-            "cho", "với", "trong", "từ", "den", "đến", "ngay", "ngày", "khi", "nào", "gì", "bao", "nhiêu"
-    );
 
     public record QuerySignals(
             List<String> identifiers,
@@ -72,8 +60,8 @@ public final class QuerySignalExtractor {
         }
         String n = Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}", "")
-                .replace('đ', 'd')
-                .replace('Đ', 'D')
+                .replace('\u0111', 'd')
+                .replace('\u0110', 'D')
                 .toLowerCase(Locale.ROOT);
         return n.replaceAll("[\\p{Punct}&&[^/.\\-]]+", " ")
                 .replaceAll("\\s+", " ")
@@ -108,7 +96,7 @@ public final class QuerySignalExtractor {
         Matcher m = NUMERIC_TOKEN.matcher(normalized);
         while (m.find()) {
             String n = m.group().trim();
-            if (n.length() >= 1) {
+            if (!n.isBlank()) {
                 nums.add(n);
             }
         }
@@ -117,11 +105,53 @@ public final class QuerySignalExtractor {
 
     private static List<String> extractStructuredLabels(String raw) {
         Set<String> labels = new LinkedHashSet<>();
-        Matcher m = STRUCTURED_LABEL.matcher(raw);
-        while (m.find()) {
-            labels.add((m.group(1) + " " + m.group(2)).trim());
+        String normalized = normalize(raw);
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        String[] tokens = normalized.split("\\s+");
+        for (int i = 1; i < tokens.length; i++) {
+            String value = stripGenericSeparator(tokens[i]);
+            if (!isStructuredValueToken(value)) {
+                continue;
+            }
+            for (int width = 1; width <= Math.min(3, i); width++) {
+                int start = i - width;
+                StringBuilder prefix = new StringBuilder();
+                for (int j = start; j < i; j++) {
+                    String token = stripGenericSeparator(tokens[j]);
+                    if (token.isBlank() || isStructuredValueToken(token)) {
+                        prefix.setLength(0);
+                        break;
+                    }
+                    if (!prefix.isEmpty()) {
+                        prefix.append(' ');
+                    }
+                    prefix.append(token);
+                }
+                if (!prefix.isEmpty()) {
+                    labels.add(prefix + " " + value);
+                }
+            }
         }
         return List.copyOf(labels);
+    }
+
+    static boolean isStructuredValueToken(String token) {
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        String t = stripGenericSeparator(token);
+        return t.matches("\\d{1,4}[a-z]?")
+                || t.matches("[a-z]\\d{1,4}[a-z0-9]{0,6}")
+                || t.matches("[a-z]{1,8}\\d[a-z0-9\\-]{1,12}");
+    }
+
+    private static String stripGenericSeparator(String token) {
+        if (token == null) {
+            return "";
+        }
+        return token.replaceAll("^[#:/\\-.]+|[#:/\\-.]+$", "").trim();
     }
 
     static List<String> buildNgrams(String normalized, int minGram, int maxGram) {
@@ -155,13 +185,10 @@ public final class QuerySignalExtractor {
         if (normalized.isBlank()) {
             return List.of();
         }
-        List<String> tokens = new ArrayList<>();
+        List<String> tokens = new java.util.ArrayList<>();
         for (String t : normalized.split("\\s+")) {
             String term = t.trim();
             if (term.length() < 2) {
-                continue;
-            }
-            if (MINIMAL_FUNCTION_WORDS.contains(term)) {
                 continue;
             }
             tokens.add(term);

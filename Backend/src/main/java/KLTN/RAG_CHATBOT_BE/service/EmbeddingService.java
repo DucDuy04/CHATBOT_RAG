@@ -81,6 +81,15 @@ public class EmbeddingService {
                 metadata.put("table_id", chunk.getTableId());
             }
 
+            if ("normalized_table_row".equalsIgnoreCase(safeString(chunk.getChunkType()))) {
+                putIfPresent(metadata, "table_name", chunk.getTableName());
+                if (chunk.getRowIndex() != null) {
+                    metadata.put("row_index", chunk.getRowIndex());
+                }
+                putIfPresent(metadata, "cells_json", chunk.getCellsJson());
+                putIfPresent(metadata, "group_context", chunk.getGroupContext());
+            }
+
             if (chunk.getPrevChunk() != null && chunk.getPrevChunk().getId() != null) {
                 metadata.put("prev_chunk_id", chunk.getPrevChunk().getId().toString());
             }
@@ -218,5 +227,11 @@ public class EmbeddingService {
 
     private int safeInt(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    private static void putIfPresent(Metadata metadata, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            metadata.put(key, value);
+        }
     }
 }

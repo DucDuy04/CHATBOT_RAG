@@ -12,6 +12,8 @@ import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import KLTN.RAG_CHATBOT_BE.dto.TokenUsageDto;
 import KLTN.RAG_CHATBOT_BE.service.QueryAnalyzerService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -95,6 +97,7 @@ public class ChatService {
     private static final Pattern FACTUAL_POLICY_CODE = Pattern.compile("\\b[A-Z][A-Z0-9]*-\\d+\\b");
 
     private static final Pattern NUMBERED_LIST_ITEM = Pattern.compile("(?m)^\\s*\\d+\\.\\s+\\S");
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final PromptBuilderService promptBuilderService;
     private final OpenAiChatModel chatModel;
@@ -208,7 +211,7 @@ public class ChatService {
     }
 
     public SseEmitter chatStream(ChatRequest request, UUID widgetId) {
-        SseEmitter emitter = new SseEmitter(180_000L);
+        SseEmitter emitter = new SseEmitter(600_000L);
         String question = request.getMessage();
 
         ChatSession session = getOrCreateSession(request.getSessionId(), widgetId);
@@ -821,13 +824,60 @@ public class ChatService {
     }
 
     private ChatResponse.SourceDto toSourceDto(RetrievedContext ctx) {
+        Map<String, String> rawCells = parseCellsJson(ctx.getCellsJson());
+        Map<String, String> displayCells = TableHeaderDisplayCleaner.cleanCellsForDisplay(rawCells);
+        String chunkText = ctx.getContent();
+        String rawChunkText = null;
+        if ("normalized_table_row".equals(ctx.getChunkType()) && !displayCells.isEmpty()) {
+            chunkText = buildDisplayChunkText(ctx.getContent(), displayCells);
+            rawChunkText = ctx.getContent();
+        }
         return ChatResponse.SourceDto.builder()
                 .fileName(ctx.getFileName())
                 .sectionTitle(ctx.getSectionTitle())
                 .pages(buildPageRange(ctx.getPageStart(), ctx.getPageEnd()))
                 .chunkType(ctx.getChunkType())
-                .chunkText(ctx.getContent())
+                .chunkText(chunkText)
+                .rawChunkText(rawChunkText)
+                .displayCells(displayCells.isEmpty() ? null : displayCells)
+                .rawCells(rawCells.isEmpty() ? null : rawCells)
                 .build();
+    }
+
+    private static Map<String, String> parseCellsJson(String cellsJson) {
+        if (cellsJson == null || cellsJson.isBlank() || "{}".equals(cellsJson.trim())) {
+            return Map.of();
+        }
+        try {
+            Map<String, String> parsed = JSON.readValue(
+                    cellsJson, new TypeReference<LinkedHashMap<String, String>>() {});
+            return parsed == null ? Map.of() : parsed;
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+    }
+
+    private static String buildDisplayChunkText(String originalContent, Map<String, String> displayCells) {
+        StringBuilder sb = new StringBuilder();
+        if (originalContent != null) {
+            String[] lines = originalContent.split("\\R");
+            if (lines.length > 0 && !lines[0].isBlank()) {
+                sb.append(lines[0]).append("\n");
+            }
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("Context:") || trimmed.startsWith("Trang:")) {
+                    sb.append(line).append("\n");
+                }
+            }
+        }
+        for (Map.Entry<String, String> entry : displayCells.entrySet()) {
+            if (entry.getValue() == null || entry.getValue().isBlank()) {
+                continue;
+            }
+            sb.append(entry.getKey()).append(": ").append(entry.getValue().trim()).append(".\n");
+        }
+        return sb.toString().trim();
     }
 
     private String buildPageRange(Integer pageStart, Integer pageEnd) {
@@ -872,6 +922,15 @@ public class ChatService {
                     map.put("pages", src.getPages());
                     map.put("chunkType", src.getChunkType());
                     map.put("chunkText", src.getChunkText());
+                    if (src.getRawChunkText() != null) {
+                        map.put("rawChunkText", src.getRawChunkText());
+                    }
+                    if (src.getDisplayCells() != null && !src.getDisplayCells().isEmpty()) {
+                        map.put("displayCells", src.getDisplayCells());
+                    }
+                    if (src.getRawCells() != null && !src.getRawCells().isEmpty()) {
+                        map.put("rawCells", src.getRawCells());
+                    }
                     return map;
                 })
                 .toList();
@@ -892,8 +951,17 @@ public class ChatService {
                     .append("\"sectionTitle\":\"").append(escapeJson(src.getSectionTitle())).append("\",")
                     .append("\"pages\":\"").append(escapeJson(src.getPages())).append("\",")
                     .append("\"chunkType\":\"").append(escapeJson(src.getChunkType())).append("\",")
-                    .append("\"chunkText\":\"").append(escapeJson(src.getChunkText())).append("\"")
-                    .append("}");
+                    .append("\"chunkText\":\"").append(escapeJson(src.getChunkText())).append("\"");
+            if (src.getRawChunkText() != null) {
+                sb.append(",\"rawChunkText\":\"").append(escapeJson(src.getRawChunkText())).append("\"");
+            }
+            if (src.getDisplayCells() != null && !src.getDisplayCells().isEmpty()) {
+                sb.append(",\"displayCells\":").append(stringMapToJson(src.getDisplayCells()));
+            }
+            if (src.getRawCells() != null && !src.getRawCells().isEmpty()) {
+                sb.append(",\"rawCells\":").append(stringMapToJson(src.getRawCells()));
+            }
+            sb.append("}");
 
             if (i < sources.size() - 1) {
                 sb.append(",");
@@ -901,6 +969,24 @@ public class ChatService {
         }
 
         sb.append("]");
+        return sb.toString();
+    }
+
+    private String stringMapToJson(Map<String, String> map) {
+        if (map == null || map.isEmpty()) {
+            return "{}";
+        }
+        StringBuilder sb = new StringBuilder("{");
+        int i = 0;
+        for (Map.Entry<String, String> entry : map.entrySet()) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("\"").append(escapeJson(entry.getKey())).append("\":")
+                    .append("\"").append(escapeJson(entry.getValue())).append("\"");
+            i++;
+        }
+        sb.append("}");
         return sb.toString();
     }
 

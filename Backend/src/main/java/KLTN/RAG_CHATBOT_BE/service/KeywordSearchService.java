@@ -237,10 +237,12 @@ public class KeywordSearchService {
 
         for (String label : signals.structuredLabels()) {
             String normLabel = QuerySignalExtractor.normalize(label);
-            if (haystack.contains(normLabel)) {
-                score += exactMatchBoost;
+            if (!"normalized_table_row".equals(chunk.getChunkType())) {
+                if (haystack.contains(normLabel)) {
+                    score += exactMatchBoost;
+                }
+                score += structuredLabelNumberMatch(haystack, normLabel);
             }
-            score += structuredLabelNumberMatch(haystack, normLabel);
         }
 
         for (String ngram : signals.ngrams()) {
@@ -259,36 +261,104 @@ public class KeywordSearchService {
         score += chunkTypeBoost(chunk, signals, question);
         score += proximityBoost(haystack, signals);
         score += dateRangeIntentBoost(haystack, question);
+        score -= textTableMegaPenalty(chunk, signals, question);
+        score += cellAwareBoost(chunk, signals, question);
 
         return score;
     }
 
-    private double dateRangeIntentBoost(String haystack, String question) {
-        String q = QuerySignalExtractor.normalize(question);
-        boolean rangeIntent = (q.contains("tu") && q.contains("den"))
-                || q.contains("khi nao")
-                || (q.contains("ngay") && q.contains("nao"));
-        if (!rangeIntent) {
+    private double cellAwareBoost(DocumentChunk chunk,
+                                  QuerySignalExtractor.QuerySignals signals,
+                                  String question) {
+        if (!"normalized_table_row".equals(chunk.getChunkType())) {
             return 0.0;
         }
-        java.util.regex.Pattern rangePattern = java.util.regex.Pattern.compile(
-                "\\d{1,2}[/\\-.]\\d{1,2}[/\\-.]\\d{2,4}\\s*(den|to|-)\\s*\\d{1,2}");
-        return rangePattern.matcher(haystack).find() ? exactMatchBoost * 1.5 : 0.0;
+        CellAwareTableRowScorer.CellAwareScore cellScore =
+                CellAwareTableRowScorer.score(chunk, signals, question);
+        return cellScore.total();
     }
 
-    private double structuredLabelNumberMatch(String haystack, String normLabel) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+[a-z]?)").matcher(normLabel);
-        if (!m.find()) {
+    private double textTableMegaPenalty(DocumentChunk chunk,
+                                        QuerySignalExtractor.QuerySignals signals,
+                                        String question) {
+        if (!isTableLikeQuery(signals, question)) {
             return 0.0;
         }
-        String num = m.group(1);
-        String[] prefixes = {"hk", "ky", "nhom", "group", "lop", "class", "phong", "room"};
-        for (String prefix : prefixes) {
-            if (haystack.contains(prefix + num) || haystack.contains(prefix + " " + num)) {
+        String type = chunk.getChunkType() == null ? "text" : chunk.getChunkType();
+        if (!"text".equals(type)) {
+            return 0.0;
+        }
+        String content = Optional.ofNullable(chunk.getContent()).orElse("");
+        if (content.length() < 800) {
+            return 0.0;
+        }
+        if (NormalizedTableService.hasHighTableLikeDensity(content)) {
+            return tableRowBoost * 1.5;
+        }
+        return 0.0;
+    }
+
+    static boolean isTableLikeQuery(QuerySignalExtractor.QuerySignals signals, String question) {
+        if (signals == null) {
+            return false;
+        }
+        if (!signals.identifiers().isEmpty()
+                || !signals.structuredLabels().isEmpty()
+                || !signals.dates().isEmpty()) {
+            return true;
+        }
+        return signals.numbers().size() >= 2;
+    }
+
+    static boolean isTableLikeQuestion(String question) {
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        return isTableLikeQuery(signals, question);
+    }
+
+    private double dateRangeIntentBoost(String haystack, String question) {
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (signals.dates().size() >= 2) {
+            return signals.dates().stream()
+                    .filter(d -> containsIgnoreCase(haystack, d))
+                    .count() >= 2 ? exactMatchBoost * 1.5 : 0.0;
+        }
+        java.util.regex.Matcher dates = java.util.regex.Pattern.compile(
+                "\\d{1,4}[/\\-.]\\d{1,2}(?:[/\\-.]\\d{1,4})?").matcher(haystack);
+        int found = 0;
+        while (dates.find()) {
+            found++;
+            if (found >= 2) {
                 return exactMatchBoost;
             }
         }
         return 0.0;
+    }
+
+    private double structuredLabelNumberMatch(String haystack, String normLabel) {
+        CellAwareTableRowScorer.ParsedStructuredLabel label = CellAwareTableRowScorer.parseLabel(normLabel);
+        if (label == null) {
+            return 0.0;
+        }
+        String prefix = QuerySignalExtractor.normalize(label.type());
+        String value = QuerySignalExtractor.normalize(label.value());
+        String compact = prefix.replace(" ", "") + value;
+        String acronym = acronym(prefix) + value;
+        if ((haystack.contains(normLabel) && CellAwareTableRowScorer.valueMatchesBoundary(haystack, "", value))
+                || haystack.contains(compact)
+                || haystack.contains(acronym)) {
+            return exactMatchBoost;
+        }
+        return 0.0;
+    }
+
+    private String acronym(String normalizedPrefix) {
+        StringBuilder sb = new StringBuilder();
+        for (String token : normalizedPrefix.split("\\s+")) {
+            if (!token.isBlank()) {
+                sb.append(token.charAt(0));
+            }
+        }
+        return sb.toString();
     }
 
     private double rarityBoost(String term, Map<String, Double> idfByTerm) {
@@ -317,14 +387,15 @@ public class KeywordSearchService {
                                   QuerySignalExtractor.QuerySignals signals,
                                   String question) {
         String type = chunk.getChunkType() == null ? "text" : chunk.getChunkType();
-        boolean tableLikeQuery = signals.identifiers().size() > 0
-                || signals.structuredLabels().size() > 0
-                || (question != null && question.toLowerCase(Locale.ROOT).matches(".*\\b(bang|table|cell|hang|cot|row|column)\\b.*"));
+        boolean tableLikeQuery = isTableLikeQuery(signals, question);
 
+        if ("normalized_table_row".equals(type) && tableLikeQuery) {
+            return tableRowBoost * 1.8;
+        }
         if ("table_row_group".equals(type) && tableLikeQuery) {
             return tableRowBoost;
         }
-        if ("table_summary".equals(type)) {
+        if ("table_summary".equals(type) && tableLikeQuery) {
             return tableSummaryBoost;
         }
         return 0.0;

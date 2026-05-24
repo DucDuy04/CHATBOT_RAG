@@ -28,6 +28,17 @@ import KLTN.RAG_CHATBOT_BE.record.Section;
 @Service
 public class DocumentParserService {
 
+    private final NormalizedTableService normalizedTableService;
+
+    public DocumentParserService(NormalizedTableService normalizedTableService) {
+        this.normalizedTableService = normalizedTableService;
+    }
+
+    /** For unit tests without Spring context. */
+    public DocumentParserService() {
+        this(new NormalizedTableService());
+    }
+
     private static final Pattern SECTION_HEADER_PATTERN =
         // NOTE:
         // - Chỉ match dạng "2.1 Tiêu đề" ở đầu dòng.
@@ -139,13 +150,9 @@ public class DocumentParserService {
                     log.debug("[Parse] Page {}: table extraction skipped — {}", pageNum, e.getMessage());
                 }
 
-                // 3. Append text — EarlyDetect chỉ khi SpreadsheetAlgo không có usable table
-                String processedText = (usableFromSpreadsheet > 0)
-                        ? pageText
-                        : detectTablesInRawText(pageText, pageNum);
-                pageBuilder.append(cleanText(processedText)).append("\n");
-
-                // 4. Append Tabula tables vào pageBuilder
+                // 3. Extract accepted Tabula tables (markdown) — chưa ghi vào pageBuilder
+                StringBuilder acceptedMarkdownForPage = new StringBuilder();
+                List<String> tableBlocksForPage = new ArrayList<>();
                 for (Table table : tabulaTables) {
                     String headerBeforeConvert = currentHeader[0];
                     CrossPageMergeOutcome mergeOutcome = attemptCrossPageMerge(
@@ -173,11 +180,42 @@ public class DocumentParserService {
                             : tableMarkdown.replace("\n", "↵");
                     log.info("[Parse] Table ACCEPTED page={}: rows={} cols={} preview='{}'",
                             pageNum, acceptedRows, acceptedCols, acceptedPreview);
+                    tableBlocksForPage.add(tableMarkdown);
+                    acceptedMarkdownForPage.append(tableMarkdown).append("\n");
+                    lastTableHeader = currentHeader[0];
+                    lastTableHeaderPage = pageNum;
+                }
+
+                // 4. Text ngoài bảng — suppress raw overlap trước khi append
+                String processedText = (usableFromSpreadsheet > 0)
+                        ? pageText
+                        : detectTablesInRawText(pageText, pageNum);
+                if (acceptedMarkdownForPage.length() > 0) {
+                    int rawBefore = processedText == null ? 0 : processedText.length();
+                    NormalizedTableService.SuppressionProfile pageProfile =
+                            normalizedTableService.buildSuppressionProfile(acceptedMarkdownForPage.toString());
+                    NormalizedTableService.SuppressResult suppressResult =
+                            normalizedTableService.suppressRawTableText(processedText, pageProfile);
+                    processedText = suppressResult.text();
+                    if (suppressResult.suppressedRawChars() > 0) {
+                        log.info("[TableSuppress] page={} tablesOnPage={} cellValues={} rawCharsBefore={} "
+                                        + "rawCharsAfter={} suppressedRawChars={} suppressedLines={} tableLikeLinesDropped={}",
+                                pageNum,
+                                tableBlocksForPage.size(),
+                                pageProfile.cellTokens().size(),
+                                rawBefore,
+                                processedText.length(),
+                                suppressResult.suppressedRawChars(),
+                                suppressResult.suppressedLines(),
+                                suppressResult.tableLikeLinesDropped());
+                    }
+                }
+                pageBuilder.append(cleanText(processedText)).append("\n");
+
+                for (String tableMarkdown : tableBlocksForPage) {
                     pageBuilder.append("\n[TABLE_START]\n");
                     pageBuilder.append(tableMarkdown);
                     pageBuilder.append("[TABLE_END]\n");
-                    lastTableHeader = currentHeader[0];
-                    lastTableHeaderPage = pageNum;
                 }
 
                 if (!tabulaTables.isEmpty()) {
@@ -529,9 +567,8 @@ public class DocumentParserService {
 
         if (rows.isEmpty()) return "";
 
-        List<RectangularTextContainer> firstRow = rows.get(0);
-
-        if (isDataRow(firstRow)) {
+        HeaderPlan headerPlan = inferMarkdownHeader(rows);
+        if (headerPlan == null && isDataRow(rows.get(0))) {
             if (!currentHeader[0].isEmpty()) sb.append(currentHeader[0]).append("\n");
             for (List<RectangularTextContainer> row : rows) {
                 sb.append("| ");
@@ -541,26 +578,166 @@ public class DocumentParserService {
                 sb.append("\n");
             }
         } else {
-            StringBuilder headerSb = new StringBuilder("| ");
-            StringBuilder separatorSb = new StringBuilder("| ");
-
-            for (RectangularTextContainer cell : firstRow) {
-                headerSb.append(cell.getText().trim().replace("\n", " ")).append(" | ");
-                separatorSb.append("--- | ");
-            }
-
-            currentHeader[0] = headerSb.toString() + "\n" + separatorSb.toString();
+            HeaderPlan effectivePlan = headerPlan != null
+                    ? headerPlan
+                    : new HeaderPlan(toCellTexts(rows.get(0)), 1, maxColumnCount(rows));
+            currentHeader[0] = buildHeaderMarkdown(effectivePlan.headers());
             sb.append(currentHeader[0]).append("\n");
 
-            for (int i = 1; i < rows.size(); i++) {
+            for (int i = effectivePlan.dataStart(); i < rows.size(); i++) {
+                if (isAllBlankRow(rows.get(i))) {
+                    continue;
+                }
                 sb.append("| ");
-                for (RectangularTextContainer cell : rows.get(i)) {
-                    sb.append(cell.getText().trim().replace("\n", " ")).append(" | ");
+                List<String> cells = toCellTexts(rows.get(i));
+                for (int col = 0; col < effectivePlan.columnCount(); col++) {
+                    sb.append(col < cells.size() ? cells.get(col) : "").append(" | ");
                 }
                 sb.append("\n");
             }
         }
         return sb.toString();
+    }
+
+    private record HeaderPlan(List<String> headers, int dataStart, int columnCount) {}
+
+    private HeaderPlan inferMarkdownHeader(List<List<RectangularTextContainer>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        int maxCols = maxColumnCount(rows);
+        int start = 0;
+        while (start < rows.size() && isAllBlankRow(rows.get(start))) {
+            start++;
+        }
+        if (start >= rows.size()) {
+            return null;
+        }
+        List<Integer> headerIndexes = new ArrayList<>();
+        int limit = Math.min(rows.size(), start + 6);
+        for (int i = start; i < limit; i++) {
+            List<String> cells = toCellTexts(rows.get(i));
+            if (cells.stream().allMatch(String::isBlank)) {
+                continue;
+            }
+            if (isStrongDataLikeRow(cells, maxCols)) {
+                if (!headerIndexes.isEmpty()) {
+                    break;
+                }
+                return null;
+            }
+            if (isHeaderLikeRow(cells, maxCols)) {
+                headerIndexes.add(i);
+                continue;
+            }
+            if (headerIndexes.isEmpty() && nonEmptyCount(cells) >= 2) {
+                headerIndexes.add(i);
+            }
+            break;
+        }
+        if (headerIndexes.isEmpty()) {
+            return null;
+        }
+        List<String> headers = new ArrayList<>();
+        for (int col = 0; col < maxCols; col++) {
+            List<String> parts = new ArrayList<>();
+            for (Integer idx : headerIndexes) {
+                List<String> cells = toCellTexts(rows.get(idx));
+                String value = col < cells.size() ? cells.get(col).trim().replaceAll("\\s+", " ") : "";
+                if (!value.isBlank()) {
+                    parts.add(value);
+                }
+            }
+            String header = String.join(" ", parts).trim();
+            headers.add(header.isBlank() ? "col_" + (col + 1) : header);
+        }
+        int dataStart = headerIndexes.get(headerIndexes.size() - 1) + 1;
+        while (dataStart < rows.size() && isAllBlankRow(rows.get(dataStart))) {
+            dataStart++;
+        }
+        return new HeaderPlan(headers, dataStart, maxCols);
+    }
+
+    private String buildHeaderMarkdown(List<String> headers) {
+        StringBuilder headerSb = new StringBuilder("| ");
+        StringBuilder separatorSb = new StringBuilder("| ");
+        for (String header : headers) {
+            headerSb.append(header == null ? "" : header).append(" | ");
+            separatorSb.append("--- | ");
+        }
+        return headerSb + "\n" + separatorSb;
+    }
+
+    private int maxColumnCount(List<List<RectangularTextContainer>> rows) {
+        return rows == null ? 0 : rows.stream().mapToInt(List::size).max().orElse(0);
+    }
+
+    private boolean isAllBlankRow(List<RectangularTextContainer> row) {
+        return row == null || toCellTexts(row).stream().allMatch(String::isBlank);
+    }
+
+    private List<String> toCellTexts(List<RectangularTextContainer> row) {
+        List<String> cells = new ArrayList<>();
+        if (row == null) {
+            return cells;
+        }
+        for (RectangularTextContainer cell : row) {
+            String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ");
+            cells.add(text.replaceAll("\\s+", " "));
+        }
+        return cells;
+    }
+
+    private boolean isHeaderLikeRow(List<String> cells, int maxCols) {
+        int nonEmpty = nonEmptyCount(cells);
+        if (nonEmpty < 1 || isStrongDataLikeRow(cells, maxCols)) {
+            return false;
+        }
+        int numeric = numericOnlyCount(cells);
+        if (nonEmpty >= 2 && numeric < Math.max(1, nonEmpty)) {
+            return true;
+        }
+        return maxCols >= 3 && nonEmpty <= Math.max(4, maxCols / 2) && numeric <= nonEmpty / 2;
+    }
+
+    private boolean isStrongDataLikeRow(List<String> cells, int maxCols) {
+        if (cells == null || cells.isEmpty()) {
+            return false;
+        }
+        String first = cells.stream().filter(s -> s != null && !s.isBlank()).findFirst().orElse("");
+        if (first.matches("^\\d{1,4}\\s*([.|)]\\s*)?$")) {
+            return true;
+        }
+        int nonEmpty = nonEmptyCount(cells);
+        int numeric = numericOnlyCount(cells);
+        return maxCols >= 3 && nonEmpty >= 2 && numeric >= Math.max(2, nonEmpty / 2);
+    }
+
+    private int nonEmptyCount(List<String> cells) {
+        if (cells == null) {
+            return 0;
+        }
+        int count = 0;
+        for (String cell : cells) {
+            if (cell != null && !cell.isBlank()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int numericOnlyCount(List<String> cells) {
+        if (cells == null) {
+            return 0;
+        }
+        int count = 0;
+        for (String cell : cells) {
+            String text = cell == null ? "" : cell.trim();
+            if (!text.isBlank() && text.matches("^\\d+([.,]\\d+)?$")) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -662,22 +839,54 @@ public class DocumentParserService {
         }
 
         // Bảng có quá nhiều cell rỗng (>60%) → không đáng tin cậy
-        if (totalCells > 0 && (double) emptyCells / totalCells > 0.6) {
+        boolean sparseButStructured = isSparseButStructuredTable(rows, textChars, nonEmptyCells);
+        if (totalCells > 0 && (double) emptyCells / totalCells > 0.6 && !sparseButStructured) {
             log.debug("[Parser] Table rejected: too many empty cells ({}/{})", emptyCells, totalCells);
             return false;
         }
 
         // Kiểm tra header row: các cell header không được toàn rỗng
-        List<RectangularTextContainer> headerRow = rows.get(0);
-        long headerNonEmpty = headerRow.stream()
-                .filter(c -> c.getText() != null && !c.getText().trim().isBlank())
-                .count();
+        HeaderPlan inferredHeader = inferMarkdownHeader(rows);
+        long headerNonEmpty = inferredHeader == null ? 0
+                : inferredHeader.headers().stream().filter(h -> h != null && !h.isBlank()).count();
         if (headerNonEmpty < 2) {
-            log.debug("[Parser] Table rejected: header row has too few non-empty cells ({})", headerNonEmpty);
+            log.debug("[Parser] Table rejected: inferred header has too few non-empty cells ({})", headerNonEmpty);
             return false;
         }
 
         return nonEmptyCells >= 4 && textChars >= 40;
+    }
+
+    private boolean isSparseButStructuredTable(
+            List<List<RectangularTextContainer>> rows,
+            int textChars,
+            int nonEmptyCells
+    ) {
+        if (rows == null || rows.size() < 3 || textChars < 40 || nonEmptyCells < 4) {
+            return false;
+        }
+        int maxCols = maxColumnCount(rows);
+        if (maxCols < 3) {
+            return false;
+        }
+        HeaderPlan header = inferMarkdownHeader(rows);
+        if (header == null || header.dataStart() >= rows.size()) {
+            return false;
+        }
+        int substantiveRows = 0;
+        int dataLikeRows = 0;
+        for (int i = header.dataStart(); i < rows.size(); i++) {
+            List<String> cells = toCellTexts(rows.get(i));
+            int nonEmpty = nonEmptyCount(cells);
+            if (nonEmpty == 0) {
+                continue;
+            }
+            substantiveRows++;
+            if (isStrongDataLikeRow(cells, maxCols) || nonEmpty >= 2) {
+                dataLikeRows++;
+            }
+        }
+        return substantiveRows >= 2 && dataLikeRows >= Math.max(2, substantiveRows / 2);
     }
 
     private boolean isDataRow(List<RectangularTextContainer> row) {

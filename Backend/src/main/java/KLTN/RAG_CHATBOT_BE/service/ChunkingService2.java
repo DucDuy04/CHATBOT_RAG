@@ -2,6 +2,7 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.record.DocumentChunk;
 import KLTN.RAG_CHATBOT_BE.record.Section;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -12,13 +13,21 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class ChunkingService2 {
+
+    private final NormalizedTableService normalizedTableService;
+
+    /** Unit tests without Spring. */
+    public ChunkingService2() {
+        this(new NormalizedTableService());
+    }
+
+    private final TableIngestMetrics lastIngestMetrics = new TableIngestMetrics();
 
     private static final int MAX_CHARS_PER_TEXT_CHUNK = 2200;
     private static final int OVERLAP_CHARS = 250;
-    private static final int TABLE_ROWS_PER_GROUP = 10;
     private static final int SECTION_SUMMARY_THRESHOLD = MAX_CHARS_PER_TEXT_CHUNK * 2;
-    private static final int TABLE_SUMMARY_PREVIEW_ROWS = 5;
     // Số cột tối thiểu để coi một dòng là "dạng bảng" (pseudo-table)
     private static final int PSEUDO_TABLE_MIN_COLS = 3;
     // Số dòng tối thiểu liên tiếp để coi là một pseudo-table
@@ -31,10 +40,16 @@ public class ChunkingService2 {
     // PUBLIC ENTRY POINT
     // ===================================================================
 
+    public TableIngestMetrics getLastIngestMetrics() {
+        return lastIngestMetrics;
+    }
+
     public List<DocumentChunk> processSections2(List<Section> sections) {
         if (sections == null || sections.isEmpty()) {
             return List.of();
         }
+
+        lastIngestMetrics.reset();
 
         // Phase 0: Pre-compute parent-child relationships từ danh sách sections
         Map<String, List<Section>> parentToDirectChildren = buildParentChildMap(sections);
@@ -94,21 +109,16 @@ public class ChunkingService2 {
                         && (beforeDetect == null || !beforeDetect.contains("[TABLE_START]"));
                 if (pseudoTableFound) {
                     log.info("[Chunk] Pseudo-table detected in section '{}' (id={}) — " +
-                            "content converted to table chunks.", sectionId, sectionId);
-                } else {
-                    // No explicit table and pseudo-table detection also failed.
-                    // Check if section content looks table-like but didn't meet the threshold.
-                    boolean looksTableLike = isLikelyTableLikeContent(enrichedContent);
-                    if (looksTableLike) {
-                        log.info("[Chunk] Section '{}' LOOKS table-like but pseudo-table detection " +
-                                "threshold not met — will be stored as 'text_table_like' chunk type.",
-                                sectionId);
-                    }
+                            "content converted to normalized table chunks.", sectionId, sectionId);
                 }
             }
 
             List<String> segments = splitByTableBlocks(enrichedContent);
+            LogicalTableState logicalTableState = null;
+            int tableIndexInSection = 0;
             int contentChunksThisSection = 0;
+            NormalizedTableService.SuppressionProfile sectionSuppressProfile =
+                    buildSectionSuppressionProfile(segments, section);
 
             // Section summary (cho section dài có nhiều text)
             List<String> textSegments = segments.stream()
@@ -131,36 +141,48 @@ public class ChunkingService2 {
                 if (segment.startsWith("[TABLE_START]")) {
                     String tableContent = segment
                             .replace("[TABLE_START]", "").replace("[TABLE_END]", "").trim();
-                    if (tableContent.isBlank()) continue;
-
-                    String tableId = "tbl_" + sectionIndex + "_" + globalOrder;
-                    finalChunks.add(createEnrichedChunk(
-                            buildTableSummary(section.header(), tableContent), section, "table_summary",
-                            sectionId, parentId, tableId, headingPathText,
-                            globalOrder, sectionOrder, headingLevel));
-                    globalOrder++;
-                    contentChunksThisSection++;
-
-                    for (String tableGroup : splitMarkdownTableRows(tableContent, TABLE_ROWS_PER_GROUP)) {
-                        finalChunks.add(createEnrichedChunk(
-                                tableGroup, section, "table_row_group",
-                                sectionId, parentId, tableId, headingPathText,
-                                globalOrder, sectionOrder, headingLevel));
-                        globalOrder++;
-                        contentChunksThisSection++;
+                    if (tableContent.isBlank()) {
+                        continue;
                     }
+                    lastIngestMetrics.incDetectedTables();
+                    String tableId = "tbl_" + sectionIndex + "_" + globalOrder;
+                    int[] orderHolder = { globalOrder, contentChunksThisSection };
+                    logicalTableState = processNormalizedTable(
+                            tableContent,
+                            section,
+                            sectionId,
+                            parentId,
+                            tableId,
+                            headingPathText,
+                            sectionOrder,
+                            headingLevel,
+                            tableIndexInSection,
+                            logicalTableState,
+                            finalChunks,
+                            orderHolder);
+                    globalOrder = orderHolder[0];
+                    contentChunksThisSection = orderHolder[1];
+                    tableIndexInSection++;
                 } else {
-                    // Determine effective chunk type: use "text_table_like" when content
-                    // has table-like layout but no proper markdown table could be built.
-                    String textChunkType = (!hadExplicitTable && isLikelyTableLikeContent(segment))
-                            ? "text_table_like" : "text";
-                    for (String textChunk : chunkPlainText(segment)) {
+                    String stripped = stripResidualTableLines(segment);
+                    stripped = applySectionSuppression(stripped, sectionSuppressProfile);
+                    for (String textChunk : chunkPlainText(stripped)) {
+                        if (normalizedTableService.shouldDropLeakyTextChunk(textChunk, sectionSuppressProfile)) {
+                            lastIngestMetrics.incDroppedLeakyTextChunks();
+                            log.debug("[Chunk] Dropped leaky text chunk in section={} len={}",
+                                    sectionId, textChunk.length());
+                            continue;
+                        }
+                        if (textChunk.isBlank()) {
+                            continue;
+                        }
                         finalChunks.add(createEnrichedChunk(
-                                textChunk, section, textChunkType,
+                                textChunk, section, "text",
                                 sectionId, parentId, null, headingPathText,
                                 globalOrder, sectionOrder, headingLevel));
                         globalOrder++;
                         contentChunksThisSection++;
+                        lastIngestMetrics.incTextChunks();
                     }
                 }
             }
@@ -188,15 +210,179 @@ public class ChunkingService2 {
         long parentSummaryCount = finalChunks.stream()
                 .filter(c -> "parent_section_summary".equals(c.chunkType())).count();
 
+        lastIngestMetrics.tallyFromChunks(finalChunks);
+
         log.info("[Chunk] processSections2 done: sections={} totalChunks={} " +
-                "parentSummaries={} sectionSummaries={} tableSummaries={} tableRowGroups={} text={}",
+                "parentSummaries={} sectionSummaries={} tableSummaries={} normalizedRows={} text={} " +
+                "detectedTables={} normalizedTables={} failedTables={} suppressedRawChars={} " +
+                "suppressedLines={} tableLikeLinesDropped={} droppedLeakyTextChunks={} " +
+                "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
+                "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
+                "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={}",
                 sections.size(), finalChunks.size(), parentSummaryCount,
                 finalChunks.stream().filter(c -> "section_summary".equals(c.chunkType())).count(),
                 finalChunks.stream().filter(c -> "table_summary".equals(c.chunkType())).count(),
-                finalChunks.stream().filter(c -> "table_row_group".equals(c.chunkType())).count(),
-                finalChunks.stream().filter(c -> "text".equals(c.chunkType())).count());
+                finalChunks.stream().filter(c -> "normalized_table_row".equals(c.chunkType())).count(),
+                finalChunks.stream().filter(c -> "text".equals(c.chunkType())).count(),
+                lastIngestMetrics.getDetectedTables(),
+                lastIngestMetrics.getNormalizedTables(),
+                lastIngestMetrics.getFailedTables(),
+                lastIngestMetrics.getSuppressedRawTableTextChars(),
+                lastIngestMetrics.getSuppressedLines(),
+                lastIngestMetrics.getTableLikeLinesDropped(),
+                lastIngestMetrics.getDroppedLeakyTextChunks(),
+                lastIngestMetrics.getRowsWithCellsJson(),
+                lastIngestMetrics.getRowsWithOnlyOneNonEmptyCell(),
+                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getRowsWithEmptyCellsRatio()),
+                lastIngestMetrics.getRowsWithGenericColumnKeys(),
+                lastIngestMetrics.getContinuationRowsMerged(),
+                lastIngestMetrics.getMultiRowHeadersMerged(),
+                lastIngestMetrics.getCrossPageHeaderCarryCount(),
+                lastIngestMetrics.getSparseRowsRepaired(),
+                lastIngestMetrics.getDroppedCellFragments());
 
         return finalChunks;
+    }
+
+    private NormalizedTableService.SuppressionProfile buildSectionSuppressionProfile(
+            List<String> segments,
+            Section section
+    ) {
+        NormalizedTableService.SuppressionProfile profile =
+                NormalizedTableService.SuppressionProfile.empty();
+        LogicalTableState state = null;
+        int tableIndex = 0;
+        for (String segment : segments) {
+            if (!segment.startsWith("[TABLE_START]")) {
+                continue;
+            }
+            String tableContent = segment
+                    .replace("[TABLE_START]", "").replace("[TABLE_END]", "").trim();
+            if (tableContent.isBlank()) {
+                continue;
+            }
+            NormalizedTableService.NormalizationRequest request =
+                    new NormalizedTableService.NormalizationRequest(
+                            tableContent,
+                            section.header(),
+                            null,
+                            section.startPage(),
+                            section.endPage(),
+                            tableIndex,
+                            state);
+            NormalizedTableService.NormalizationResult result = normalizedTableService.normalize(request);
+            if (result.success()) {
+                profile = profile.merge(normalizedTableService.buildSuppressionProfile(result));
+                state = result.updatedState();
+            }
+            tableIndex++;
+        }
+        return profile;
+    }
+
+    private LogicalTableState processNormalizedTable(
+            String tableMarkdown,
+            Section section,
+            String sectionId,
+            String parentId,
+            String tableId,
+            String headingPathText,
+            int sectionOrder,
+            int headingLevel,
+            int tableIndexInSection,
+            LogicalTableState continuationState,
+            List<DocumentChunk> finalChunks,
+            int[] orderCountAndProfile
+    ) {
+        NormalizedTableService.NormalizationRequest request =
+                new NormalizedTableService.NormalizationRequest(
+                        tableMarkdown,
+                        section.header(),
+                        null,
+                        section.startPage(),
+                        section.endPage(),
+                        tableIndexInSection,
+                        continuationState);
+
+        NormalizedTableService.NormalizationResult result = normalizedTableService.normalize(request);
+        if (!result.success()) {
+            lastIngestMetrics.incFailedTables();
+            log.warn("[Chunk] Table normalization FAILED section='{}' tableId={} reason={}",
+                    sectionId, tableId, result.failureReason());
+            return continuationState;
+        }
+
+        lastIngestMetrics.incNormalizedTables();
+        lastIngestMetrics.addNormalizedRows(result.rows().size());
+        lastIngestMetrics.addQualityStats(result.stats());
+
+        finalChunks.add(createTableSummaryChunk(
+                result.tableSummaryContent(),
+                section,
+                sectionId,
+                parentId,
+                tableId,
+                headingPathText,
+                orderCountAndProfile[0],
+                sectionOrder,
+                headingLevel,
+                result.tableName()));
+        orderCountAndProfile[0]++;
+        orderCountAndProfile[1]++;
+        lastIngestMetrics.incTableSummaries();
+
+        for (NormalizedTableRow row : result.rows()) {
+            finalChunks.add(createNormalizedRowChunk(
+                    row,
+                    section,
+                    sectionId,
+                    parentId,
+                    tableId,
+                    headingPathText,
+                    orderCountAndProfile[0],
+                    sectionOrder,
+                    headingLevel));
+            orderCountAndProfile[0]++;
+            orderCountAndProfile[1]++;
+            lastIngestMetrics.incNormalizedTableRowChunks();
+        }
+
+        return result.updatedState();
+    }
+
+    private String applySectionSuppression(String segment,
+                                           NormalizedTableService.SuppressionProfile profile) {
+        if (segment == null || segment.isBlank()) {
+            return "";
+        }
+        NormalizedTableService.SuppressResult result =
+                normalizedTableService.suppressRawTableText(segment, profile);
+        lastIngestMetrics.addSuppressedRawTableTextChars(result.suppressedRawChars());
+        lastIngestMetrics.addSuppressedLines(result.suppressedLines());
+        lastIngestMetrics.addTableLikeLinesDropped(result.tableLikeLinesDropped());
+        return result.text();
+    }
+
+    /** Drop markdown table lines left in text segments (raw table suppression). */
+    private String stripResidualTableLines(String segment) {
+        if (segment == null || segment.isBlank()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        long suppressed = 0;
+        int lines = 0;
+        for (String line : segment.split("\\R", -1)) {
+            String t = line.trim();
+            if (t.startsWith("|") && t.contains("|")) {
+                suppressed += line.length();
+                lines++;
+                continue;
+            }
+            sb.append(line).append("\n");
+        }
+        lastIngestMetrics.addSuppressedRawTableTextChars(suppressed);
+        lastIngestMetrics.addSuppressedLines(lines);
+        return sb.toString().trim();
     }
 
     // ===================================================================
@@ -329,11 +515,10 @@ public class ChunkingService2 {
                                 candidateBlock.size(),
                                 candidateBlock.get(0).trim().split("\\s{2,}|\t").length);
                     } else {
-                        log.info("[Chunk] Pseudo-table REJECTED: {} candidate lines → " +
-                                "failed consistency check (not enough uniform columns). " +
-                                "Section will be marked as text_table_like if pattern persists.",
+                        log.info("[Chunk] Pseudo-table REJECTED: {} candidate lines → suppressed (no fallback text).",
                                 candidateBlock.size());
-                        for (String tl : candidateBlock) result.append(tl).append("\n");
+                        lastIngestMetrics.addSuppressedRawTableTextChars(
+                                candidateBlock.stream().mapToInt(String::length).sum());
                     }
                 } else {
                     for (String tl : candidateBlock) result.append(tl).append("\n");
@@ -351,9 +536,10 @@ public class ChunkingService2 {
                 log.info("[Chunk] Pseudo-table CONVERTED (end of text): {} lines → Markdown table",
                         candidateBlock.size());
             } else {
-                log.info("[Chunk] Pseudo-table REJECTED (end of text): {} candidate lines → " +
-                        "failed consistency check.", candidateBlock.size());
-                for (String tl : candidateBlock) result.append(tl).append("\n");
+                log.info("[Chunk] Pseudo-table REJECTED (end of text): {} candidate lines → suppressed.",
+                        candidateBlock.size());
+                lastIngestMetrics.addSuppressedRawTableTextChars(
+                        candidateBlock.stream().mapToInt(String::length).sum());
             }
         } else {
             for (String tl : candidateBlock) result.append(tl).append("\n");
@@ -690,15 +876,33 @@ public class ChunkingService2 {
             String rawContent, Section section, String chunkType,
             String sectionId, String parentId, String tableId, String headingPathText,
             int orderIndex, int sectionOrder, int headingLevel, String childSectionIds) {
+        return createChunkWithChildren(
+                rawContent, section, chunkType, sectionId, parentId, tableId, headingPathText,
+                orderIndex, sectionOrder, headingLevel, childSectionIds,
+                null, null, null, null, null);
+    }
+
+    private DocumentChunk createChunkWithChildren(
+            String rawContent, Section section, String chunkType,
+            String sectionId, String parentId, String tableId, String headingPathText,
+            int orderIndex, int sectionOrder, int headingLevel, String childSectionIds,
+            String tableName, Integer rowIndex, String cellsJson, String groupContext, Integer rowPageStart) {
         String content = safeText(rawContent, "").trim();
         String safeHeading = safeText(headingPathText, safeText(section.header(), "Untitled Section"));
         int tokenEstimate = Math.max(1, content.length() / 4);
 
+        int effectiveStart = section.startPage();
+        int effectiveEnd = section.endPage();
+        if (rowPageStart != null && rowPageStart > 0) {
+            effectiveStart = rowPageStart;
+            effectiveEnd = rowPageStart;
+        }
+
         return new DocumentChunk(
                 content,
                 safeText(section.header(), "Untitled Section"),
-                section.startPage(),
-                section.endPage(),
+                effectiveStart,
+                effectiveEnd,
                 chunkType,
                 sectionId,
                 parentId,
@@ -708,8 +912,50 @@ public class ChunkingService2 {
                 tokenEstimate,
                 sectionOrder,
                 headingLevel,
-                childSectionIds
+                childSectionIds,
+                tableName,
+                rowIndex,
+                cellsJson,
+                groupContext,
+                rowPageStart
         );
+    }
+
+    private DocumentChunk createTableSummaryChunk(
+            String summaryContent,
+            Section section,
+            String sectionId,
+            String parentId,
+            String tableId,
+            String headingPathText,
+            int orderIndex,
+            int sectionOrder,
+            int headingLevel,
+            String tableName
+    ) {
+        return createChunkWithChildren(
+                summaryContent, section, "table_summary",
+                sectionId, parentId, tableId, headingPathText,
+                orderIndex, sectionOrder, headingLevel, null,
+                tableName, null, null, null, null);
+    }
+
+    private DocumentChunk createNormalizedRowChunk(
+            NormalizedTableRow row,
+            Section section,
+            String sectionId,
+            String parentId,
+            String tableId,
+            String headingPathText,
+            int orderIndex,
+            int sectionOrder,
+            int headingLevel
+    ) {
+        return createChunkWithChildren(
+                row.canonicalText(), section, "normalized_table_row",
+                sectionId, parentId, tableId, headingPathText,
+                orderIndex, sectionOrder, headingLevel, null,
+                row.tableName(), row.rowIndex(), row.cellsJson(), row.groupContext(), row.pageStart());
     }
 
     // ===================================================================
@@ -731,72 +977,6 @@ public class ChunkingService2 {
             totalAdded += take;
         }
         return sb.toString().trim();
-    }
-
-    private String buildTableSummary(String sectionTitle, String tableMarkdown) {
-        List<String> lines = tableMarkdown.lines().filter(l -> !l.isBlank()).toList();
-        if (lines.isEmpty()) {
-            return "Bảng trong section \"" + safeText(sectionTitle, "Untitled Section") + "\" (không có dữ liệu).";
-        }
-
-        int headerIdx = -1, separatorIdx = -1;
-        for (int i = 0; i < lines.size(); i++) {
-            if (lines.get(i).trim().startsWith("|")) {
-                if (headerIdx < 0) { headerIdx = i; }
-                else if (separatorIdx < 0 && lines.get(i).contains("---")) { separatorIdx = i; break; }
-            }
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("Bảng trong section \"").append(safeText(sectionTitle, "Untitled Section")).append("\".\n");
-
-        String headerLine = headerIdx >= 0 ? lines.get(headerIdx) : "";
-        if (!headerLine.isBlank()) {
-            sb.append("Các cột: ").append(headerLine).append("\n");
-            if (separatorIdx >= 0) sb.append(lines.get(separatorIdx)).append("\n");
-        }
-
-        int dataStart = separatorIdx >= 0 ? separatorIdx + 1 : (headerIdx >= 0 ? headerIdx + 1 : 0);
-        int dataCount = 0;
-        for (int i = dataStart; i < lines.size() && dataCount < TABLE_SUMMARY_PREVIEW_ROWS; i++) {
-            String line = lines.get(i).trim();
-            if (line.startsWith("|") && !line.replaceAll("[|\\-\\s]", "").isBlank()) {
-                sb.append(line).append("\n");
-                dataCount++;
-            }
-        }
-
-        int totalDataRows = (int) lines.subList(dataStart, lines.size()).stream()
-                .filter(l -> l.trim().startsWith("|") && !l.replaceAll("[|\\-\\s]", "").isBlank())
-                .count();
-        if (totalDataRows > TABLE_SUMMARY_PREVIEW_ROWS) {
-            sb.append("(... và ").append(totalDataRows - TABLE_SUMMARY_PREVIEW_ROWS)
-              .append(" dòng khác. Xem các chunk table_row_group để biết đầy đủ.)\n");
-        }
-        sb.append("\nBảng này cần được dùng khi câu hỏi yêu cầu liệt kê, tra cứu, danh sách hoặc thông tin theo hàng/cột.");
-        return sb.toString();
-    }
-
-    private List<String> splitMarkdownTableRows(String tableMarkdown, int rowsPerGroup) {
-        List<String> lines = tableMarkdown.lines().filter(l -> !l.isBlank()).toList();
-        if (lines.size() <= rowsPerGroup + 2) return List.of(tableMarkdown);
-
-        String header;
-        int dataStartIdx;
-        if (lines.size() >= 2 && lines.get(1).contains("---")) {
-            header = lines.get(0) + "\n" + lines.get(1);
-            dataStartIdx = 2;
-        } else {
-            header = lines.get(0);
-            dataStartIdx = 1;
-        }
-
-        List<String> groups = new ArrayList<>();
-        for (int i = dataStartIdx; i < lines.size(); i += rowsPerGroup) {
-            int end = Math.min(i + rowsPerGroup, lines.size());
-            groups.add(header + "\n" + String.join("\n", lines.subList(i, end)));
-        }
-        return groups;
     }
 
     // ===================================================================

@@ -63,6 +63,7 @@ public class RagRetrievalService {
     // --- Giới hạn expansion theo section ---
     private static final int SECTION_EXPANSION_MAX_CHUNKS = 12;
     private static final int SECTION_EXPANSION_MAX_CHUNKS_EXPANDED = 30;
+    private static final int TABLE_QUERY_SCORING_CANDIDATE_LIMIT = 240;
 
     // Ngưỡng titleHits để kích hoạt heading lock
     private static final int HEADING_LOCK_MIN_TITLE_HITS = 2;
@@ -375,7 +376,10 @@ public class RagRetrievalService {
         // ── STEP 5: Rerank-guided scope lock (preliminary scoring, không cắt final top-N) ──
         boolean isLockedScope = !lockedSectionIds.isEmpty();
         List<DocumentChunk> dedupedForLock = dedupeCandidates(expanded);
-        if (!isLockedScope && rerankService.isEnabled() && !dedupedForLock.isEmpty()) {
+        boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
+                && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
+                && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
+        if (allowRerankScopeLock && !isLockedScope && rerankService.isEnabled() && !dedupedForLock.isEmpty()) {
             List<ScoredChunk> preliminaryScores = scoreCandidatesForSelection(
                     question, dedupedForLock, anchorChunkIds, "RERANK_SERVICE", keywordScoresByChunkId);
             if (!preliminaryScores.isEmpty()) {
@@ -386,9 +390,6 @@ public class RagRetrievalService {
                             RerankService.LOW_CONFIDENCE_THRESHOLD, question);
                 }
 
-                boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
-                        && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
-                        && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
                 if (allowRerankScopeLock && maxScore >= RERANK_LOCK_THRESHOLD) {
                     DocumentChunk topChunk = preliminaryScores.get(0).chunk();
                     String topSectionId = topChunk.getSectionId();
@@ -424,6 +425,14 @@ public class RagRetrievalService {
         }
 
         List<DocumentChunk> dedupedPreScore = dedupeCandidates(expanded);
+        List<DocumentChunk> boundedPreScore = boundCandidatesBeforeScoring(
+                dedupedPreScore, question, anchorChunkIds, keywordScoresByChunkId, finalContextTopN);
+        if (boundedPreScore.size() < dedupedPreScore.size()) {
+            log.info("[RAG][candidates] boundedForScoring={} from={} tableQuery=true",
+                    boundedPreScore.size(), dedupedPreScore.size());
+            expanded = boundedPreScore;
+            dedupedPreScore = boundedPreScore;
+        }
         int bothSourceCount = 0;
         if (keywordSearchService.isHybridEnabled() && keywordResult != null) {
             List<KeywordSearchService.MergedCandidate> mergedPreview = KeywordSearchService.mergeCandidates(
@@ -452,6 +461,67 @@ public class RagRetrievalService {
         }
 
         return new RetrievalResult(result, lockedSectionLabel);
+    }
+
+    private List<DocumentChunk> boundCandidatesBeforeScoring(
+            List<DocumentChunk> candidates,
+            String question,
+            Set<UUID> anchorChunkIds,
+            Map<UUID, Double> keywordScoresByChunkId,
+            int finalContextTopN
+    ) {
+        if (candidates == null || candidates.size() <= TABLE_QUERY_SCORING_CANDIDATE_LIMIT) {
+            return candidates == null ? List.of() : candidates;
+        }
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
+            return candidates;
+        }
+        int limit = Math.max(TABLE_QUERY_SCORING_CANDIDATE_LIMIT, finalContextTopN * 12);
+        List<ScoredChunk> ranked = new ArrayList<>();
+        for (DocumentChunk chunk : candidates) {
+            double score = 0.0;
+            if (chunk.getId() != null && anchorChunkIds != null && anchorChunkIds.contains(chunk.getId())) {
+                score += 8.0;
+            }
+            if (chunk.getId() != null && keywordScoresByChunkId != null) {
+                score += keywordScoresByChunkId.getOrDefault(chunk.getId(), 0.0) * 8.0;
+            }
+            if ("normalized_table_row".equals(chunk.getChunkType())) {
+                score += 2.0;
+                score += Math.min(8.0, CellAwareTableRowScorer.score(chunk, signals, question).total());
+            } else if ("table_summary".equals(chunk.getChunkType())) {
+                score += 0.5;
+            }
+            score += quickTermOverlapScore(chunk, signals);
+            ranked.add(new ScoredChunk(chunk, score));
+        }
+        return ranked.stream()
+                .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
+                .limit(limit)
+                .map(ScoredChunk::chunk)
+                .toList();
+    }
+
+    private double quickTermOverlapScore(DocumentChunk chunk, QuerySignalExtractor.QuerySignals signals) {
+        String haystack = KeywordSearchService.haystack(chunk);
+        double score = 0.0;
+        for (String id : signals.identifiers()) {
+            if (haystack.contains(QuerySignalExtractor.normalize(id))) {
+                score += 3.0;
+            }
+        }
+        for (String label : signals.structuredLabels()) {
+            if (haystack.contains(QuerySignalExtractor.normalize(label))) {
+                score += 2.0;
+            }
+        }
+        for (String ngram : signals.ngrams()) {
+            if (haystack.contains(ngram)) {
+                score += 0.2;
+            }
+        }
+        return score;
     }
 
     // ================================================================
@@ -822,6 +892,8 @@ public class RagRetrievalService {
         if ("section_summary".equalsIgnoreCase(chunkType)
                 || "table_summary".equalsIgnoreCase(chunkType)) {
             score += Math.min(score, 3);
+        } else if ("normalized_table_row".equalsIgnoreCase(chunkType)) {
+            score += Math.min(score, 4);
         } else if ("text".equalsIgnoreCase(chunkType)) {
             score += Math.min(score, 2);
         }
@@ -855,10 +927,12 @@ public class RagRetrievalService {
 
         List<ScoredChunk> scored = scoreCandidatesForSelection(
                 question, deduped, anchorChunkIds, null, keywordScoresByChunkId);
+        scored = demoteLeakyTextCandidates(question, scored);
         logHybridTopRanks(scored, anchorChunkIds, keywordScoresByChunkId);
 
         SelectionWithBudget selection = selectTopNByScoreWithBudget(
-                scored, finalContextTopN, maxContextChars);
+                scored, finalContextTopN, maxContextChars, question);
+        logCellAwareNormalizedRows(question, scored);
         List<DocumentChunk> ordered = sortByDocumentOrder(
                 selection.chunks(), isExpandedQuery || isLockedScope);
 
@@ -979,6 +1053,9 @@ public class RagRetrievalService {
             scored.add(new ScoredChunk(chunk, finalScore));
         }
 
+        scored = applyCellAwareScoreBoost(question, scored);
+        scored = applyTableRowPriorityAdjustments(question, scored);
+
         if (scorer == null) {
             scorer = hybrid
                     ? "HYBRID|RERANK|BM25_IDF"
@@ -994,12 +1071,19 @@ public class RagRetrievalService {
     static List<DocumentChunk> selectTopNByScore(List<ScoredChunk> scored,
                                                    int finalContextTopN,
                                                    int maxContextChars) {
-        return selectTopNByScoreWithBudget(scored, finalContextTopN, maxContextChars).chunks();
+        return selectTopNByScoreWithBudget(scored, finalContextTopN, maxContextChars, null).chunks();
     }
 
     static SelectionWithBudget selectTopNByScoreWithBudget(List<ScoredChunk> scored,
                                                            int finalContextTopN,
                                                            int maxContextChars) {
+        return selectTopNByScoreWithBudget(scored, finalContextTopN, maxContextChars, null);
+    }
+
+    static SelectionWithBudget selectTopNByScoreWithBudget(List<ScoredChunk> scored,
+                                                           int finalContextTopN,
+                                                           int maxContextChars,
+                                                           String question) {
         if (scored == null || scored.isEmpty()) {
             return new SelectionWithBudget(List.of(), false);
         }
@@ -1007,11 +1091,23 @@ public class RagRetrievalService {
         List<DocumentChunk> selected = new ArrayList<>();
         int totalChars = 0;
         boolean budgetLimited = false;
+        boolean hasNormalizedRow = false;
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        boolean tableLikeQuery = KeywordSearchService.isTableLikeQuery(signals, question);
         for (ScoredChunk sc : scored) {
             if (selected.size() >= limit) {
                 break;
             }
             DocumentChunk c = sc.chunk();
+            String chunkType = c.getChunkType() == null ? "text" : c.getChunkType();
+            if ("normalized_table_row".equals(chunkType)) {
+                hasNormalizedRow = true;
+            }
+            if (tableLikeQuery && hasNormalizedRow && "text".equals(chunkType)
+                    && NormalizedTableService.hasHighTableLikeDensity(
+                    Optional.ofNullable(c.getContent()).orElse(""))) {
+                continue;
+            }
             String content = c.getContent() == null ? "" : c.getContent();
             if (totalChars + content.length() > maxContextChars && !selected.isEmpty()) {
                 budgetLimited = true;
@@ -1026,7 +1122,257 @@ public class RagRetrievalService {
             totalChars += content.length();
             selected.add(c);
         }
+        if (tableLikeQuery && CellAwareTableRowScorer.isCompareQuery(question, signals)) {
+            selected = applyCompareLabelCoverage(selected, scored, signals, limit);
+        }
         return new SelectionWithBudget(selected, budgetLimited);
+    }
+
+    static List<DocumentChunk> applyCompareLabelCoverage(
+            List<DocumentChunk> selected,
+            List<ScoredChunk> scored,
+            QuerySignalExtractor.QuerySignals signals,
+            int limit
+    ) {
+        if (selected == null || scored == null || signals == null) {
+            return selected == null ? List.of() : selected;
+        }
+        List<CellAwareTableRowScorer.ParsedStructuredLabel> labels =
+                CellAwareTableRowScorer.parseLabels(signals.structuredLabels());
+        if (labels.size() < 2) {
+            return selected;
+        }
+        List<DocumentChunk> result = new ArrayList<>(selected);
+        Set<String> coveredLabels = new LinkedHashSet<>();
+        for (DocumentChunk c : result) {
+            if (!"normalized_table_row".equals(c.getChunkType())) {
+                continue;
+            }
+            Map<String, String> cells = CellAwareTableRowScorer.parseCells(c);
+            for (CellAwareTableRowScorer.ParsedStructuredLabel label : labels) {
+                for (Map.Entry<String, String> cell : cells.entrySet()) {
+                    if (CellAwareTableRowScorer.cellMatchesLabel(
+                            cell.getKey(), cell.getValue(), label)) {
+                        coveredLabels.add(label.raw());
+                    }
+                }
+            }
+        }
+        List<String> missing = new ArrayList<>();
+        for (CellAwareTableRowScorer.ParsedStructuredLabel label : labels) {
+            if (!coveredLabels.contains(label.raw())) {
+                missing.add(label.raw());
+            }
+        }
+        if (missing.isEmpty()) {
+            return result;
+        }
+        log.info("[RAG][compare-coverage] missingEntityCoverage labels={}", missing);
+        for (String missingLabel : missing) {
+            CellAwareTableRowScorer.ParsedStructuredLabel target = labels.stream()
+                    .filter(l -> l.raw().equals(missingLabel))
+                    .findFirst()
+                    .orElse(null);
+            if (target == null) {
+                continue;
+            }
+            Optional<ScoredChunk> best = scored.stream()
+                    .filter(sc -> "normalized_table_row".equals(sc.chunk().getChunkType()))
+                    .filter(sc -> {
+                        Map<String, String> cells = CellAwareTableRowScorer.parseCells(sc.chunk());
+                        return cells.entrySet().stream().anyMatch(e ->
+                                CellAwareTableRowScorer.cellMatchesLabel(e.getKey(), e.getValue(), target));
+                    })
+                    .max(Comparator.comparingDouble(ScoredChunk::finalScore));
+            if (best.isPresent() && result.stream().noneMatch(c -> c.getId() != null
+                    && c.getId().equals(best.get().chunk().getId()))) {
+                if (result.size() >= limit && !result.isEmpty()) {
+                    result.remove(result.size() - 1);
+                }
+                result.add(best.get().chunk());
+            }
+        }
+        List<DocumentChunk> filtered = new ArrayList<>();
+        for (DocumentChunk c : result) {
+            if (rowConflictsWithCompareLabels(c, labels)) {
+                continue;
+            }
+            filtered.add(c);
+        }
+        return filtered;
+    }
+
+    static boolean rowConflictsWithCompareLabels(
+            DocumentChunk chunk,
+            List<CellAwareTableRowScorer.ParsedStructuredLabel> labels
+    ) {
+        if (chunk == null || !"normalized_table_row".equals(chunk.getChunkType()) || labels == null) {
+            return false;
+        }
+        Map<String, String> cells = CellAwareTableRowScorer.parseCells(chunk);
+        boolean matchesAnyLabel = labels.stream().anyMatch(label -> cells.entrySet().stream()
+                .anyMatch(e -> CellAwareTableRowScorer.cellMatchesLabel(
+                        e.getKey(), e.getValue(), label)));
+        if (matchesAnyLabel) {
+            return false;
+        }
+        return labels.stream().anyMatch(label -> cells.entrySet().stream()
+                .anyMatch(e -> CellAwareTableRowScorer.cellConflictsWithLabel(
+                        e.getKey(), e.getValue(), label)));
+    }
+
+    static List<ScoredChunk> demoteLeakyTextCandidates(String question, List<ScoredChunk> scored) {
+        if (scored == null || scored.isEmpty()) {
+            return List.of();
+        }
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
+            return scored;
+        }
+        boolean hasNormalized = scored.stream()
+                .anyMatch(sc -> "normalized_table_row".equals(sc.chunk().getChunkType()));
+        if (!hasNormalized) {
+            return scored;
+        }
+        boolean hasExactRow = scored.stream()
+                .anyMatch(sc -> CellAwareTableRowScorer.hasExactCellMatch(sc.chunk(), signals));
+        List<ScoredChunk> adjusted = new ArrayList<>();
+        for (ScoredChunk sc : scored) {
+            DocumentChunk c = sc.chunk();
+            double score = sc.finalScore();
+            if ("text".equals(c.getChunkType())
+                    && NormalizedTableService.hasHighTableLikeDensity(
+                    Optional.ofNullable(c.getContent()).orElse(""))) {
+                score *= 0.2;
+            } else if (CellAwareTableRowScorer.isTableLikeSummary(c) && hasExactRow) {
+                score *= 0.35;
+            } else if ("normalized_table_row".equals(c.getChunkType())) {
+                score *= 1.12;
+            }
+            adjusted.add(new ScoredChunk(c, score));
+        }
+        return adjusted.stream()
+                .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
+                .toList();
+    }
+
+    static List<ScoredChunk> applyCellAwareScoreBoost(String question, List<ScoredChunk> scored) {
+        if (scored == null || scored.isEmpty() || question == null) {
+            return scored == null ? List.of() : scored;
+        }
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
+            return scored;
+        }
+        double maxCell = 0.0;
+        Map<UUID, CellAwareTableRowScorer.CellAwareScore> cellScores = new HashMap<>();
+        for (ScoredChunk sc : scored) {
+            if (!"normalized_table_row".equals(sc.chunk().getChunkType())) {
+                continue;
+            }
+            CellAwareTableRowScorer.CellAwareScore cs =
+                    CellAwareTableRowScorer.score(sc.chunk(), signals, question);
+            if (sc.chunk().getId() != null) {
+                cellScores.put(sc.chunk().getId(), cs);
+            }
+            maxCell = Math.max(maxCell, cs.total());
+        }
+        if (maxCell <= 0) {
+            return scored;
+        }
+        double scale = 0.25 / maxCell;
+        List<ScoredChunk> adjusted = new ArrayList<>();
+        for (ScoredChunk sc : scored) {
+            double score = sc.finalScore();
+            if (sc.chunk().getId() != null && cellScores.containsKey(sc.chunk().getId())) {
+                score += cellScores.get(sc.chunk().getId()).total() * scale;
+            }
+            adjusted.add(new ScoredChunk(sc.chunk(), score));
+        }
+        return adjusted.stream()
+                .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
+                .toList();
+    }
+
+    static List<ScoredChunk> applyTableRowPriorityAdjustments(String question, List<ScoredChunk> scored) {
+        if (scored == null || scored.isEmpty()) {
+            return List.of();
+        }
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
+            return scored;
+        }
+        boolean hasExactRow = scored.stream()
+                .anyMatch(sc -> CellAwareTableRowScorer.hasExactCellMatch(sc.chunk(), signals));
+        List<ScoredChunk> adjusted = new ArrayList<>();
+        for (ScoredChunk sc : scored) {
+            DocumentChunk c = sc.chunk();
+            double score = sc.finalScore();
+            if ("normalized_table_row".equals(c.getChunkType())) {
+                score += 0.15;
+                CellAwareTableRowScorer.CellAwareScore cs =
+                        CellAwareTableRowScorer.score(c, signals, question);
+                if (cs.total() > 0) {
+                    score += Math.min(0.35, cs.total() * 0.02);
+                }
+            } else if (CellAwareTableRowScorer.isTableLikeSummary(c) && hasExactRow) {
+                score -= 0.35;
+            } else if ("table_summary".equals(c.getChunkType()) && hasExactRow
+                    && !signals.identifiers().isEmpty()) {
+                score -= 0.15;
+            } else if ("text".equals(c.getChunkType())
+                    && NormalizedTableService.hasHighTableLikeDensity(
+                    Optional.ofNullable(c.getContent()).orElse(""))) {
+                score -= 0.25;
+            }
+            adjusted.add(new ScoredChunk(c, Math.max(0.0, score)));
+        }
+        return adjusted.stream()
+                .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
+                .toList();
+    }
+
+    private void logCellAwareNormalizedRows(String question, List<ScoredChunk> scored) {
+        if (question == null || scored == null || scored.isEmpty()) {
+            return;
+        }
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
+            return;
+        }
+        log.info("[RAG][cell-aware] signals identifiers={} labels={} ngrams={}",
+                signals.identifiers(), signals.structuredLabels(),
+                signals.ngrams().size() > 5 ? signals.ngrams().subList(0, 5) : signals.ngrams());
+        int logged = 0;
+        for (ScoredChunk sc : scored) {
+            if (!"normalized_table_row".equals(sc.chunk().getChunkType())) {
+                continue;
+            }
+            if (logged >= 10) {
+                break;
+            }
+            DocumentChunk c = sc.chunk();
+            CellAwareTableRowScorer.CellAwareScore cs =
+                    CellAwareTableRowScorer.score(c, signals, question);
+            String cellsExcerpt = Optional.ofNullable(c.getCellsJson()).orElse("");
+            if (cellsExcerpt.length() > 120) {
+                cellsExcerpt = cellsExcerpt.substring(0, 120) + "…";
+            }
+            if (cellsExcerpt.isBlank()) {
+                cellsExcerpt = CellAwareTableRowScorer.parseCells(c).toString();
+                if (cellsExcerpt.length() > 120) {
+                    cellsExcerpt = cellsExcerpt.substring(0, 120) + "…";
+                }
+            }
+            log.info("[RAG][cell-aware-top] rank={} rowIndex={} table={} cellScore={} finalScore={} cells={}",
+                    logged + 1,
+                    c.getRowIndex(),
+                    c.getTableName(),
+                    String.format("%.2f", cs.total()),
+                    String.format("%.4f", sc.finalScore()),
+                    cellsExcerpt);
+            logged++;
+        }
     }
 
     static List<DocumentChunk> sortByDocumentOrder(List<DocumentChunk> chunks, boolean prioritizeSummaries) {
@@ -1063,6 +1409,7 @@ public class RagRetrievalService {
                 .documentId(c.getDocument().getId())
                 .fileName(c.getSourceFile())
                 .content(content)
+                .cellsJson(c.getCellsJson())
                 .chunkType(c.getChunkType())
                 .sectionId(c.getSectionId())
                 .sectionTitle(c.getSectionTitle())

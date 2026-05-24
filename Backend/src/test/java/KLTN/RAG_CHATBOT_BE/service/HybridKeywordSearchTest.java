@@ -58,8 +58,8 @@ class HybridKeywordSearchTest {
     void genericGroupLabel_nhom2_beats_nhom18() {
         String query = "Lop Nhom 2 hoc o phong nao?";
         QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(query);
-        DocumentChunk chunkA = chunk("Nhom 2 phong H101 thu 3", "table_row_group");
-        DocumentChunk chunkB = chunk("Nhom 18 phong H202 thu 5", "table_row_group");
+        DocumentChunk chunkA = chunk("Nhom 2 phong H101 thu 3", "normalized_table_row");
+        DocumentChunk chunkB = chunk("Nhom 18 phong H202 thu 5", "normalized_table_row");
 
         double scoreA = score(query, signals, chunkA);
         double scoreB = score(query, signals, chunkB);
