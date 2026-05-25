@@ -60,19 +60,69 @@ public class NormalizedTableService {
             int multiRowHeadersMerged,
             int crossPageHeaderCarryCount,
             int sparseRowsRepaired,
-            int droppedCellFragments
+            int droppedCellFragments,
+            int headerSlotsCreated,
+            int headerSlotsFallbackGeneric,
+            int headerSiblingContaminationPrevented,
+            int headerAmbiguousFallbackCount,
+            double avgHeaderTokenCountBefore,
+            double avgHeaderTokenCountAfter,
+            int noisyComposedHeaderBeforeCount,
+            int noisyComposedHeaderAfterCount,
+            int compactHeaderSuspiciousCount,
+            int compactHeaderFallbackCount,
+            int spanAwareHeaderSelectedCount,
+            int multiColumnHeaderRejectedCount,
+            int headerFragmentsWithCoordinates,
+            int headerFragmentsWithoutCoordinates,
+            int valuesPreservedCount,
+            int valuesDroppedCount
     ) {
         static QualityStats empty() {
-            return new QualityStats(0, 0, 0.0, 0, 0, 0, 0, 0, 0);
+            return new QualityStats(0, 0, 0.0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
     }
 
     private record HeaderInference(
             List<String> headers,
+            HeaderAttribution attribution,
             int dataStart,
             int multiRowHeadersMerged,
             int genericColumnKeys
     ) {}
+
+    static record HeaderSlot(
+            int columnIndex,
+            String selectedHeader,
+            List<String> rawHeaderFragments,
+            double confidence,
+            boolean fallbackGeneric,
+            int selectedSourceFragmentCount,
+            boolean multiColumnRejected
+    ) {}
+
+    private record HeaderAttribution(
+            List<HeaderSlot> slots,
+            int siblingContaminationPrevented,
+            int ambiguousFallbackCount,
+            int compactSuspiciousCount,
+            int compactFallbackCount,
+            int spanAwareSelectedCount,
+            int multiColumnRejectedCount,
+            int fragmentsWithCoordinates,
+            int fragmentsWithoutCoordinates,
+            double avgTokenCountBefore,
+            double avgTokenCountAfter,
+            int noisyBeforeCount,
+            int noisyAfterCount,
+            List<String> contextualFragments
+    ) {
+        static HeaderAttribution empty() {
+            return new HeaderAttribution(List.of(), 0, 0, 0, 0, 0, 0, 0, 0,
+                    0.0, 0.0, 0, 0, List.of());
+        }
+    }
 
     private record RowMergeResult(
             List<List<String>> rows,
@@ -98,6 +148,7 @@ public class NormalizedTableService {
         int multiRowHeadersMerged = 0;
         int genericColumnKeys = 0;
         int crossPageHeaderCarryCount = 0;
+        HeaderAttribution headerAttribution = HeaderAttribution.empty();
         String groupContext = state != null ? state.groupContext() : null;
 
         int scanFrom = 0;
@@ -124,6 +175,7 @@ public class NormalizedTableService {
                 dataStart = 0;
                 inheritedHeaders = true;
                 crossPageHeaderCarryCount = 1;
+                headerAttribution = attributionFromHeaders(headers);
             }
         }
 
@@ -132,6 +184,7 @@ public class NormalizedTableService {
             if (state != null && inferred != null && headersMatch(state.originalHeaders(), inferred.headers())) {
                 headers = state.originalHeaders();
                 dataStart = inferred.dataStart();
+                headerAttribution = attributionFromHeaders(headers);
                 if (parsed.rawRows().size() > dataStart && isSeparatorRow(parsed.rawRows().get(dataStart))) {
                     dataStart++;
                 }
@@ -140,6 +193,7 @@ public class NormalizedTableService {
                 dataStart = inferred.dataStart();
                 multiRowHeadersMerged = inferred.multiRowHeadersMerged();
                 genericColumnKeys = inferred.genericColumnKeys();
+                headerAttribution = inferred.attribution();
             }
         }
 
@@ -147,6 +201,7 @@ public class NormalizedTableService {
             headers = genericHeaders(parsed.maxColumns());
             dataStart = scanFrom;
             genericColumnKeys = headers.size();
+            headerAttribution = attributionFromHeaders(headers);
         }
 
         if (headers == null || headers.size() < 2) {
@@ -165,6 +220,7 @@ public class NormalizedTableService {
         int pageStart = request.pageStart() > 0 ? request.pageStart() : 1;
         int requestPageEnd = request.pageEnd() > 0 ? request.pageEnd() : pageStart;
         int pageEnd = Math.min(requestPageEnd, pageStart + MAX_ROW_PAGE_SPAN);
+        String headerContext = joinHeaderContext(headerAttribution.contextualFragments());
 
         for (List<String> raw : workingRows) {
             if (raw == null || raw.stream().allMatch(c -> c == null || c.isBlank())) {
@@ -187,8 +243,9 @@ public class NormalizedTableService {
             }
 
             rowCounter++;
+            String rowGroupContext = effectiveGroupContext(groupContext, headerContext);
             NormalizedTableRow row = NormalizedTableRow.of(
-                    tableName, rowCounter, cells, pageStart, pageEnd, groupContext);
+                    tableName, rowCounter, cells, pageStart, pageEnd, rowGroupContext);
             outRows.add(row);
         }
 
@@ -204,9 +261,11 @@ public class NormalizedTableService {
                 multiRowHeadersMerged,
                 crossPageHeaderCarryCount,
                 mergeResult.sparseRowsRepaired(),
-                mergeResult.droppedCellFragments());
+                mergeResult.droppedCellFragments(),
+                headerAttribution);
         String summary = buildNeutralTableSummary(
-                tableName, headers, outRows.size(), pageStart, pageEnd, groupContext);
+                tableName, headers, outRows.size(), pageStart, pageEnd,
+                effectiveGroupContext(groupContext, headerContext));
         String logicalId = state != null ? state.logicalTableId()
                 : "lt_" + request.tableIndexInSection() + "_" + pageStart;
         LogicalTableState newState = new LogicalTableState(
@@ -217,7 +276,7 @@ public class NormalizedTableService {
                 headers.size(),
                 pageEnd,
                 request.sectionTitle(),
-                groupContext,
+                effectiveGroupContext(groupContext, headerContext),
                 rowCounter);
 
         return new NormalizationResult(
@@ -593,7 +652,7 @@ public class NormalizedTableService {
             while (dataStart < rows.size() && isSeparatorRow(rows.get(dataStart))) {
                 dataStart++;
             }
-            return new HeaderInference(state.originalHeaders(), dataStart, 0, 0);
+            return new HeaderInference(state.originalHeaders(), attributionFromHeaders(state.originalHeaders()), dataStart, 0, 0);
         }
         if (parsed.separatorIndex() > start) {
             List<Integer> explicitHeaderRows = new ArrayList<>();
@@ -603,14 +662,16 @@ public class NormalizedTableService {
                 }
             }
             if (!explicitHeaderRows.isEmpty()) {
-                List<String> headers = composeHeaders(rows, explicitHeaderRows, maxCols);
+                HeaderAttribution attribution = composeHeaderSlots(rows, explicitHeaderRows, maxCols);
+                List<String> headers = headersFromSlots(attribution.slots());
                 int generic = (int) headers.stream().filter(NormalizedTableService::isGenericHeader).count();
                 int dataStart = parsed.separatorIndex() + 1;
                 while (dataStart < rows.size()
                         && (isSeparatorRow(rows.get(dataStart)) || countNonEmpty(rows.get(dataStart)) == 0)) {
                     dataStart++;
                 }
-                return new HeaderInference(headers, dataStart, Math.max(0, explicitHeaderRows.size() - 1), generic);
+                return new HeaderInference(
+                        headers, attribution, dataStart, Math.max(0, explicitHeaderRows.size() - 1), generic);
             }
         }
 
@@ -641,31 +702,378 @@ public class NormalizedTableService {
             return null;
         }
 
-        List<String> headers = composeHeaders(rows, headerIndexes, maxCols);
+        HeaderAttribution attribution = composeHeaderSlots(rows, headerIndexes, maxCols);
+        List<String> headers = headersFromSlots(attribution.slots());
         int dataStart = headerIndexes.get(headerIndexes.size() - 1) + 1;
         while (dataStart < rows.size()
                 && (isSeparatorRow(rows.get(dataStart)) || countNonEmpty(rows.get(dataStart)) == 0)) {
             dataStart++;
         }
         int generic = (int) headers.stream().filter(NormalizedTableService::isGenericHeader).count();
-        return new HeaderInference(headers, dataStart, Math.max(0, headerIndexes.size() - 1), generic);
+        return new HeaderInference(headers, attribution, dataStart, Math.max(0, headerIndexes.size() - 1), generic);
     }
 
-    private static List<String> composeHeaders(List<List<String>> rows, List<Integer> headerIndexes, int maxCols) {
-        List<String> headers = new ArrayList<>();
+    private static HeaderAttribution composeHeaderSlots(List<List<String>> rows, List<Integer> headerIndexes, int maxCols) {
+        if (rows == null || headerIndexes == null || headerIndexes.isEmpty() || maxCols <= 0) {
+            return HeaderAttribution.empty();
+        }
+        List<HeaderSlot> slots = new ArrayList<>();
+        int prevented = 0;
+        int fallback = 0;
+        int beforeTokens = 0;
+        int afterTokens = 0;
+        int noisyBefore = 0;
+        int noisyAfter = 0;
+        int fragmentsWithoutCoordinates = 0;
+        Set<String> contextualFragments = new LinkedHashSet<>();
         for (int col = 0; col < maxCols; col++) {
-            LinkedHashSet<String> parts = new LinkedHashSet<>();
+            List<String> fragments = new ArrayList<>();
             for (Integer idx : headerIndexes) {
                 List<String> row = rows.get(idx);
                 String val = col < row.size() ? safe(row.get(col)).replaceAll("\\s+", " ") : "";
                 if (!val.isBlank() && !isSeparatorText(val)) {
-                    parts.add(val);
+                    fragments.add(val);
+                    fragmentsWithoutCoordinates++;
                 }
             }
-            String composed = String.join(" ", parts).trim().replaceAll("\\s+", " ");
-            headers.add(composed.isBlank() ? "col_" + (col + 1) : composed);
+            String before = String.join(" ", fragments).trim().replaceAll("\\s+", " ");
+            String selected = selectFocusedHeader(fragments, col);
+            boolean generic = isGenericHeader(selected);
+            beforeTokens += tokenCount(before);
+            afterTokens += tokenCount(selected);
+            if (isNoisyHeader(before, fragments.size())) {
+                noisyBefore++;
+            }
+            if (isNoisyHeader(selected, 1)) {
+                noisyAfter++;
+            }
+            if (fragments.size() > 1 && !selected.equals(before) && !generic) {
+                prevented++;
+            }
+            if (generic) {
+                fallback++;
+                fragments.stream()
+                    .filter(NormalizedTableService::looksLikeContextualHeaderFragment)
+                    .forEach(contextualFragments::add);
+            }
+            slots.add(new HeaderSlot(
+                    col,
+                    selected,
+                    List.copyOf(fragments),
+                    generic ? 0.35 : fragments.size() > 1 ? 0.85 : 0.95,
+                    generic,
+                    selectedSourceFragmentCount(selected, fragments),
+                    false));
         }
-        return disambiguateHeaders(headers);
+        SpanAlignmentResult spanResult = applySpanAwareFallbacks(slots);
+        List<HeaderSlot> uniqueSlots = disambiguateSlots(spanResult.slots());
+        int n = Math.max(1, maxCols);
+        return new HeaderAttribution(
+                uniqueSlots,
+                prevented,
+                fallback + spanResult.compactFallbackCount(),
+                spanResult.compactSuspiciousCount(),
+                spanResult.compactFallbackCount(),
+                0,
+                spanResult.multiColumnRejectedCount(),
+                0,
+                fragmentsWithoutCoordinates,
+                (double) beforeTokens / n,
+                (double) uniqueSlots.stream().mapToInt(s -> tokenCount(s.selectedHeader())).sum() / n,
+                noisyBefore,
+                (int) uniqueSlots.stream().filter(s -> isNoisyHeader(s.selectedHeader(), 1)).count(),
+                List.copyOf(contextualFragments));
+    }
+
+    private record SpanAlignmentResult(
+            List<HeaderSlot> slots,
+            int compactSuspiciousCount,
+            int compactFallbackCount,
+            int multiColumnRejectedCount
+    ) {}
+
+    private static SpanAlignmentResult applySpanAwareFallbacks(List<HeaderSlot> slots) {
+        if (slots == null || slots.isEmpty()) {
+            return new SpanAlignmentResult(List.of(), 0, 0, 0);
+        }
+        List<Integer> tokenCounts = slots.stream()
+                .map(HeaderSlot::selectedHeader)
+                .filter(h -> !isGenericHeader(h))
+                .map(NormalizedTableService::tokenCount)
+                .sorted()
+                .toList();
+        double median = tokenCounts.isEmpty() ? 0.0 : tokenCounts.get(tokenCounts.size() / 2);
+        List<HeaderSlot> out = new ArrayList<>();
+        int suspicious = 0;
+        int fallback = 0;
+        int rejected = 0;
+        for (HeaderSlot slot : slots) {
+            boolean compactSuspicious = isCompactMultiColumnCandidate(slot, slots, median);
+            if (compactSuspicious) {
+                suspicious++;
+                fallback++;
+                rejected++;
+                out.add(new HeaderSlot(
+                        slot.columnIndex(),
+                        "col_" + (slot.columnIndex() + 1),
+                        slot.rawHeaderFragments(),
+                        0.30,
+                        true,
+                        slot.selectedSourceFragmentCount(),
+                        true));
+            } else {
+                out.add(slot);
+            }
+        }
+        return new SpanAlignmentResult(List.copyOf(out), suspicious, fallback, rejected);
+    }
+
+    private static boolean isCompactMultiColumnCandidate(HeaderSlot slot, List<HeaderSlot> allSlots, double medianTokenCount) {
+        if (slot == null || isGenericHeader(slot.selectedHeader())) {
+            return false;
+        }
+        String header = safe(slot.selectedHeader());
+        int tokens = tokenCount(header);
+        if (tokens < 2) {
+            return false;
+        }
+        boolean containsOtherHeader = false;
+        boolean overlapsOtherHeader = false;
+        boolean duplicateAdjacent = false;
+        List<String> candidateTokens = normalizedTokens(header);
+        for (HeaderSlot other : allSlots) {
+            if (other == null || other.columnIndex() == slot.columnIndex() || isGenericHeader(other.selectedHeader())) {
+                continue;
+            }
+            String otherHeader = safe(other.selectedHeader());
+            if (normalizeForMatch(header).equals(normalizeForMatch(otherHeader))) {
+                duplicateAdjacent = Math.abs(other.columnIndex() - slot.columnIndex()) == 1;
+                continue;
+            }
+            if (tokenSubsequenceContains(header, otherHeader) && tokenCount(otherHeader) < tokens) {
+                containsOtherHeader = true;
+                break;
+            }
+            List<String> otherTokens = normalizedTokens(otherHeader);
+            if (tokens >= 2 && otherTokens.size() >= 2 && sharesHeaderToken(candidateTokens, otherTokens)) {
+                overlapsOtherHeader = true;
+            }
+        }
+        if (duplicateAdjacent) {
+            return true;
+        }
+        if (containsOtherHeader) {
+            return true;
+        }
+        if (overlapsOtherHeader) {
+            return true;
+        }
+        if (tokens >= 2 && hasDataLikeHeaderToken(header)) {
+            return true;
+        }
+        return medianTokenCount > 0.0 && tokens >= Math.max(4, Math.ceil(medianTokenCount * 2.0))
+                && slot.selectedSourceFragmentCount() > 1;
+    }
+
+    private static boolean sharesHeaderToken(List<String> left, List<String> right) {
+        if (left == null || right == null || left.isEmpty() || right.isEmpty()) {
+            return false;
+        }
+        Set<String> rightSet = new HashSet<>(right);
+        for (String token : left) {
+            if (token.length() >= 2 && rightSet.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasDataLikeHeaderToken(String header) {
+        for (String token : safe(header).split("\\s+")) {
+            String normalized = normalizeForMatch(token);
+            if (normalized.matches("\\d+")
+                    || normalized.matches("\\d+[-/.]\\d+")
+                    || normalized.matches("\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4}")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int selectedSourceFragmentCount(String selected, List<String> fragments) {
+        if (selected == null || fragments == null || fragments.isEmpty()) {
+            return 0;
+        }
+        String normalizedSelected = normalizeForMatch(selected);
+        int count = 0;
+        for (String fragment : fragments) {
+            String cleaned = cleanSameColumnHeader(fragment);
+            if (normalizeForMatch(cleaned).equals(normalizedSelected)) {
+                count++;
+            }
+        }
+        return Math.max(1, count);
+    }
+
+    private static boolean tokenSubsequenceContains(String container, String contained) {
+        List<String> haystack = normalizedTokens(container);
+        List<String> needle = normalizedTokens(contained);
+        if (haystack.isEmpty() || needle.isEmpty() || needle.size() >= haystack.size()) {
+            return false;
+        }
+        for (int i = 0; i <= haystack.size() - needle.size(); i++) {
+            boolean match = true;
+            for (int j = 0; j < needle.size(); j++) {
+                if (!haystack.get(i + j).equals(needle.get(j))) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<String> normalizedTokens(String text) {
+        String normalized = normalizeForMatch(text);
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        return List.of(normalized.split("\\s+"));
+    }
+
+    private static List<String> headersFromSlots(List<HeaderSlot> slots) {
+        if (slots == null || slots.isEmpty()) {
+            return List.of();
+        }
+        return slots.stream().map(HeaderSlot::selectedHeader).toList();
+    }
+
+    private static String selectFocusedHeader(List<String> fragments, int columnIndex) {
+        if (fragments == null || fragments.isEmpty()) {
+            return "col_" + (columnIndex + 1);
+        }
+        for (int i = fragments.size() - 1; i >= 0; i--) {
+            String candidate = cleanSameColumnHeader(fragments.get(i));
+            if (!candidate.isBlank() && !isSeparatorText(candidate)) {
+                if (isAmbiguousSingleColumnHeader(candidate)) {
+                    return "col_" + (columnIndex + 1);
+                }
+                return candidate;
+            }
+        }
+        return "col_" + (columnIndex + 1);
+    }
+
+    private static String cleanSameColumnHeader(String header) {
+        if (header == null || header.isBlank()) {
+            return "";
+        }
+        List<String> tokens = new ArrayList<>(List.of(header.trim().replaceAll("\\s+", " ").split(" ")));
+        tokens = removeAdjacentDuplicateHeaderTokens(tokens);
+        tokens = removeRepeatedHeaderHalves(tokens);
+        return String.join(" ", tokens).trim();
+    }
+
+    private static boolean isAmbiguousSingleColumnHeader(String header) {
+        if (header == null || header.isBlank() || isGenericHeader(header)) {
+            return true;
+        }
+        List<String> tokens = List.of(header.trim().replaceAll("\\s+", " ").split(" "));
+        Set<String> unique = new LinkedHashSet<>();
+        for (String token : tokens) {
+            unique.add(normalizeForMatch(token));
+        }
+        return tokens.size() >= 6 || unique.size() < tokens.size();
+    }
+
+    private static List<String> removeAdjacentDuplicateHeaderTokens(List<String> tokens) {
+        List<String> out = new ArrayList<>();
+        String previous = null;
+        for (String token : tokens) {
+            String normalized = normalizeForMatch(token);
+            if (!normalized.equals(previous)) {
+                out.add(token);
+            }
+            previous = normalized;
+        }
+        return out;
+    }
+
+    private static List<String> removeRepeatedHeaderHalves(List<String> tokens) {
+        if (tokens == null || tokens.size() % 2 != 0 || tokens.size() < 2) {
+            return tokens == null ? List.of() : tokens;
+        }
+        int half = tokens.size() / 2;
+        for (int i = 0; i < half; i++) {
+            if (!normalizeForMatch(tokens.get(i)).equals(normalizeForMatch(tokens.get(i + half)))) {
+                return tokens;
+            }
+        }
+        return new ArrayList<>(tokens.subList(0, half));
+    }
+
+    private static List<HeaderSlot> disambiguateSlots(List<HeaderSlot> slots) {
+        Map<String, Integer> seen = new HashMap<>();
+        List<HeaderSlot> out = new ArrayList<>();
+        for (HeaderSlot slot : slots) {
+            String h = safe(slot.selectedHeader());
+            if (h.isBlank()) {
+                h = "col_" + (slot.columnIndex() + 1);
+            }
+            String key = normalizeForMatch(h);
+            int count = seen.getOrDefault(key, 0) + 1;
+            seen.put(key, count);
+            String unique = count == 1 ? h : h + "_" + count;
+            out.add(new HeaderSlot(slot.columnIndex(), unique, slot.rawHeaderFragments(),
+                    slot.confidence(), slot.fallbackGeneric(),
+                    slot.selectedSourceFragmentCount(), slot.multiColumnRejected()));
+        }
+        return out;
+    }
+
+    private static HeaderAttribution attributionFromHeaders(List<String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return HeaderAttribution.empty();
+        }
+        List<HeaderSlot> slots = new ArrayList<>();
+        int generic = 0;
+        int tokens = 0;
+        int noisy = 0;
+        for (int i = 0; i < headers.size(); i++) {
+            String header = safe(headers.get(i));
+            boolean fallback = isGenericHeader(header);
+            if (fallback) {
+                generic++;
+            }
+            tokens += tokenCount(header);
+            if (isNoisyHeader(header, 1)) {
+                noisy++;
+            }
+            slots.add(new HeaderSlot(i, header.isBlank() ? "col_" + (i + 1) : header,
+                    header.isBlank() ? List.of() : List.of(header), fallback ? 0.35 : 0.95, fallback,
+                    header.isBlank() ? 0 : 1, false));
+        }
+        double avg = (double) tokens / Math.max(1, headers.size());
+        return new HeaderAttribution(slots, 0, generic, 0, 0, 0, 0, 0, headers.size(),
+                avg, avg, noisy, noisy, List.of());
+    }
+
+    private static boolean looksLikeContextualHeaderFragment(String fragment) {
+        String text = safe(fragment).replaceAll("\\s+", " ");
+        if (text.length() < 12 || !text.contains(":")) {
+            return false;
+        }
+        int tokens = tokenCount(text);
+        int punctuation = 0;
+        for (char ch : text.toCharArray()) {
+            if (ch == ':' || ch == ',' || ch == ';') {
+                punctuation++;
+            }
+        }
+        return tokens >= 3 && punctuation > 0;
     }
 
     private static List<String> disambiguateHeaders(List<String> headers) {
@@ -694,6 +1102,25 @@ public class NormalizedTableService {
 
     private static boolean isGenericHeader(String header) {
         return header != null && header.matches("col_\\d+");
+    }
+
+    private static int tokenCount(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        return text.trim().split("\\s+").length;
+    }
+
+    private static boolean isNoisyHeader(String header, int fragmentCount) {
+        if (header == null || header.isBlank() || isGenericHeader(header)) {
+            return false;
+        }
+        List<String> tokens = List.of(header.trim().replaceAll("\\s+", " ").split(" "));
+        Set<String> unique = new LinkedHashSet<>();
+        for (String token : tokens) {
+            unique.add(normalizeForMatch(token));
+        }
+        return fragmentCount > 1 || tokens.size() >= 6 || unique.size() < tokens.size();
     }
 
     private static boolean isSparseHeaderFragment(List<String> row, int expectedCols) {
@@ -775,7 +1202,8 @@ public class NormalizedTableService {
             int multiRowHeadersMerged,
             int crossPageHeaderCarryCount,
             int sparseRowsRepaired,
-            int droppedCellFragments
+            int droppedCellFragments,
+            HeaderAttribution headerAttribution
     ) {
         if (rows == null || rows.isEmpty()) {
             return QualityStats.empty();
@@ -783,6 +1211,7 @@ public class NormalizedTableService {
         int onlyOne = 0;
         int totalCells = 0;
         int emptyCells = 0;
+        int valuesPreserved = 0;
         for (NormalizedTableRow row : rows) {
             int nonEmpty = 0;
             for (String value : row.cells().values()) {
@@ -791,6 +1220,7 @@ public class NormalizedTableService {
                     emptyCells++;
                 } else {
                     nonEmpty++;
+                    valuesPreserved++;
                 }
             }
             if (nonEmpty == 1) {
@@ -798,10 +1228,37 @@ public class NormalizedTableService {
             }
         }
         double emptyRatio = totalCells == 0 ? 0.0 : (double) emptyCells / totalCells;
+        HeaderAttribution attribution = headerAttribution == null
+                ? HeaderAttribution.empty()
+                : headerAttribution;
+        int actualGenericKeys = 0;
+        for (NormalizedTableRow row : rows) {
+            for (String key : row.cells().keySet()) {
+                if (isGenericHeader(key)) {
+                    actualGenericKeys++;
+                }
+            }
+        }
         return new QualityStats(
-                rows.size(), onlyOne, emptyRatio, genericColumnKeys,
+                rows.size(), onlyOne, emptyRatio, Math.max(genericColumnKeys, actualGenericKeys),
                 continuationRowsMerged, multiRowHeadersMerged, crossPageHeaderCarryCount,
-                sparseRowsRepaired, droppedCellFragments);
+                sparseRowsRepaired, droppedCellFragments,
+                attribution.slots().size(),
+                (int) attribution.slots().stream().filter(HeaderSlot::fallbackGeneric).count(),
+                attribution.siblingContaminationPrevented(),
+                attribution.ambiguousFallbackCount(),
+                attribution.avgTokenCountBefore(),
+                attribution.avgTokenCountAfter(),
+                attribution.noisyBeforeCount(),
+                attribution.noisyAfterCount(),
+                attribution.compactSuspiciousCount(),
+                attribution.compactFallbackCount(),
+                attribution.spanAwareSelectedCount(),
+                attribution.multiColumnRejectedCount(),
+                attribution.fragmentsWithCoordinates(),
+                attribution.fragmentsWithoutCoordinates(),
+                valuesPreserved,
+                0);
     }
 
     private static Map<String, String> mapCells(List<String> headers, List<String> raw) {
@@ -848,6 +1305,25 @@ public class NormalizedTableService {
                 .map(String::trim)
                 .reduce((a, b) -> a + " " + b)
                 .orElse("");
+    }
+
+    private static String joinHeaderContext(List<String> fragments) {
+        if (fragments == null || fragments.isEmpty()) {
+            return "";
+        }
+        return fragments.stream()
+                .filter(f -> f != null && !f.isBlank())
+                .map(f -> f.trim().replaceAll("\\s+", " "))
+                .distinct()
+                .reduce((a, b) -> a + " " + b)
+                .orElse("");
+    }
+
+    private static String effectiveGroupContext(String groupContext, String headerContext) {
+        if (groupContext != null && !groupContext.isBlank()) {
+            return groupContext;
+        }
+        return headerContext == null || headerContext.isBlank() ? null : headerContext;
     }
 
     static List<List<String>> mergeWrappedRows(List<List<String>> rows, int expectedCols) {

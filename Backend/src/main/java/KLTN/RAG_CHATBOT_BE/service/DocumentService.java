@@ -128,7 +128,14 @@ public class DocumentService {
                         "normalizedRows={} suppressedRawChars={} suppressedLines={} droppedLeakyTextChunks={} " +
                         "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
                         "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
-                        "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={}",
+                        "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={} " +
+                        "headerSlotsCreated={} headerSlotsFallbackGeneric={} headerSiblingContaminationPrevented={} " +
+                        "headerAmbiguousFallbackCount={} avgHeaderTokenCountBefore={} avgHeaderTokenCountAfter={} " +
+                        "noisyComposedHeaderBeforeCount={} noisyComposedHeaderAfterCount={} " +
+                        "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
+                        "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
+                        "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
+                        "valuesPreservedCount={} valuesDroppedCount={}",
                 document.getFileName(),
                 sections.size(),
                 chunks.size(),
@@ -147,7 +154,23 @@ public class DocumentService {
                 tableMetrics.getMultiRowHeadersMerged(),
                 tableMetrics.getCrossPageHeaderCarryCount(),
                 tableMetrics.getSparseRowsRepaired(),
-                tableMetrics.getDroppedCellFragments()
+                tableMetrics.getDroppedCellFragments(),
+                tableMetrics.getHeaderSlotsCreated(),
+                tableMetrics.getHeaderSlotsFallbackGeneric(),
+                tableMetrics.getHeaderSiblingContaminationPrevented(),
+                tableMetrics.getHeaderAmbiguousFallbackCount(),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountBefore()),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountAfter()),
+                tableMetrics.getNoisyComposedHeaderBeforeCount(),
+                tableMetrics.getNoisyComposedHeaderAfterCount(),
+                tableMetrics.getCompactHeaderSuspiciousCount(),
+                tableMetrics.getCompactHeaderFallbackCount(),
+                tableMetrics.getSpanAwareHeaderSelectedCount(),
+                tableMetrics.getMultiColumnHeaderRejectedCount(),
+                tableMetrics.getHeaderFragmentsWithCoordinates(),
+                tableMetrics.getHeaderFragmentsWithoutCoordinates(),
+                tableMetrics.getValuesPreservedCount(),
+                tableMetrics.getValuesDroppedCount()
         );
 
         UUID widgetId = document.getWidgetConfig().getId();

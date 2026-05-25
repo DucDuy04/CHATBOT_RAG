@@ -30,6 +30,22 @@ public class TableIngestMetrics {
     private int crossPageHeaderCarryCount;
     private int sparseRowsRepaired;
     private int droppedCellFragments;
+    private int headerSlotsCreated;
+    private int headerSlotsFallbackGeneric;
+    private int headerSiblingContaminationPrevented;
+    private int headerAmbiguousFallbackCount;
+    private double avgHeaderTokenCountBefore;
+    private double avgHeaderTokenCountAfter;
+    private int noisyComposedHeaderBeforeCount;
+    private int noisyComposedHeaderAfterCount;
+    private int compactHeaderSuspiciousCount;
+    private int compactHeaderFallbackCount;
+    private int spanAwareHeaderSelectedCount;
+    private int multiColumnHeaderRejectedCount;
+    private int headerFragmentsWithCoordinates;
+    private int headerFragmentsWithoutCoordinates;
+    private int valuesPreservedCount;
+    private int valuesDroppedCount;
 
     public void reset() {
         detectedTables = 0;
@@ -54,6 +70,22 @@ public class TableIngestMetrics {
         crossPageHeaderCarryCount = 0;
         sparseRowsRepaired = 0;
         droppedCellFragments = 0;
+        headerSlotsCreated = 0;
+        headerSlotsFallbackGeneric = 0;
+        headerSiblingContaminationPrevented = 0;
+        headerAmbiguousFallbackCount = 0;
+        avgHeaderTokenCountBefore = 0.0;
+        avgHeaderTokenCountAfter = 0.0;
+        noisyComposedHeaderBeforeCount = 0;
+        noisyComposedHeaderAfterCount = 0;
+        compactHeaderSuspiciousCount = 0;
+        compactHeaderFallbackCount = 0;
+        spanAwareHeaderSelectedCount = 0;
+        multiColumnHeaderRejectedCount = 0;
+        headerFragmentsWithCoordinates = 0;
+        headerFragmentsWithoutCoordinates = 0;
+        valuesPreservedCount = 0;
+        valuesDroppedCount = 0;
     }
 
     public void incDetectedTables() {
@@ -127,6 +159,31 @@ public class TableIngestMetrics {
         crossPageHeaderCarryCount += stats.crossPageHeaderCarryCount();
         sparseRowsRepaired += stats.sparseRowsRepaired();
         droppedCellFragments += stats.droppedCellFragments();
+        int previousSlots = headerSlotsCreated;
+        headerSlotsCreated += stats.headerSlotsCreated();
+        headerSlotsFallbackGeneric += stats.headerSlotsFallbackGeneric();
+        headerSiblingContaminationPrevented += stats.headerSiblingContaminationPrevented();
+        headerAmbiguousFallbackCount += stats.headerAmbiguousFallbackCount();
+        if (headerSlotsCreated > 0) {
+            avgHeaderTokenCountBefore =
+                    ((avgHeaderTokenCountBefore * previousSlots)
+                            + (stats.avgHeaderTokenCountBefore() * stats.headerSlotsCreated()))
+                            / headerSlotsCreated;
+            avgHeaderTokenCountAfter =
+                    ((avgHeaderTokenCountAfter * previousSlots)
+                            + (stats.avgHeaderTokenCountAfter() * stats.headerSlotsCreated()))
+                            / headerSlotsCreated;
+        }
+        noisyComposedHeaderBeforeCount += stats.noisyComposedHeaderBeforeCount();
+        noisyComposedHeaderAfterCount += stats.noisyComposedHeaderAfterCount();
+        compactHeaderSuspiciousCount += stats.compactHeaderSuspiciousCount();
+        compactHeaderFallbackCount += stats.compactHeaderFallbackCount();
+        spanAwareHeaderSelectedCount += stats.spanAwareHeaderSelectedCount();
+        multiColumnHeaderRejectedCount += stats.multiColumnHeaderRejectedCount();
+        headerFragmentsWithCoordinates += stats.headerFragmentsWithCoordinates();
+        headerFragmentsWithoutCoordinates += stats.headerFragmentsWithoutCoordinates();
+        valuesPreservedCount += stats.valuesPreservedCount();
+        valuesDroppedCount += stats.valuesDroppedCount();
     }
 
     public void tallyFromChunks(java.util.List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks) {

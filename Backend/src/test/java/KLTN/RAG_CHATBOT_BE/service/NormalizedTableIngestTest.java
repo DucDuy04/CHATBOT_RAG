@@ -42,6 +42,121 @@ class NormalizedTableIngestTest {
     }
 
     @Test
+    void oneHeaderPerColumn_mapsSimpleSyntheticCellsExactly() {
+        String md = """
+                | A | B | C |
+                | --- | --- | --- |
+                | v1 | v2 | v3 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("A", "v1"),
+                        Map.entry("B", "v2"),
+                        Map.entry("C", "v3"));
+        assertThat(result.rows().getFirst().cells().keySet())
+                .doesNotContain("A B", "B C", "A B C");
+    }
+
+    @Test
+    void independentHeaders_mapToSameColumnValues() {
+        String md = """
+                | H1 | H2 | H3 |
+                | --- | --- | --- |
+                | x | y | z |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("H1", "x"),
+                        Map.entry("H2", "y"),
+                        Map.entry("H3", "z"));
+    }
+
+    @Test
+    void compactHeaderContainingAnotherColumnHeader_fallsBackForThatColumn() {
+        String md = """
+                | Alpha Beta | Beta |
+                | --- | --- |
+                | v1 | v2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("col_1", "v1"),
+                        Map.entry("Beta", "v2"));
+        assertThat(result.stats().compactHeaderSuspiciousCount()).isEqualTo(1);
+        assertThat(result.stats().compactHeaderFallbackCount()).isEqualTo(1);
+        assertThat(result.stats().multiColumnHeaderRejectedCount()).isEqualTo(1);
+    }
+
+    @Test
+    void repeatedSpanningHeaderAcrossAdjacentColumns_fallsBackWithoutDroppingValues() {
+        String md = """
+                | Alpha Beta | Alpha Beta |
+                | --- | --- |
+                | v1 | v2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("col_1", "v1"),
+                        Map.entry("col_2", "v2"));
+        assertThat(result.rows().getFirst().cells().values())
+                .containsExactly("v1", "v2");
+        assertThat(result.stats().valuesPreservedCount()).isEqualTo(2);
+        assertThat(result.stats().valuesDroppedCount()).isZero();
+    }
+
+    @Test
+    void separatePhysicalHeaderFragments_mapSeparately() {
+        String md = """
+                | Alpha | Beta |
+                | --- | --- |
+                | v1 | v2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("Alpha", "v1"),
+                        Map.entry("Beta", "v2"));
+    }
+
+    @Test
+    void mergedHeaderFromMultiplePhysicalPositions_isRejectedWhenOtherColumnProvesOverlap() {
+        String md = """
+                | Parent | Parent |
+                | Alpha Beta | Beta |
+                | --- | --- |
+                | v1 | v2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("col_1", "v1"),
+                        Map.entry("Beta", "v2"));
+        assertThat(result.rows().getFirst().cells().keySet()).doesNotContain("Alpha Beta");
+    }
+
+    @Test
     void repeatedHeader_isSkipped_notDataRow() {
         String page1 = """
                 | Code | Name |
@@ -118,7 +233,7 @@ class NormalizedTableIngestTest {
     }
 
     @Test
-    void multiLineHeaderRows_areComposedGenerically() {
+    void multiLineHeaderRows_chooseChildHeadersGenerically() {
         String md = """
                 |  | Primary | Secondary |
                 | Index | Label | Value |
@@ -131,9 +246,62 @@ class NormalizedTableIngestTest {
         assertThat(result.success()).isTrue();
         assertThat(result.rows().getFirst().cells())
                 .containsEntry("Index", "1")
-                .containsEntry("Primary Label", "Alpha")
-                .containsEntry("Secondary Value", "10");
+                .containsEntry("Label", "Alpha")
+                .containsEntry("Value", "10");
         assertThat(result.stats().multiRowHeadersMerged()).isEqualTo(1);
+        assertThat(result.stats().headerSiblingContaminationPrevented()).isEqualTo(2);
+    }
+
+    @Test
+    void parentChildHeaders_chooseLeafChild() {
+        String md = """
+                | ParentA | ParentA | ParentB |
+                | Child1 | Child2 | Child3 |
+                | --- | --- | --- |
+                | V1 | V2 | V3 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("Child1", "V1"),
+                        Map.entry("Child2", "V2"),
+                        Map.entry("Child3", "V3"));
+    }
+
+    @Test
+    void parentHeaderUsedOnlyWhenChildMissing() {
+        String md = """
+                | ParentA | ParentB |
+                |  | ChildB |
+                | --- | --- |
+                | V1 | V2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("ParentA", "V1"),
+                        Map.entry("ChildB", "V2"));
+    }
+
+    @Test
+    void siblingHeaderContamination_isForbidden() {
+        String md = """
+                | A | B | C |
+                | --- | --- | --- |
+                | V1 | V2 | V3 |
+                """;
+
+        var cells = normalizer.normalize(req(md, "S", 1)).rows().getFirst().cells();
+
+        assertThat(headerForValue(cells, "V1")).doesNotContain("B").doesNotContain("C");
+        assertThat(headerForValue(cells, "V2")).doesNotContain("A").doesNotContain("C");
+        assertThat(headerForValue(cells, "V3")).doesNotContain("A").doesNotContain("B");
     }
 
     @Test
@@ -217,6 +385,49 @@ class NormalizedTableIngestTest {
     }
 
     @Test
+    void duplicateSameColumnHeaderFragment_isDeduped() {
+        String md = """
+                | A A | B B |
+                | --- | --- |
+                | v1 | v2 |
+                """;
+
+        var result = normalizer.normalize(req(md, "S", 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.rows().getFirst().cells())
+                .containsExactly(
+                        Map.entry("A", "v1"),
+                        Map.entry("B", "v2"));
+    }
+
+    @Test
+    void rawCellsJsonItselfIsCleanWithoutDisplayCleanup() {
+        String md = """
+                | A | B | C |
+                | --- | --- | --- |
+                | v1 | v2 | v3 |
+                """;
+
+        var row = normalizer.normalize(req(md, "S", 1)).rows().getFirst();
+
+        assertThat(row.cellsJson()).isEqualTo("{\"A\":\"v1\",\"B\":\"v2\",\"C\":\"v3\"}");
+    }
+
+    @Test
+    void valuesArePreservedExactlyOnceInRawCellsJson() {
+        String md = """
+                | A | B | C |
+                | --- | --- | --- |
+                | v 1 | v-2 | v/3 |
+                """;
+
+        var values = normalizer.normalize(req(md, "S", 1)).rows().getFirst().cells().values();
+
+        assertThat(values).containsExactly("v 1", "v-2", "v/3");
+    }
+
+    @Test
     void rawTableTextSuppression_textChunkExcludesTableLines() {
         Section section = new Section(
                 "Intro",
@@ -257,6 +468,23 @@ class NormalizedTableIngestTest {
                 .noneMatch(t -> t.contains("fallback") || "text_table_like".equals(t));
         assertThat(chunks.stream().filter(c -> "text".equals(c.chunkType()))
                 .noneMatch(c -> c.content().contains("| x |"))).isTrue();
+    }
+
+    @Test
+    void noRawTableFallbackChunkTypesAreCreated() {
+        String md = """
+                | A | B | C |
+                | --- | --- | --- |
+                | v1 | v2 | v3 |
+                """;
+        Section section = new Section("S", 1, 1, "[TABLE_START]\n" + md + "\n[TABLE_END]", 0, 1);
+
+        List<DocumentChunk> chunks = chunkingService2.processSections2(List.of(section));
+
+        assertThat(chunks.stream().map(DocumentChunk::chunkType))
+                .doesNotContain("table_row_group", "text_table_like");
+        assertThat(chunks.stream().filter(c -> "text".equals(c.chunkType()))
+                .noneMatch(c -> c.content().contains("| v1 | v2 | v3 |"))).isTrue();
     }
 
     @Test
@@ -303,6 +531,14 @@ class NormalizedTableIngestTest {
     private static NormalizedTableService.NormalizationRequest req(String md, String section, int page) {
         return new NormalizedTableService.NormalizationRequest(
                 md, section, null, page, page, 0, null);
+    }
+
+    private static String headerForValue(Map<String, String> cells, String value) {
+        return cells.entrySet().stream()
+                .filter(e -> value.equals(e.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElseThrow();
     }
 
     private static double invokeChunkTypeBoost(

@@ -218,7 +218,14 @@ public class ChunkingService2 {
                 "suppressedLines={} tableLikeLinesDropped={} droppedLeakyTextChunks={} " +
                 "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
                 "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
-                "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={}",
+                "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={} " +
+                "headerSlotsCreated={} headerSlotsFallbackGeneric={} headerSiblingContaminationPrevented={} " +
+                "headerAmbiguousFallbackCount={} avgHeaderTokenCountBefore={} avgHeaderTokenCountAfter={} " +
+                "noisyComposedHeaderBeforeCount={} noisyComposedHeaderAfterCount={} " +
+                "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
+                "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
+                "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
+                "valuesPreservedCount={} valuesDroppedCount={}",
                 sections.size(), finalChunks.size(), parentSummaryCount,
                 finalChunks.stream().filter(c -> "section_summary".equals(c.chunkType())).count(),
                 finalChunks.stream().filter(c -> "table_summary".equals(c.chunkType())).count(),
@@ -239,7 +246,23 @@ public class ChunkingService2 {
                 lastIngestMetrics.getMultiRowHeadersMerged(),
                 lastIngestMetrics.getCrossPageHeaderCarryCount(),
                 lastIngestMetrics.getSparseRowsRepaired(),
-                lastIngestMetrics.getDroppedCellFragments());
+                lastIngestMetrics.getDroppedCellFragments(),
+                lastIngestMetrics.getHeaderSlotsCreated(),
+                lastIngestMetrics.getHeaderSlotsFallbackGeneric(),
+                lastIngestMetrics.getHeaderSiblingContaminationPrevented(),
+                lastIngestMetrics.getHeaderAmbiguousFallbackCount(),
+                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getAvgHeaderTokenCountBefore()),
+                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getAvgHeaderTokenCountAfter()),
+                lastIngestMetrics.getNoisyComposedHeaderBeforeCount(),
+                lastIngestMetrics.getNoisyComposedHeaderAfterCount(),
+                lastIngestMetrics.getCompactHeaderSuspiciousCount(),
+                lastIngestMetrics.getCompactHeaderFallbackCount(),
+                lastIngestMetrics.getSpanAwareHeaderSelectedCount(),
+                lastIngestMetrics.getMultiColumnHeaderRejectedCount(),
+                lastIngestMetrics.getHeaderFragmentsWithCoordinates(),
+                lastIngestMetrics.getHeaderFragmentsWithoutCoordinates(),
+                lastIngestMetrics.getValuesPreservedCount(),
+                lastIngestMetrics.getValuesDroppedCount());
 
         return finalChunks;
     }

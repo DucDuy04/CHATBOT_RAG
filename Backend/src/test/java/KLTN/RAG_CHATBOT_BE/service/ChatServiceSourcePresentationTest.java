@@ -6,9 +6,7 @@ import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -61,72 +59,20 @@ class ChatServiceSourcePresentationTest {
     }
 
     @Test
-    void tableHeaderDisplayCleaner_removesAdjacentDuplicateTokens() {
-        assertEquals("STT", TableHeaderDisplayCleaner.cleanDisplayHeader("STT STT", 0));
-    }
-
-    @Test
-    void tableHeaderDisplayCleaner_removesRepeatedPhrases() {
-        assertEquals("Code Name", TableHeaderDisplayCleaner.cleanDisplayHeader("Code Code Name Name", 0));
-    }
-
-    @Test
-    void tableHeaderDisplayCleaner_reducesOverlap() {
-        assertEquals("A B C", TableHeaderDisplayCleaner.cleanDisplayHeader("A B A C", 0));
-    }
-
-    @Test
-    void tableHeaderDisplayCleaner_usesColumnFallbackForEmptyHeader() {
-        assertEquals("col_1", TableHeaderDisplayCleaner.cleanDisplayHeader("", 0));
-    }
-
-    @Test
-    void tableHeaderDisplayCleaner_keepsDisplayKeysUnique() {
-        Map<String, String> raw = new LinkedHashMap<>();
-        raw.put("A A", "first");
-        raw.put("A", "second");
-
-        Map<String, String> display = TableHeaderDisplayCleaner.cleanCellsForDisplay(raw);
-
-        assertEquals(List.of("A", "A_2"), new ArrayList<>(display.keySet()));
-        assertEquals("first", display.get("A"));
-        assertEquals("second", display.get("A_2"));
-    }
-
-    @Test
-    void tableHeaderDisplayCleaner_boundsLongNoisyHeaders() {
-        String cleaned = TableHeaderDisplayCleaner.cleanDisplayHeader("A B C D E F G H I J K", 0);
-
-        assertEquals("A B C D E F G H", cleaned);
-        assertTrue(cleaned.length() <= TableHeaderDisplayCleaner.MAX_DISPLAY_CHARS);
-    }
-
-    @Test
-    void buildSourceDtosForResponse_normalizedRowUsesDisplayCellsAndKeepsRawCells() {
+    void buildSourceDtosForResponse_normalizedRowReturnsRawChunkText() {
         ChatService service = newMinimalChatService();
-        Map<String, String> cells = new LinkedHashMap<>();
-        cells.put("STT STT", "9");
-        cells.put("Code Code Name Name", "X-1");
-        cells.put("A", "value");
-        String content = NormalizedTableService.buildCanonicalText("sample", 3, cells, null, 7);
+        String content = "Table: sample.\nA: v1.\nB: v2.\nPage: 7.";
         RetrievedContext context = ctx(
                 UUID.randomUUID(),
                 "golden.txt",
                 "Section",
                 "normalized_table_row",
-                content,
-                NormalizedTableService.cellsToJson(cells)
+                content
         );
 
         ChatResponse.SourceDto source = service.buildSourceDtosForResponse(List.of(context)).getFirst();
 
-        assertEquals("9", source.getDisplayCells().get("STT"));
-        assertEquals("X-1", source.getDisplayCells().get("Code Name"));
-        assertEquals("9", source.getRawCells().get("STT STT"));
-        assertTrue(source.getChunkText().contains("STT: 9."));
-        assertTrue(source.getChunkText().contains("Code Name: X-1."));
-        assertFalse(source.getChunkText().contains("STT STT: 9."));
-        assertEquals(content, source.getRawChunkText());
+        assertEquals(content, source.getChunkText());
     }
 
     @Test
