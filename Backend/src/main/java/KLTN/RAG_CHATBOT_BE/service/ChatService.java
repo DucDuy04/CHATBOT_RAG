@@ -122,6 +122,7 @@ public class ChatService {
 
     public ChatResponse chat(ChatRequest request, UUID widgetId) {
         String question = request.getMessage();
+        RagLatencyTrace latencyTrace = RagLatencyTrace.begin();
 
         ChatSession session = getOrCreateSession(request.getSessionId(), widgetId);
         RagTokenAudit.Mode auditMode = resolveAuditMode(request);
@@ -142,7 +143,9 @@ public class ChatService {
         log.info("[Chat] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
                 contexts.size(), widgetId, lockedScopeLabel != null ? lockedScopeLabel : "none");
 
+        long sourceStart = RagLatencyTrace.now();
         List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts);
+        latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
 
         boolean hasTableLikeChunk = contexts.stream()
                 .anyMatch(ctx -> "text_table_like".equals(ctx.getChunkType()));
@@ -164,12 +167,14 @@ public class ChatService {
         if (contexts.isEmpty()) {
             answer = "Tôi không tìm thấy thông tin này trong tài liệu.";
             recordPreLlmMetrics(
-                    request, topKResolution, contexts, List.of(), question, "", promptBuilderService.getSystemPrompt(), resolveLlmGenerationOptions(widgetId, request));
+                    request, topKResolution, contexts, List.of(), question, "", promptBuilderService.getSystemPrompt(),
+                    resolveLlmGenerationOptions(widgetId, request, question, queryType));
             RagTokenAudit.finish(true);
         } else {
             List<ChatMessage> chatHistory =
                     chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
 
+            long promptStart = RagLatencyTrace.now();
             String userPrompt = promptBuilderService.buildUserPromptFromRetrievedContexts(
                     question,
                     contexts,
@@ -177,6 +182,7 @@ public class ChatService {
                     queryTypeHint,
                     lockedScopeLabel
             );
+            latencyTrace.addPromptBuildMs(RagLatencyTrace.elapsedMs(promptStart));
 
             String systemPrompt = promptBuilderService.getSystemPrompt();
 
@@ -185,14 +191,19 @@ public class ChatService {
                     UserMessage.from(userPrompt)
             );
 
-            LlmGenerationResolution llmOptions = resolveLlmGenerationOptions(widgetId, request);
+            LlmGenerationResolution llmOptions = resolveLlmGenerationOptions(widgetId, request, question, queryType);
             recordPreLlmMetrics(
                     request, topKResolution, contexts, chatHistory, question, userPrompt, systemPrompt, llmOptions);
+            long llmStart = RagLatencyTrace.now();
             answer = llmFallbackService.generateWithFallback(messages, llmOptions.effective());
+            latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
+            latencyTrace.setOutputTokens(estimateTokens(answer));
             RagTokenAudit.finish(!isOverloadAnswer(answer));
         }
 
+        sourceStart = RagLatencyTrace.now();
         sources = applyAnswerAwareSourceCap(answer, sources, request);
+        latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
 
         saveChatMessage(session, MessageRole.ASSISTANT, answer, sources);
 
@@ -204,6 +215,7 @@ public class ChatService {
             if (RagTokenAudit.hasActiveState()) {
                 RagTokenAudit.finish(false);
             }
+            latencyTrace.close();
         }
     }
 
@@ -215,8 +227,18 @@ public class ChatService {
         RagTokenAudit.Mode streamAuditMode = resolveAuditMode(request);
 
         streamingExecutor.execute(() -> {
+            RagLatencyTrace latencyTrace = RagLatencyTrace.begin();
+            long sseStart = RagLatencyTrace.now();
             RagTokenAudit.begin(streamAuditMode, widgetId, session.getSessionKey().toString());
             AtomicBoolean tokenUsageFinished = new AtomicBoolean(false);
+            AtomicBoolean asyncLlmStarted = new AtomicBoolean(false);
+            AtomicBoolean latencyClosed = new AtomicBoolean(false);
+            Runnable closeLatency = () -> {
+                if (latencyClosed.compareAndSet(false, true)) {
+                    latencyTrace.setSseTotalMs(RagLatencyTrace.elapsedMs(sseStart));
+                    latencyTrace.close();
+                }
+            };
             try {
                 log.info("[Stream] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
 
@@ -233,7 +255,9 @@ public class ChatService {
                         contexts.size(), widgetId, streamLockedScope != null ? streamLockedScope : "none");
 
                 int sourcePresentationCap = resolveSourcePresentationCap(request, streamTopK);
+                long sourceStart = RagLatencyTrace.now();
                 List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts, sourcePresentationCap);
+                latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
 
                 boolean streamHasTableLikeChunk = contexts.stream()
                         .anyMatch(ctx -> "text_table_like".equals(ctx.getChunkType()));
@@ -252,7 +276,7 @@ public class ChatService {
 
                 if (contexts.isEmpty()) {
                     String noContext = "Tôi không tìm thấy thông tin này trong tài liệu.";
-                    LlmGenerationResolution emptyLlmOptions = resolveLlmGenerationOptions(widgetId, request);
+                    LlmGenerationResolution emptyLlmOptions = resolveLlmGenerationOptions(widgetId, request, question, streamQueryType);
                     recordPreLlmMetrics(
                             request, streamTopK, contexts, List.of(), question, "", promptBuilderService.getSystemPrompt(), emptyLlmOptions);
                     TokenUsageDto emptyUsage = RagTokenAudit.finish(true);
@@ -274,12 +298,14 @@ public class ChatService {
                     emitter.complete();
 
                     saveChatMessage(session, MessageRole.ASSISTANT, noContext, null);
+                    closeLatency.run();
                     return;
                 }
 
                 List<ChatMessage> chatHistory =
                         chatMessageRepository.findTop10BySessionIdOrderByCreatedAtAsc(session.getId());
 
+                long promptStart = RagLatencyTrace.now();
                 String userPrompt = promptBuilderService.buildUserPromptFromRetrievedContexts(
                         question,
                         contexts,
@@ -287,6 +313,7 @@ public class ChatService {
                         streamQueryTypeHint,
                         streamLockedScope
                 );
+                latencyTrace.addPromptBuildMs(RagLatencyTrace.elapsedMs(promptStart));
 
                 String systemPrompt = promptBuilderService.getSystemPrompt();
 
@@ -298,17 +325,23 @@ public class ChatService {
                 // Guard: đảm bảo emitter chỉ được complete 1 lần khi fallback xảy ra
                 AtomicBoolean emitterDone = new AtomicBoolean(false);
 
-                LlmGenerationResolution streamLlmOptions = resolveLlmGenerationOptions(widgetId, request);
+                LlmGenerationResolution streamLlmOptions = resolveLlmGenerationOptions(widgetId, request, question, streamQueryType);
                 recordPreLlmMetrics(
                         request, streamTopK, contexts, chatHistory, question, userPrompt, systemPrompt, streamLlmOptions);
                 RagTokenAudit.incrementLlmCallIndex();
+                long llmStart = RagLatencyTrace.now();
+                AtomicBoolean firstTokenSeen = new AtomicBoolean(false);
                 OpenAiStreamingChatModel streamingModel =
                         llmFallbackService.buildStreamingModel(groqChatModel, streamLlmOptions.effective());
 
+                asyncLlmStarted.set(true);
                 streamingModel.generate(messages, new StreamingResponseHandler<AiMessage>() {
                     @Override
                     public void onNext(String token) {
                         try {
+                            if (firstTokenSeen.compareAndSet(false, true)) {
+                                latencyTrace.addLlmFirstTokenMs(RagLatencyTrace.elapsedMs(llmStart));
+                            }
                             fullAnswer.append(token);
                             emitter.send(
                                     SseEmitter.event()
@@ -327,10 +360,14 @@ public class ChatService {
                         try {
                             RagTokenAudit.recordActualFromResponse(response);
                             RagTokenAudit.setResolvedModel(groqChatModel);
+                            latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
+                            latencyTrace.setOutputTokens(estimateTokens(fullAnswer.toString()));
                             TokenUsageDto usage = RagTokenAudit.finish(true);
                             tokenUsageFinished.set(true);
+                            long sourceStart = RagLatencyTrace.now();
                             List<ChatResponse.SourceDto> responseSources =
                                     applyAnswerAwareSourceCap(fullAnswer.toString(), sources, request);
+                            latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
                             emitter.send(
                                     SseEmitter.event()
                                             .name("done")
@@ -339,9 +376,11 @@ public class ChatService {
                             );
                             emitter.complete();
                             saveChatMessage(session, MessageRole.ASSISTANT, fullAnswer.toString(), responseSources);
+                            closeLatency.run();
                         } catch (IOException e) {
                             log.error("[Stream] Lỗi khi hoàn tất SSE: {}", e.getMessage(), e);
                             emitter.completeWithError(e);
+                            closeLatency.run();
                         }
                     }
 
@@ -351,6 +390,7 @@ public class ChatService {
                             log.error("[Stream] LLM error (không phải rate limit): {}", error.getMessage(), error);
                             if (emitterDone.compareAndSet(false, true)) {
                                 emitter.completeWithError(error);
+                                closeLatency.run();
                             }
                             return;
                         }
@@ -360,6 +400,8 @@ public class ChatService {
                         try {
                             String fallbackAnswer = llmFallbackService.generateFallbackAnswer(
                                     messages, streamLlmOptions.effective());
+                            latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
+                            latencyTrace.setOutputTokens(estimateTokens(fallbackAnswer));
                             TokenUsageDto usage = RagTokenAudit.finish(!isOverloadAnswer(fallbackAnswer));
                             tokenUsageFinished.set(true);
                             fullAnswer.setLength(0);
@@ -374,8 +416,10 @@ public class ChatService {
                                                     .data("{\"token\":\"" + escapeJson(word) + "\"}", MediaType.APPLICATION_JSON)
                                     );
                                 }
+                                long sourceStart = RagLatencyTrace.now();
                                 List<ChatResponse.SourceDto> responseSources =
                                         applyAnswerAwareSourceCap(fallbackAnswer, sources, request);
+                                latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
                                 emitter.send(
                                         SseEmitter.event()
                                                 .name("done")
@@ -384,11 +428,13 @@ public class ChatService {
                                 );
                                 emitter.complete();
                                 saveChatMessage(session, MessageRole.ASSISTANT, fallbackAnswer, responseSources);
+                                closeLatency.run();
                             }
                         } catch (Exception fallbackError) {
                             log.error("[Stream] Fallback cũng thất bại: {}", fallbackError.getMessage(), fallbackError);
                             if (emitterDone.compareAndSet(false, true)) {
                                 emitter.completeWithError(fallbackError);
+                                closeLatency.run();
                             }
                         }
                     }
@@ -397,9 +443,13 @@ public class ChatService {
             } catch (Exception e) {
                 log.error("[Stream] Lỗi chatStream: {}", e.getMessage(), e);
                 emitter.completeWithError(e);
+                closeLatency.run();
             } finally {
                 if (!tokenUsageFinished.get() && RagTokenAudit.hasActiveState()) {
                     RagTokenAudit.finish(false);
+                }
+                if (!asyncLlmStarted.get()) {
+                    closeLatency.run();
                 }
             }
         });
@@ -429,6 +479,8 @@ public class ChatService {
             LlmGenerationResolution llmOptions
     ) {
         boolean compareMode = request != null && Boolean.TRUE.equals(request.getPlaygroundDebugSources());
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        int contextChars = RagTokenAudit.contextCharsFromRetrieved(contexts);
         RagTokenAudit.recordPreLlm(
                 groqChatModel,
                 llmOptions.effective().temperature(),
@@ -437,10 +489,20 @@ public class ChatService {
                 contexts != null ? contexts.size() : 0,
                 systemPrompt,
                 chatHistory,
-                RagTokenAudit.contextCharsFromRetrieved(contexts),
+                contextChars,
                 question,
                 userPrompt
         );
+        if (trace != null) {
+            trace.setContextStats(contexts != null ? contexts.size() : 0, contextChars);
+            trace.setEstimatedPromptTokens(estimateTokens(systemPrompt) + estimateTokens(userPrompt));
+            trace.setMaxTokens(llmOptions.requestedMaxTokens() != null
+                    ? llmOptions.requestedMaxTokens()
+                    : llmOptions.configuredMaxTokens() != null
+                    ? llmOptions.configuredMaxTokens()
+                    : LlmGenerationOptions.DEFAULT_MAX_TOKENS,
+                    llmOptions.effective().maxTokens());
+        }
         if (compareMode) {
             RagTokenAudit.markCompareMode(true);
         }
@@ -571,6 +633,15 @@ public class ChatService {
     }
 
     private LlmGenerationResolution resolveLlmGenerationOptions(UUID widgetId, ChatRequest request) {
+        return resolveLlmGenerationOptions(widgetId, request, request != null ? request.getMessage() : "", null);
+    }
+
+    private LlmGenerationResolution resolveLlmGenerationOptions(
+            UUID widgetId,
+            ChatRequest request,
+            String question,
+            QueryAnalyzerService.QueryType queryType
+    ) {
         Double requestTemperature = request.getTemperature();
         Integer requestMaxTokens = request.getMaxTokens();
 
@@ -586,16 +657,27 @@ public class ChatService {
             }
         }
 
-        LlmGenerationResolution resolution = resolveLlmGeneration(
+        LlmGenerationResolution baseResolution = resolveLlmGeneration(
                 requestTemperature,
                 requestMaxTokens,
                 configuredTemperature,
                 configuredMaxTokens
         );
+        int upperBound = baseResolution.effective().maxTokens();
+        int adaptiveMaxTokens = resolveAdaptiveMaxTokens(question, queryType, upperBound);
+        LlmGenerationResolution resolution = new LlmGenerationResolution(
+                baseResolution.temperatureSource(),
+                baseResolution.maxTokensSource(),
+                baseResolution.requestedTemperature(),
+                baseResolution.configuredTemperature(),
+                baseResolution.requestedMaxTokens(),
+                baseResolution.configuredMaxTokens(),
+                new LlmGenerationOptions(baseResolution.effective().temperature(), adaptiveMaxTokens)
+        );
         log.info(
                 "[LLM] generation options tempSource={} maxTokensSource={} "
                         + "requestedTemp={} configuredTemp={} requestedMaxTokens={} configuredMaxTokens={} "
-                        + "effectiveTemperature={} effectiveMaxTokens={}",
+                        + "effectiveTemperature={} effectiveMaxTokens={} adaptiveReason={}",
                 resolution.temperatureSource(),
                 resolution.maxTokensSource(),
                 resolution.requestedTemperature(),
@@ -603,9 +685,88 @@ public class ChatService {
                 resolution.requestedMaxTokens(),
                 resolution.configuredMaxTokens(),
                 resolution.effective().temperature(),
-                resolution.effective().maxTokens()
+                resolution.effective().maxTokens(),
+                adaptiveMaxTokensReason(question, queryType)
         );
         return resolution;
+    }
+
+    static int resolveAdaptiveMaxTokens(String question, QueryAnalyzerService.QueryType queryType, int upperBound) {
+        int cap = switch (adaptiveMaxTokensReason(question, queryType)) {
+            case "list_like" -> 768;
+            case "multi_attribute_lookup" -> 512;
+            case "compare_like" -> 512;
+            case "fact_like" -> 384;
+            default -> 512;
+        };
+        return Math.max(LlmGenerationOptions.MIN_MAX_TOKENS, Math.min(upperBound, cap));
+    }
+
+    static String adaptiveMaxTokensReason(String question, QueryAnalyzerService.QueryType queryType) {
+        String normalized = QuerySignalExtractor.normalize(question == null ? "" : question);
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question == null ? "" : question);
+        if (queryType == QueryAnalyzerService.QueryType.LIST_ALL
+                || queryType == QueryAnalyzerService.QueryType.COUNT_QUERY
+                || normalized.contains("liet ke")
+                || normalized.contains("tat ca")
+                || normalized.contains("danh sach")) {
+            return "list_like";
+        }
+        if (isMultiAttributeLookup(normalized, signals, queryType)) {
+            return "multi_attribute_lookup";
+        }
+        if (normalized.contains("so sanh")
+                || normalized.contains("compare")
+                || (CellAwareTableRowScorer.isCompareQuery(question, signals)
+                && (normalized.contains(" va ")
+                || normalized.contains(" voi ")
+                || normalized.contains(" and ")
+                || normalized.contains(" vs ")))) {
+            return "compare_like";
+        }
+        if (queryType == QueryAnalyzerService.QueryType.NORMAL_FACT
+                || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                || !signals.identifiers().isEmpty()
+                || !signals.dates().isEmpty()
+                || !signals.structuredLabels().isEmpty()
+                || normalized.matches(".*\\b(ai|gi|nao|o dau|khi nao|may|bao nhieu)\\b.*")) {
+            return "fact_like";
+        }
+        return "default";
+    }
+
+    private static boolean isMultiAttributeLookup(
+            String normalized,
+            QuerySignalExtractor.QuerySignals signals,
+            QueryAnalyzerService.QueryType queryType
+    ) {
+        boolean rowLike = queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                || queryType == QueryAnalyzerService.QueryType.NORMAL_FACT
+                || (signals != null && (!signals.identifiers().isEmpty()
+                || !signals.structuredLabels().isEmpty()
+                || !signals.numbers().isEmpty()));
+        if (!rowLike || normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        long separators = normalized.chars().filter(ch -> ch == ',' || ch == ';').count();
+        int questionMarkers = 0;
+        for (String marker : List.of(" nao", " may", " gi", " dau", " khi nao", " which", " what", " where", " when")) {
+            if (normalized.contains(marker)) {
+                questionMarkers++;
+            }
+        }
+        return separators >= 2
+                || questionMarkers >= 3
+                || (queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                && signals != null
+                && signals.structuredLabels().size() >= 2);
+    }
+
+    static int estimateTokens(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        return Math.max(1, (int) Math.ceil(text.length() / 4.0));
     }
 
     private java.util.Optional<Map<String, Object>> loadUiConfig(UUID widgetId) {

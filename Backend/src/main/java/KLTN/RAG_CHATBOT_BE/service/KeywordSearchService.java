@@ -2,8 +2,8 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk;
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunkRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -16,7 +16,6 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class KeywordSearchService {
 
     public enum CandidateSource {
@@ -46,6 +45,7 @@ public class KeywordSearchService {
     ) {}
 
     private final DocumentChunkRepository documentChunkRepository;
+    private final KeywordIndexCache keywordIndexCache;
 
     @Value("${rag.retrieval.hybrid.enabled:true}")
     private boolean hybridEnabled;
@@ -68,6 +68,17 @@ public class KeywordSearchService {
     @Value("${rag.retrieval.hybrid.table-summary-boost:0.8}")
     private double tableSummaryBoost;
 
+    public KeywordSearchService(DocumentChunkRepository documentChunkRepository) {
+        this(documentChunkRepository, new KeywordIndexCache(documentChunkRepository));
+    }
+
+    @Autowired
+    public KeywordSearchService(DocumentChunkRepository documentChunkRepository,
+                                KeywordIndexCache keywordIndexCache) {
+        this.documentChunkRepository = documentChunkRepository;
+        this.keywordIndexCache = keywordIndexCache;
+    }
+
     public boolean isHybridEnabled() {
         return hybridEnabled;
     }
@@ -78,15 +89,45 @@ public class KeywordSearchService {
         }
 
         QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
-        List<DocumentChunk> corpus = loadBoundedCorpus(widgetId);
+        long indexLookupStart = RagLatencyTrace.now();
+        KeywordIndexCache.LookupResult lookup = keywordIndexCache.lookup(widgetId, signals, maxKeywordScanChunks);
+        List<DocumentChunk> corpus;
+        List<DocumentChunk> candidates;
+        Map<String, Double> idfByTerm;
+        boolean fallbackScan = false;
+        if (lookup.available()) {
+            corpus = lookup.corpus();
+            candidates = lookup.candidates();
+            idfByTerm = lookup.idfByTerm();
+        } else {
+            fallbackScan = true;
+            log.warn("[RAG][keyword-index] widget={} status=fallback reason={}", widgetId,
+                    lookup.unavailableReason());
+            corpus = loadBoundedCorpus(widgetId);
+            candidates = corpus;
+            idfByTerm = computeCorpusIdf(corpus, signals);
+        }
+        long indexLookupMs = lookup.available()
+                ? lookup.postingLookupMs()
+                : RagLatencyTrace.elapsedMs(indexLookupStart);
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        if (trace != null) {
+            trace.setKeywordIndexStats(
+                    lookup.available(),
+                    lookup.buildMs(),
+                    indexLookupMs,
+                    lookup.candidateCount(),
+                    candidates.size(),
+                    fallbackScan);
+        }
+
         if (corpus.isEmpty()) {
             log.info("[RAG][hybrid] keywordCandidates=0 (empty corpus) widgetId={}", widgetId);
             return new KeywordSearchResult(List.of(), Map.of(), signals);
         }
 
-        Map<String, Double> idfByTerm = computeCorpusIdf(corpus, signals);
         List<ScoredKeywordChunk> scored = new ArrayList<>();
-        for (DocumentChunk chunk : corpus) {
+        for (DocumentChunk chunk : candidates) {
             double raw = scoreChunk(chunk, signals, idfByTerm, question);
             if (raw > 0) {
                 scored.add(new ScoredKeywordChunk(chunk, raw, 0.0));
@@ -94,7 +135,7 @@ public class KeywordSearchService {
         }
 
         scored.sort(Comparator.comparingDouble(ScoredKeywordChunk::rawScore).reversed());
-        int topM = Math.max(1, keywordTopM);
+        int topM = effectiveKeywordTopM(signals);
         List<ScoredKeywordChunk> top = scored.size() > topM ? scored.subList(0, topM) : scored;
 
         double maxRaw = top.stream().mapToDouble(ScoredKeywordChunk::rawScore).max().orElse(1.0);
@@ -109,12 +150,29 @@ public class KeywordSearchService {
         }
 
         log.info("[RAG][hybrid] keywordSignals identifiers={} dates={} numbers={} labels={} ngrams={} "
-                        + "corpusScanned={} keywordCandidates={}",
+                        + "indexHit={} postingLookupMs={} candidatesFromPostings={} candidatesScored={} "
+                        + "fallbackScan={} corpusScanned={} keywordCandidates={}",
                 signals.identifiers().size(), signals.dates().size(), signals.numbers().size(),
                 signals.structuredLabels().size(), signals.ngrams().size(),
-                corpus.size(), normalizedTop.size());
+                lookup.available(), indexLookupMs, lookup.candidateCount(), candidates.size(),
+                fallbackScan, fallbackScan ? corpus.size() : 0, normalizedTop.size());
 
         return new KeywordSearchResult(normalizedTop, scoreMap, signals);
+    }
+
+    private int effectiveKeywordTopM(QuerySignalExtractor.QuerySignals signals) {
+        int configured = Math.max(1, keywordTopM);
+        if (signals == null) {
+            return configured;
+        }
+        if (!signals.identifiers().isEmpty() || !signals.dates().isEmpty()) {
+            return Math.max(configured, 200);
+        }
+        return configured;
+    }
+
+    public void invalidateIndex(UUID widgetId, String reason) {
+        keywordIndexCache.invalidate(widgetId, reason);
     }
 
     /**

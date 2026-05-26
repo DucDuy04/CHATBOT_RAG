@@ -22,6 +22,7 @@ class NoHardcodedLexiconInTableNormalizerTest {
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/ChunkingService2.java"),
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/DocumentService.java"),
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/CellAwareTableRowScorer.java"),
+                Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/KeywordIndexCache.java"),
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/KeywordSearchService.java"),
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/RagRetrievalService.java"),
                 Path.of("src/main/java/KLTN/RAG_CHATBOT_BE/service/TableIngestMetrics.java")

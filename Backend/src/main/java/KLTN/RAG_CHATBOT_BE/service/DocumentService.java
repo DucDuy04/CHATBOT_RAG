@@ -62,6 +62,7 @@ public class DocumentService {
     private final DocumentTableRepository documentTableRepository;
 
     private final QdrantPurgeService qdrantPurgeService;
+    private final KeywordIndexCache keywordIndexCache;
 
     @Value("${app.upload-dir}")
     private String uploadDir;
@@ -211,6 +212,7 @@ public class DocumentService {
         document.setStatus(DocumentStatus.COMPLETED);
         document.setChunkCount(savedChunks.size());
         documentRepository.save(document);
+        keywordIndexCache.invalidate(widgetId, "document_indexed");
 
         log.info(
                 "Xử lý xong document={}, sections={}, tables={}, chunks={}",
@@ -398,6 +400,7 @@ public class DocumentService {
         documentChunkRepository.hardDeleteByDocumentId(documentId);
         documentTableRepository.hardDeleteByDocumentId(documentId);
         documentSectionRepository.hardDeleteByDocumentId(documentId);
+        keywordIndexCache.invalidate(widgetId, "document_retry_hard_delete");
 
         BytesMultipartFile mf = BytesMultipartFile.fromPath(
                 "file",
@@ -435,6 +438,7 @@ public class DocumentService {
         documentChunkRepository.softDeleteByDocumentId(id, ts);
         d.setDeletedAt(ts);
         documentRepository.save(d);
+        keywordIndexCache.invalidate(widgetId, "document_soft_deleted");
     }
 
     private UUID resolveWidgetIdForPurge(Document d) {

@@ -56,4 +56,40 @@ class ChatServiceLlmParamsTest {
         assertEquals(0.3, WidgetService.parseModelConfigTemperature(ui));
         assertEquals(800, WidgetService.parseModelConfigMaxTokens(ui));
     }
+
+    @Test
+    void adaptiveMaxTokens_factLikeUsesLowerCap() {
+        int tokens = ChatService.resolveAdaptiveMaxTokens(
+                "What room is ID ABC123 in?",
+                QueryAnalyzerService.QueryType.NORMAL_FACT,
+                768);
+        assertEquals(384, tokens);
+    }
+
+    @Test
+    void adaptiveMaxTokens_listLikeKeepsHigherCap() {
+        int tokens = ChatService.resolveAdaptiveMaxTokens(
+                "List all items in this section",
+                QueryAnalyzerService.QueryType.LIST_ALL,
+                768);
+        assertEquals(768, tokens);
+    }
+
+    @Test
+    void adaptiveMaxTokens_userUpperBoundIsNotExceeded() {
+        int tokens = ChatService.resolveAdaptiveMaxTokens(
+                "Which value matches ABC123?",
+                QueryAnalyzerService.QueryType.TABLE_LOOKUP,
+                256);
+        assertEquals(256, tokens);
+    }
+
+    @Test
+    void adaptiveMaxTokens_multiAttributeLookupUsesModerateCap() {
+        int tokens = ChatService.resolveAdaptiveMaxTokens(
+                "Which teacher, day, period, and room does group 2 use?",
+                QueryAnalyzerService.QueryType.TABLE_LOOKUP,
+                768);
+        assertEquals(512, tokens);
+    }
 }

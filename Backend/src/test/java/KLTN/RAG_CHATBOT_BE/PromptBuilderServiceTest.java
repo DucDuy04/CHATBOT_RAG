@@ -127,4 +127,40 @@ class PromptBuilderServiceTest {
         assertTrue(prompt.contains("ĐẾM"));
         assertFalse(prompt.contains("NHẮN NGỮ CẢNH BẢNG"));
     }
+
+    @Test
+    void normalizedTableRow_promptContentUsesCompactCellsAndOmitsEmptyCells() {
+        RetrievedContext row = RetrievedContext.builder()
+                .chunkId(UUID.randomUUID())
+                .documentId(UUID.randomUUID())
+                .fileName("table.txt")
+                .headingPathText("Rows")
+                .pageStart(2)
+                .pageEnd(2)
+                .chunkType("normalized_table_row")
+                .tableName("Schedule")
+                .rowIndex(4)
+                .groupContext("Group A")
+                .cellsJson("{\"Name\":\"Alpha\",\"Room\":\"H101\",\"Empty\":\"\"}")
+                .content("Verbose canonical prose that should not be repeated in the prompt.")
+                .build();
+
+        String prompt = promptBuilder.buildUserPromptFromRetrievedContexts(
+                "Where is Alpha?",
+                List.of(row),
+                Collections.emptyList(),
+                "TABLE_LOOKUP",
+                null
+        );
+
+        assertTrue(prompt.contains("Table: Schedule"));
+        assertTrue(prompt.contains("Row: 4"));
+        assertTrue(prompt.contains("Group: Group A"));
+        assertTrue(prompt.contains("- Name: Alpha"));
+        assertTrue(prompt.contains("- Room: H101"));
+        assertFalse(prompt.contains("Empty:"));
+        assertFalse(prompt.contains("Verbose canonical prose"));
+        assertTrue(prompt.contains("Document: table.txt"));
+        assertTrue(prompt.contains("Pages: 2-2"));
+    }
 }

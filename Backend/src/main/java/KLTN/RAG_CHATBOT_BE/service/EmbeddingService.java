@@ -13,8 +13,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -26,6 +28,17 @@ public class EmbeddingService {
     private final EmbeddingModel embeddingModel;
     private final QdrantEmbeddingStore qdrantEmbeddingStore;
     private final RestClient restClient = RestClient.create();
+
+    private static final long QUERY_EMBEDDING_CACHE_TTL_MS = 60L * 60L * 1000L;
+    private static final int QUERY_EMBEDDING_CACHE_MAX_SIZE = 1000;
+
+    private final Map<String, CachedEmbedding> queryEmbeddingCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedEmbedding> eldest) {
+                    return size() > QUERY_EMBEDDING_CACHE_MAX_SIZE;
+                }
+            });
 
     @Value("${qdrant.host}")
     private String qdrantHost;
@@ -139,15 +152,14 @@ public class EmbeddingService {
             return List.of();
         }
 
-        RagTokenAudit.incrementEmbeddingCalls();
-        Embedding queryEmbedding = embeddingModel.embedAll(List.of(TextSegment.from(query))).content().get(0);
-        if (queryEmbedding.dimension() == 0) {
+        List<Float> queryVector = getCachedOrEmbedQuery(query);
+        if (queryVector.isEmpty()) {
             log.warn("[EmbeddingSearch] Query embedding is empty for query='{}'", query);
             return List.of();
         }
 
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("vector", queryEmbedding.vectorAsList());
+        request.put("vector", queryVector);
         request.put("limit", topK);
         request.put("with_payload", true);
         request.put("with_vector", false);
@@ -158,12 +170,21 @@ public class EmbeddingService {
                 ))
         ));
 
-        Map<?, ?> response = restClient.post()
-                .uri(qdrantBaseUrl() + "/collections/" + qdrantCollectionName + "/points/search")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(request)
-                .retrieve()
-                .body(Map.class);
+        long qdrantStart = RagLatencyTrace.now();
+        Map<?, ?> response;
+        try {
+            response = restClient.post()
+                    .uri(qdrantBaseUrl() + "/collections/" + qdrantCollectionName + "/points/search")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(request)
+                    .retrieve()
+                    .body(Map.class);
+        } finally {
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addVectorMs(RagLatencyTrace.elapsedMs(qdrantStart));
+            }
+        }
 
         List<?> points = response == null ? List.of() : asList(response.get("result"));
         log.info("[EmbeddingSearch] query='{}', widgetId={}, matches={}", query, widgetId, points.size());
@@ -173,6 +194,55 @@ public class EmbeddingService {
                 .filter(segment -> segment != null && segment.text() != null && !segment.text().isBlank())
                 .toList();
     }
+
+    private List<Float> getCachedOrEmbedQuery(String query) {
+        String cacheKey = queryCacheKey(query);
+        long now = System.currentTimeMillis();
+        CachedEmbedding cached = queryEmbeddingCache.get(cacheKey);
+        if (cached != null && now - cached.createdAtMs() <= QUERY_EMBEDDING_CACHE_TTL_MS) {
+            log.info("[RAG][embedding-cache] hit=true keyHash={}", cacheKey.hashCode());
+            return cached.vector();
+        }
+        if (cached != null) {
+            queryEmbeddingCache.remove(cacheKey);
+        }
+
+        log.info("[RAG][embedding-cache] hit=false keyHash={}", cacheKey.hashCode());
+        RagTokenAudit.incrementEmbeddingCalls();
+        long embedStart = RagLatencyTrace.now();
+        Embedding queryEmbedding;
+        try {
+            queryEmbedding = embeddingModel.embedAll(List.of(TextSegment.from(query))).content().get(0);
+        } finally {
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addQueryEmbedMs(RagLatencyTrace.elapsedMs(embedStart));
+            }
+        }
+        if (queryEmbedding == null || queryEmbedding.dimension() == 0) {
+            return List.of();
+        }
+        List<Float> vector = List.copyOf(queryEmbedding.vectorAsList());
+        if (!vector.isEmpty()) {
+            queryEmbeddingCache.put(cacheKey, new CachedEmbedding(vector, now));
+        }
+        return vector;
+    }
+
+    private String queryCacheKey(String query) {
+        return queryCacheKey(query, embeddingModel.getClass().getName(), qdrantCollectionName);
+    }
+
+    static String queryCacheKey(String query, String embeddingProvider, String collectionName) {
+        String normalized = query == null ? "" : query.replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        return (embeddingProvider == null ? "" : embeddingProvider)
+                + "|" + (collectionName == null ? "" : collectionName)
+                + "|" + normalized;
+    }
+
+    record CachedEmbedding(List<Float> vector, long createdAtMs) {}
 
     private String qdrantBaseUrl() {
         return "http://" + qdrantHost + ":" + qdrantHttpPort;

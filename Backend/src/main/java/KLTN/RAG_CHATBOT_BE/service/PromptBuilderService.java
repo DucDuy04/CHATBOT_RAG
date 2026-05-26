@@ -2,14 +2,20 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
 public class PromptBuilderService {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
      * Nhắc thêm khi đã biết context có chunk bảng — tránh LLM từ chối dù evidence có trong Source.
@@ -19,7 +25,7 @@ public class PromptBuilderService {
             """;
 
     private static final String NORMALIZED_ROW_SOURCE_NOTE = """
-            [DÒNG BẢNG CHUẨN HÓA: Có Source Type=normalized_table_row — mỗi Source là MỘT dòng bảng với các cột (Key: giá trị). Trả lời trực tiếp từ giá trị cột của đúng dòng đó; không trộn dữ liệu giữa các dòng hoặc các nhóm khác nhau.]
+            [DÒNG BẢNG CHUẨN HÓA: Có Source Type=normalized_table_row — mỗi Source là MỘT dòng bảng với các cột (Key: giá trị). Trả lời trực tiếp từ giá trị cột của đúng dòng đó; không trộn dữ liệu giữa các dòng hoặc các nhóm khác nhau. Nếu nhiều Source cùng khớp một mã/định danh, ưu tiên giá trị ít nhiễu và đầy đủ hơn; không chép một mảnh bị vỡ/ký tự lỗi khi Source khác cùng dòng/định danh có giá trị rõ hơn.]
             """;
 
     private static final String SYSTEM_PROMPT = """
@@ -84,12 +90,6 @@ public class PromptBuilderService {
         21. Nếu một item xuất hiện nhiều lần ở nhiều Source, chỉ liệt kê 1 lần (deduplicate).
 
 
-        ═══════════════════════════════════════════
-        GIỚI HẠN ĐỘ DÀI
-        ═══════════════════════════════════════════
-        22. Câu hỏi thực thể đơn giản: trả lời ngắn gọn (1-3 câu + nguồn).
-        23. Câu hỏi liệt kê / tóm tắt section: trả lời đầy đủ, có thể dài, nhưng không dài hơn mức cần thiết.
-        24. Câu hỏi đếm: luôn kèm danh sách để người dùng kiểm chứng.
         """;
 
     public String getSystemPrompt() {
@@ -159,7 +159,7 @@ public class PromptBuilderService {
             prompt.append("Pages: ").append(ctx.getPageStart()).append("-").append(ctx.getPageEnd()).append("\n");
             prompt.append("Type: ").append(nullSafe(ctx.getChunkType())).append("\n\n");
             prompt.append("Content:\n");
-            prompt.append(ctx.getContent()).append("\n\n");
+            prompt.append(promptContent(ctx)).append("\n\n");
         }
 
         if (!chatHistory.isEmpty()) {
@@ -263,6 +263,55 @@ public class PromptBuilderService {
 
     private String nullSafe(String value) {
         return value == null ? "" : value;
+    }
+
+    private String promptContent(RetrievedContext ctx) {
+        if (ctx == null || !"normalized_table_row".equalsIgnoreCase(nullSafe(ctx.getChunkType()).trim())) {
+            return ctx == null ? "" : nullSafe(ctx.getContent());
+        }
+        Map<String, String> cells = parseCellsJson(ctx.getCellsJson());
+        if (cells.isEmpty()) {
+            return nullSafe(ctx.getContent());
+        }
+        StringBuilder compact = new StringBuilder();
+        if (ctx.getTableName() != null && !ctx.getTableName().isBlank()) {
+            compact.append("Table: ").append(ctx.getTableName().trim()).append("\n");
+        }
+        if (ctx.getRowIndex() != null) {
+            compact.append("Row: ").append(ctx.getRowIndex()).append("\n");
+        }
+        if (ctx.getGroupContext() != null && !ctx.getGroupContext().isBlank()) {
+            compact.append("Group: ").append(ctx.getGroupContext().trim()).append("\n");
+        }
+        compact.append("Cells:\n");
+        cells.forEach((key, value) -> {
+            if (key != null && value != null && !value.isBlank()) {
+                compact.append("- ").append(key.trim()).append(": ").append(value.trim()).append("\n");
+            }
+        });
+        return compact.toString().trim();
+    }
+
+    private Map<String, String> parseCellsJson(String cellsJson) {
+        if (cellsJson == null || cellsJson.isBlank() || "{}".equals(cellsJson.trim())) {
+            return Map.of();
+        }
+        try {
+            Map<String, String> parsed = JSON.readValue(
+                    cellsJson, new TypeReference<LinkedHashMap<String, String>>() {});
+            if (parsed == null || parsed.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> nonEmpty = new LinkedHashMap<>();
+            parsed.forEach((key, value) -> {
+                if (key != null && value != null && !value.isBlank()) {
+                    nonEmpty.put(key, value);
+                }
+            });
+            return nonEmpty;
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
 
     /**

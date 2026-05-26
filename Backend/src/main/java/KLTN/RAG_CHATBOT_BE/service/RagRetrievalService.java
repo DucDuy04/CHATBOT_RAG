@@ -64,6 +64,12 @@ public class RagRetrievalService {
     private static final int SECTION_EXPANSION_MAX_CHUNKS = 12;
     private static final int SECTION_EXPANSION_MAX_CHUNKS_EXPANDED = 30;
     private static final int TABLE_QUERY_SCORING_CANDIDATE_LIMIT = 240;
+    private static final int FACT_SCORING_BUDGET = 80;
+    private static final int MULTI_ATTRIBUTE_SCORING_BUDGET = 220;
+    private static final int COMPARE_SCORING_BUDGET = 160;
+    private static final int LIST_SCORING_BUDGET = 220;
+    private static final int WEAK_SCORING_BUDGET = 60;
+    private static final int SAFETY_TAIL_CANDIDATES = 40;
 
     // Ngưỡng titleHits để kích hoạt heading lock
     private static final int HEADING_LOCK_MIN_TITLE_HITS = 2;
@@ -104,6 +110,10 @@ public class RagRetrievalService {
 
     public record ScoredChunk(DocumentChunk chunk, double finalScore) {}
 
+    record CheapScoredCandidate(DocumentChunk chunk, double score, boolean highConfidence) {}
+
+    record ScoringBudget(int expensiveLimit, int safetyTail, String reason) {}
+
     // ================================================================
     // RESULT WRAPPER
     // ================================================================
@@ -141,10 +151,21 @@ public class RagRetrievalService {
         log.info("[RAG][anchor] fixedVectorAnchorK={}", fixedVectorAnchorK);
 
         // ── STEP 0: Intent detection ───────────────────────────────────
+        long analyzeStart = RagLatencyTrace.now();
         QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
-        int finalContextTopN = resolveFinalContextTopN(finalContextTopNOverride, queryType);
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        if (trace != null) {
+            trace.addQueryAnalyzeMs(RagLatencyTrace.elapsedMs(analyzeStart));
+        }
+        int requestedFinalContextTopN = normalizeFinalContextTopN(finalContextTopNOverride);
+        int finalContextTopN = resolveAdaptiveFinalContextTopN(question, finalContextTopNOverride, queryType);
+        if (trace != null) {
+            trace.setTopN(requestedFinalContextTopN, finalContextTopN);
+        }
         String topNSource = finalContextTopNOverride != null ? "REQUEST|MODEL_CONFIG" : "DEFAULT";
-        log.info("[RAG][topN] finalContextTopN source={} value={}", topNSource, finalContextTopN);
+        log.info("[RAG][topN] requestedTopN={} effectiveTopN={} reason={} source={}",
+                requestedFinalContextTopN, finalContextTopN,
+                adaptiveTopNReason(question, queryType), topNSource);
         boolean isExpandedQuery = isExpanded(queryType);
         log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
 
@@ -244,7 +265,11 @@ public class RagRetrievalService {
         Map<UUID, Double> keywordScoresByChunkId = Map.of();
         Set<UUID> keywordChunkIds = new LinkedHashSet<>();
         if (keywordSearchService.isHybridEnabled()) {
+            long keywordStart = RagLatencyTrace.now();
             keywordResult = keywordSearchService.search(question, widgetId);
+            if (trace != null) {
+                trace.addKeywordMs(RagLatencyTrace.elapsedMs(keywordStart));
+            }
             keywordScoresByChunkId = keywordResult.normalizedScoresByChunkId();
             keywordChunkIds = keywordResult.chunkIds();
             log.info("[RAG][hybrid] strategy=VECTOR+KEYWORD vectorCandidates={} keywordCandidates={}",
@@ -376,12 +401,16 @@ public class RagRetrievalService {
         // ── STEP 5: Rerank-guided scope lock (preliminary scoring, không cắt final top-N) ──
         boolean isLockedScope = !lockedSectionIds.isEmpty();
         List<DocumentChunk> dedupedForLock = dedupeCandidates(expanded);
+        QuerySignalExtractor.QuerySignals scopeSignals = keywordResult != null
+                ? keywordResult.signals()
+                : QuerySignalExtractor.extract(question);
         boolean allowRerankScopeLock = queryType != QueryAnalyzerService.QueryType.LIST_ALL
                 && queryType != QueryAnalyzerService.QueryType.COUNT_QUERY
-                && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP;
+                && queryType != QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                && !KeywordSearchService.isTableLikeQuery(scopeSignals, question);
         if (allowRerankScopeLock && !isLockedScope && rerankService.isEnabled() && !dedupedForLock.isEmpty()) {
             List<ScoredChunk> preliminaryScores = scoreCandidatesForSelection(
-                    question, dedupedForLock, anchorChunkIds, "RERANK_SERVICE", keywordScoresByChunkId);
+                    question, dedupedForLock, queryType, anchorChunkIds, "RERANK_SERVICE", keywordScoresByChunkId);
             if (!preliminaryScores.isEmpty()) {
                 double maxScore = preliminaryScores.get(0).finalScore();
                 if (maxScore < RerankService.LOW_CONFIDENCE_THRESHOLD) {
@@ -434,12 +463,22 @@ public class RagRetrievalService {
             dedupedPreScore = boundedPreScore;
         }
         int bothSourceCount = 0;
+        long mergeStart = RagLatencyTrace.now();
         if (keywordSearchService.isHybridEnabled() && keywordResult != null) {
             List<KeywordSearchService.MergedCandidate> mergedPreview = KeywordSearchService.mergeCandidates(
                     dedupedPreScore, anchorChunkIds, keywordResult);
             bothSourceCount = KeywordSearchService.countBothSource(mergedPreview);
             log.info("[RAG][hybrid] mergedCandidates={} dedupedCandidates={} bothSourceCount={}",
                     expanded.size(), dedupedPreScore.size(), bothSourceCount);
+        }
+        if (trace != null) {
+            trace.addMergeMs(RagLatencyTrace.elapsedMs(mergeStart));
+            trace.setCandidates(dedupedPreScore.size(), dedupedPreScore.size());
+            trace.setMergeCandidateStats(
+                    anchorChunkIds.size(),
+                    keywordChunkIds.size(),
+                    expanded.size(),
+                    dedupedPreScore.size());
         }
 
         log.info("[RAG][candidates] vectorAnchors={} keywordAnchors={} afterExpansion={}",
@@ -477,24 +516,15 @@ public class RagRetrievalService {
         if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
             return candidates;
         }
+        if (!signals.identifiers().isEmpty() || !signals.dates().isEmpty()) {
+            return candidates;
+        }
         int limit = Math.max(TABLE_QUERY_SCORING_CANDIDATE_LIMIT, finalContextTopN * 12);
         List<ScoredChunk> ranked = new ArrayList<>();
         for (DocumentChunk chunk : candidates) {
-            double score = 0.0;
-            if (chunk.getId() != null && anchorChunkIds != null && anchorChunkIds.contains(chunk.getId())) {
-                score += 8.0;
-            }
-            if (chunk.getId() != null && keywordScoresByChunkId != null) {
-                score += keywordScoresByChunkId.getOrDefault(chunk.getId(), 0.0) * 8.0;
-            }
-            if ("normalized_table_row".equals(chunk.getChunkType())) {
-                score += 2.0;
-                score += Math.min(8.0, CellAwareTableRowScorer.score(chunk, signals, question).total());
-            } else if ("table_summary".equals(chunk.getChunkType())) {
-                score += 0.5;
-            }
-            score += quickTermOverlapScore(chunk, signals);
-            ranked.add(new ScoredChunk(chunk, score));
+            CheapScoredCandidate cheap = cheapPreScoreCandidate(
+                    chunk, signals, anchorChunkIds, keywordScoresByChunkId);
+            ranked.add(new ScoredChunk(chunk, cheap.score()));
         }
         return ranked.stream()
                 .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
@@ -503,7 +533,175 @@ public class RagRetrievalService {
                 .toList();
     }
 
-    private double quickTermOverlapScore(DocumentChunk chunk, QuerySignalExtractor.QuerySignals signals) {
+    public static int resolveAdaptiveFinalContextTopN(
+            String question,
+            Integer override,
+            QueryAnalyzerService.QueryType queryType
+    ) {
+        int requested = resolveFinalContextTopN(override, queryType);
+        int adaptive = switch (adaptiveTopNReason(question, queryType)) {
+            case "list_like" -> 15;
+            case "multi_attribute_lookup" -> requested;
+            case "compare_like" -> 10;
+            case "fact_like" -> 7;
+            case "oos_or_weak" -> 5;
+            default -> requested;
+        };
+        return Math.max(MIN_FINAL_CONTEXT_TOP_N, Math.min(requested, adaptive));
+    }
+
+    static String adaptiveTopNReason(String question, QueryAnalyzerService.QueryType queryType) {
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question == null ? "" : question);
+        String normalized = QuerySignalExtractor.normalize(question == null ? "" : question);
+        if (queryType == QueryAnalyzerService.QueryType.LIST_ALL
+                || queryType == QueryAnalyzerService.QueryType.COUNT_QUERY
+                || containsAnyNormalized(normalized, "liet ke", "tat ca", "danh sach", "bao gom")) {
+            return "list_like";
+        }
+        if (isMultiAttributeLookup(normalized, signals, queryType)) {
+            return "multi_attribute_lookup";
+        }
+        if (containsAnyNormalized(normalized, "so sanh", "compare", "khac nhau", "giong nhau")
+                || (CellAwareTableRowScorer.isCompareQuery(question, signals)
+                && containsAnyNormalized(normalized, " va ", " voi ", " and ", " vs "))) {
+            return "compare_like";
+        }
+        if (queryType == QueryAnalyzerService.QueryType.NORMAL_FACT
+                || queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                || !signals.identifiers().isEmpty()
+                || !signals.dates().isEmpty()
+                || signals.structuredLabels().size() == 1) {
+            return "fact_like";
+        }
+        if (question == null || question.isBlank()) {
+            return "oos_or_weak";
+        }
+        return "default";
+    }
+
+    private static boolean isMultiAttributeLookup(
+            String normalized,
+            QuerySignalExtractor.QuerySignals signals,
+            QueryAnalyzerService.QueryType queryType
+    ) {
+        if (normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        boolean rowLike = queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                || (signals != null && (!signals.identifiers().isEmpty()
+                || !signals.structuredLabels().isEmpty()
+                || !signals.numbers().isEmpty()));
+        if (!rowLike) {
+            return false;
+        }
+        long separators = normalized.chars().filter(ch -> ch == ',' || ch == ';').count();
+        int questionMarkers = 0;
+        for (String marker : List.of(" nao", " may", " gi", " dau", " khi nao", " which", " what", " where", " when")) {
+            if (normalized.contains(marker)) {
+                questionMarkers++;
+            }
+        }
+        return separators >= 2
+                || questionMarkers >= 3
+                || (queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                && signals != null
+                && signals.structuredLabels().size() >= 2);
+    }
+
+    private static boolean containsAnyNormalized(String normalized, String... needles) {
+        if (normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (normalized.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static CheapScoredCandidate cheapPreScoreCandidate(
+            DocumentChunk chunk,
+            QuerySignalExtractor.QuerySignals signals,
+            Set<UUID> anchorChunkIds,
+            Map<UUID, Double> keywordScoresByChunkId
+    ) {
+        double score = 0.0;
+        boolean vector = chunk != null && chunk.getId() != null
+                && anchorChunkIds != null && anchorChunkIds.contains(chunk.getId());
+        double keyword = chunk != null && chunk.getId() != null && keywordScoresByChunkId != null
+                ? keywordScoresByChunkId.getOrDefault(chunk.getId(), 0.0) : 0.0;
+        if (vector) {
+            score += 8.0;
+        }
+        if (keyword > 0) {
+            score += keyword * 8.0;
+        }
+        if (vector && keyword > 0) {
+            score += 3.0;
+        }
+        String type = chunk == null || chunk.getChunkType() == null ? "text" : chunk.getChunkType();
+        if ("normalized_table_row".equals(type)) {
+            score += 2.0;
+            if (chunk.getCellsJson() != null && !chunk.getCellsJson().isBlank()) {
+                score += 1.0;
+            }
+        } else if ("table_summary".equals(type)) {
+            score += 0.5;
+        }
+        double overlap = quickTermOverlapScore(chunk, signals);
+        score += overlap;
+        boolean highConfidence = "normalized_table_row".equals(type)
+                && hasExactSignalsInNormalizedText(chunk, signals)
+                && (overlap >= 5.0 || (vector && keyword > 0) || keyword >= 0.75);
+        if (highConfidence && signals != null && !signals.identifiers().isEmpty()) {
+            score += Math.max(0.0, 6.0 - identifierNoise(chunk, signals) * 2.0);
+        }
+        return new CheapScoredCandidate(chunk, score, highConfidence);
+    }
+
+    private static boolean hasExactSignalsInNormalizedText(
+            DocumentChunk chunk,
+            QuerySignalExtractor.QuerySignals signals
+    ) {
+        if (chunk == null || signals == null) {
+            return false;
+        }
+        String haystack = KeywordSearchService.haystack(chunk);
+        int matchedCategories = 0;
+        boolean matchedIdentifier = false;
+        for (String id : signals.identifiers()) {
+            if (haystack.contains(QuerySignalExtractor.normalize(id))) {
+                matchedIdentifier = true;
+                matchedCategories++;
+                break;
+            }
+        }
+        for (String date : signals.dates()) {
+            if (haystack.contains(QuerySignalExtractor.normalize(date))) {
+                matchedCategories++;
+                break;
+            }
+        }
+        for (String label : signals.structuredLabels()) {
+            if (haystack.contains(QuerySignalExtractor.normalize(label))) {
+                matchedCategories++;
+                break;
+            }
+        }
+        for (String ngram : signals.ngrams()) {
+            if (ngram.length() >= 4 && haystack.contains(ngram)) {
+                matchedCategories++;
+                break;
+            }
+        }
+        return matchedIdentifier || matchedCategories >= 2;
+    }
+
+    private static double quickTermOverlapScore(DocumentChunk chunk, QuerySignalExtractor.QuerySignals signals) {
+        if (chunk == null || signals == null) {
+            return 0.0;
+        }
         String haystack = KeywordSearchService.haystack(chunk);
         double score = 0.0;
         for (String id : signals.identifiers()) {
@@ -925,13 +1123,23 @@ public class RagRetrievalService {
         List<DocumentChunk> deduped = dedupeCandidates(chunks);
         log.info("[RAG][candidates] deduped={}", deduped.size());
 
+        long scoringStart = RagLatencyTrace.now();
         List<ScoredChunk> scored = scoreCandidatesForSelection(
-                question, deduped, anchorChunkIds, null, keywordScoresByChunkId);
+                question, deduped, queryType, anchorChunkIds, null, keywordScoresByChunkId);
         scored = demoteLeakyTextCandidates(question, scored);
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        if (trace != null) {
+            trace.addScoringMs(RagLatencyTrace.elapsedMs(scoringStart));
+            trace.setCandidates(deduped.size(), scored.size());
+        }
         logHybridTopRanks(scored, anchorChunkIds, keywordScoresByChunkId);
 
+        long selectStart = RagLatencyTrace.now();
         SelectionWithBudget selection = selectTopNByScoreWithBudget(
                 scored, finalContextTopN, maxContextChars, question);
+        if (trace != null) {
+            trace.addContextSelectMs(RagLatencyTrace.elapsedMs(selectStart));
+        }
         logCellAwareNormalizedRows(question, scored);
         List<DocumentChunk> ordered = sortByDocumentOrder(
                 selection.chunks(), isExpandedQuery || isLockedScope);
@@ -941,6 +1149,9 @@ public class RagRetrievalService {
                 .sum();
         promptBudgetResolver.logBudget(
                 finalContextTopN, ordered.size(), contextChars, selection.budgetLimited());
+        if (trace != null) {
+            trace.setContextStats(ordered.size(), contextChars);
+        }
 
         log.info("[RAG][select] selectedByScore={} finalContexts={} maxContextChars={}",
                 selection.chunks().size(), ordered.size(), maxContextChars);
@@ -996,6 +1207,7 @@ public class RagRetrievalService {
 
     private List<ScoredChunk> scoreCandidatesForSelection(String question,
                                                           List<DocumentChunk> deduped,
+                                                          QueryAnalyzerService.QueryType queryType,
                                                           Set<UUID> anchorChunkIds,
                                                           String scorerHint,
                                                           Map<UUID, Double> keywordScoresByChunkId) {
@@ -1003,10 +1215,18 @@ public class RagRetrievalService {
             return List.of();
         }
 
+        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
+        List<CheapScoredCandidate> cheapScored = cheapPreScoreCandidates(
+                deduped, signals, anchorChunkIds, keywordScoresByChunkId);
+        ScoringBudget budget = resolveScoringBudget(question, signals, queryType, deduped.size());
+        List<DocumentChunk> expensiveSubset = selectExpensiveScoringSubset(
+                cheapScored, budget, keywordScoresByChunkId);
+        int droppedByCheapGate = Math.max(0, deduped.size() - expensiveSubset.size());
+        long cellAwareStart = RagLatencyTrace.now();
         Map<UUID, Double> rerankScores = new HashMap<>();
         String scorer = scorerHint;
         if (rerankService.isEnabled()) {
-            List<RerankService.ScoredChunk> reranked = rerankService.scoreCandidates(question, deduped);
+            List<RerankService.ScoredChunk> reranked = rerankService.scoreCandidates(question, expensiveSubset);
             for (RerankService.ScoredChunk rc : reranked) {
                 if (rc.chunk().getId() != null) {
                     rerankScores.put(rc.chunk().getId(), rc.score());
@@ -1017,15 +1237,15 @@ public class RagRetrievalService {
             }
         }
 
-        Map<String, Double> idfByTerm = computeIdfWeights(deduped, extractQueryTermsForScoring(question));
-        double maxLexical = deduped.stream()
+        Map<String, Double> idfByTerm = computeIdfWeights(expensiveSubset, extractQueryTermsForScoring(question));
+        double maxLexical = expensiveSubset.stream()
                 .mapToDouble(c -> lexicalIdfScore(c, idfByTerm))
                 .max()
                 .orElse(0.0);
         boolean hybrid = keywordSearchService.isHybridEnabled()
                 && keywordScoresByChunkId != null && !keywordScoresByChunkId.isEmpty();
         List<ScoredChunk> scored = new ArrayList<>();
-        for (DocumentChunk chunk : deduped) {
+        for (DocumentChunk chunk : expensiveSubset) {
             double lexicalRaw = lexicalIdfScore(chunk, idfByTerm);
             double lexical = maxLexical > 0 ? lexicalRaw / maxLexical : 0.0;
             double vector = anchorChunkIds != null && chunk.getId() != null
@@ -1055,17 +1275,151 @@ public class RagRetrievalService {
 
         scored = applyCellAwareScoreBoost(question, scored);
         scored = applyTableRowPriorityAdjustments(question, scored);
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        if (trace != null) {
+            long cellAwareMs = RagLatencyTrace.elapsedMs(cellAwareStart);
+            int cellAwareCandidates = (int) expensiveSubset.stream()
+                    .filter(c -> "normalized_table_row".equals(c.getChunkType()))
+                    .count();
+            trace.addCellAwareMs(cellAwareMs);
+            trace.setScoringCandidateStats(
+                    cheapScored.size(),
+                    cellAwareCandidates,
+                    rerankService.isEnabled() ? expensiveSubset.size() : 0,
+                    droppedByCheapGate);
+        }
 
         if (scorer == null) {
             scorer = hybrid
                     ? "HYBRID|RERANK|BM25_IDF"
                     : rerankScores.isEmpty() ? "BM25_IDF|VECTOR_FALLBACK" : "RERANK_SERVICE|BM25_IDF";
         }
+        long sortStart = RagLatencyTrace.now();
         scored = scored.stream()
                 .sorted(Comparator.comparingDouble(ScoredChunk::finalScore).reversed())
                 .toList();
-        log.info("[RAG][rerank] scorer={} candidates={} hybrid={}", scorer, scored.size(), hybrid);
+        if (trace != null) {
+            trace.addFinalSortMs(RagLatencyTrace.elapsedMs(sortStart));
+        }
+        log.info("[RAG][rerank] scorer={} candidates={} cheapScored={} cellAwareCandidates={} "
+                        + "budget={} reason={} droppedByCheapGate={} hybrid={}",
+                scorer, scored.size(), cheapScored.size(),
+                expensiveSubset.stream().filter(c -> "normalized_table_row".equals(c.getChunkType())).count(),
+                budget.expensiveLimit(), budget.reason(), droppedByCheapGate, hybrid);
         return scored;
+    }
+
+    static List<CheapScoredCandidate> cheapPreScoreCandidates(
+            List<DocumentChunk> deduped,
+            QuerySignalExtractor.QuerySignals signals,
+            Set<UUID> anchorChunkIds,
+            Map<UUID, Double> keywordScoresByChunkId
+    ) {
+        if (deduped == null || deduped.isEmpty()) {
+            return List.of();
+        }
+        return deduped.stream()
+                .map(c -> cheapPreScoreCandidate(c, signals, anchorChunkIds, keywordScoresByChunkId))
+                .sorted(Comparator.comparingDouble(CheapScoredCandidate::score).reversed())
+                .toList();
+    }
+
+    static ScoringBudget resolveScoringBudget(
+            String question,
+            QuerySignalExtractor.QuerySignals signals,
+            int candidateCount
+    ) {
+        return resolveScoringBudget(question, signals, null, candidateCount);
+    }
+
+    static ScoringBudget resolveScoringBudget(
+            String question,
+            QuerySignalExtractor.QuerySignals signals,
+            QueryAnalyzerService.QueryType queryType,
+            int candidateCount
+    ) {
+        QueryAnalyzerService.QueryType assumedType = KeywordSearchService.isTableLikeQuery(signals, question)
+                ? QueryAnalyzerService.QueryType.TABLE_LOOKUP
+                : QueryAnalyzerService.QueryType.NORMAL_FACT;
+        QueryAnalyzerService.QueryType effectiveType = queryType == null ? assumedType : queryType;
+        String reason = adaptiveTopNReason(question, effectiveType);
+        String normalizedQuestion = QuerySignalExtractor.normalize(question);
+        boolean listMarkers = containsAnyNormalized(normalizedQuestion,
+                "liet ke", "tat ca", "danh sach", "bao gom", "nhung gi", "list all", "all entries",
+                "co nhung", "co cac");
+        if (question == null || question.isBlank()) {
+            reason = "oos_or_weak";
+        } else if ((effectiveType == QueryAnalyzerService.QueryType.LIST_ALL
+                || effectiveType == QueryAnalyzerService.QueryType.COUNT_QUERY)
+                && (signals == null || signals.identifiers().isEmpty() || listMarkers)) {
+            reason = "list_like";
+        }
+        if (containsAnyNormalized(normalizedQuestion,
+                "so sanh", "compare", "khac nhau", "giong nhau", " vs ")) {
+            reason = "compare_like";
+        } else if ((signals == null || signals.identifiers().isEmpty() || listMarkers) && listMarkers) {
+            reason = "list_like";
+        }
+        if ("list_like".equals(reason)
+                && signals != null
+                && !signals.identifiers().isEmpty()
+                && !listMarkers) {
+            reason = signals.structuredLabels().size() >= 2 ? "multi_attribute_lookup" : "fact_like";
+        }
+        int limit = switch (reason) {
+            case "list_like" -> LIST_SCORING_BUDGET;
+            case "compare_like" -> COMPARE_SCORING_BUDGET;
+            case "multi_attribute_lookup" -> MULTI_ATTRIBUTE_SCORING_BUDGET;
+            case "oos_or_weak" -> WEAK_SCORING_BUDGET;
+            default -> FACT_SCORING_BUDGET;
+        };
+        return new ScoringBudget(Math.min(Math.max(1, candidateCount), limit), SAFETY_TAIL_CANDIDATES, reason);
+    }
+
+    static List<DocumentChunk> selectExpensiveScoringSubset(
+            List<CheapScoredCandidate> cheapScored,
+            ScoringBudget budget,
+            Map<UUID, Double> keywordScoresByChunkId
+    ) {
+        if (cheapScored == null || cheapScored.isEmpty()) {
+            return List.of();
+        }
+        int limit = budget == null ? FACT_SCORING_BUDGET : budget.expensiveLimit();
+        List<CheapScoredCandidate> highConfidence = cheapScored.stream()
+                .filter(CheapScoredCandidate::highConfidence)
+                .limit(Math.max(0, limit - (budget == null ? SAFETY_TAIL_CANDIDATES : budget.safetyTail())))
+                .toList();
+        List<DocumentChunk> selected = new ArrayList<>();
+        Set<UUID> seen = new LinkedHashSet<>();
+        for (CheapScoredCandidate candidate : highConfidence) {
+            addIfNew(selected, seen, candidate.chunk());
+        }
+        for (CheapScoredCandidate candidate : cheapScored) {
+            if (selected.size() >= limit) {
+                break;
+            }
+            addIfNew(selected, seen, candidate.chunk());
+        }
+        if (keywordScoresByChunkId != null && !keywordScoresByChunkId.isEmpty()) {
+            for (CheapScoredCandidate candidate : cheapScored) {
+                if (selected.size() >= limit) {
+                    break;
+                }
+                DocumentChunk c = candidate.chunk();
+                if (c != null && c.getId() != null && keywordScoresByChunkId.containsKey(c.getId())) {
+                    addIfNew(selected, seen, c);
+                }
+            }
+        }
+        return selected;
+    }
+
+    private static void addIfNew(List<DocumentChunk> selected, Set<UUID> seen, DocumentChunk chunk) {
+        if (chunk == null || chunk.getId() == null || seen.contains(chunk.getId())) {
+            return;
+        }
+        selected.add(chunk);
+        seen.add(chunk.getId());
     }
 
     static List<DocumentChunk> selectTopNByScore(List<ScoredChunk> scored,
@@ -1123,9 +1477,103 @@ public class RagRetrievalService {
             selected.add(c);
         }
         if (tableLikeQuery && CellAwareTableRowScorer.isCompareQuery(question, signals)) {
+            long diversityStart = RagLatencyTrace.now();
             selected = applyCompareLabelCoverage(selected, scored, signals, limit);
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addSourceDiversityMs(RagLatencyTrace.elapsedMs(diversityStart));
+            }
+        } else if (tableLikeQuery && signals != null && !signals.identifiers().isEmpty()) {
+            long diversityStart = RagLatencyTrace.now();
+            selected = applyExactIdentifierSourceDiversity(selected, scored, signals, limit);
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addSourceDiversityMs(RagLatencyTrace.elapsedMs(diversityStart));
+            }
         }
         return new SelectionWithBudget(selected, budgetLimited);
+    }
+
+    static List<DocumentChunk> applyExactIdentifierSourceDiversity(
+            List<DocumentChunk> selected,
+            List<ScoredChunk> scored,
+            QuerySignalExtractor.QuerySignals signals,
+            int limit
+    ) {
+        if (selected == null || scored == null || signals == null || signals.identifiers().isEmpty()) {
+            return selected == null ? List.of() : selected;
+        }
+        List<DocumentChunk> result = new ArrayList<>(selected);
+        Set<String> selectedSources = result.stream()
+                .filter(c -> "normalized_table_row".equals(c.getChunkType()))
+                .filter(c -> CellAwareTableRowScorer.hasExactCellMatch(c, signals))
+                .map(RagRetrievalService::tableSourceKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (selectedSources.size() != 1) {
+            return result;
+        }
+        Optional<ScoredChunk> alternative = scored.stream()
+                .filter(sc -> "normalized_table_row".equals(sc.chunk().getChunkType()))
+                .filter(sc -> CellAwareTableRowScorer.hasExactCellMatch(sc.chunk(), signals))
+                .filter(sc -> !selectedSources.contains(tableSourceKey(sc.chunk())))
+                .filter(sc -> result.stream().noneMatch(c -> c.getId() != null
+                        && c.getId().equals(sc.chunk().getId())))
+                .min(Comparator
+                        .comparingInt((ScoredChunk sc) -> identifierNoise(sc.chunk(), signals))
+                        .thenComparing(Comparator.comparingDouble(ScoredChunk::finalScore).reversed()));
+        if (alternative.isEmpty()) {
+            return result;
+        }
+        int noisySelectedIndex = -1;
+        int noisySelectedScore = 0;
+        int alternativeNoise = identifierNoise(alternative.get().chunk(), signals);
+        for (int i = 0; i < result.size(); i++) {
+            DocumentChunk c = result.get(i);
+            if (!"normalized_table_row".equals(c.getChunkType())
+                    || !CellAwareTableRowScorer.hasExactCellMatch(c, signals)) {
+                continue;
+            }
+            int noise = identifierNoise(c, signals);
+            if (noise > noisySelectedScore) {
+                noisySelectedScore = noise;
+                noisySelectedIndex = i;
+            }
+        }
+        if (noisySelectedIndex >= 0 && noisySelectedScore > alternativeNoise + 1) {
+            result.set(noisySelectedIndex, alternative.get().chunk());
+        } else {
+            if (result.size() >= Math.max(1, limit) && !result.isEmpty()) {
+                result.remove(result.size() - 1);
+            }
+            result.add(alternative.get().chunk());
+        }
+        return result;
+    }
+
+    private static int identifierNoise(DocumentChunk chunk, QuerySignalExtractor.QuerySignals signals) {
+        if (chunk == null || signals == null) {
+            return 0;
+        }
+        Set<String> queryIds = signals.identifiers().stream()
+                .map(QuerySignalExtractor::normalize)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> rowIds = QuerySignalExtractor.extract(
+                        Optional.ofNullable(chunk.getCellsJson()).orElse("") + " "
+                                + Optional.ofNullable(chunk.getContent()).orElse(""))
+                .identifiers().stream()
+                .map(QuerySignalExtractor::normalize)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        rowIds.removeAll(queryIds);
+        return rowIds.size();
+    }
+
+    private static String tableSourceKey(DocumentChunk chunk) {
+        if (chunk == null) {
+            return "";
+        }
+        String section = Optional.ofNullable(chunk.getSectionId()).orElse("");
+        String table = Optional.ofNullable(chunk.getTableName()).orElse("");
+        return section + "|" + table;
     }
 
     static List<DocumentChunk> applyCompareLabelCoverage(
@@ -1410,6 +1858,9 @@ public class RagRetrievalService {
                 .fileName(c.getSourceFile())
                 .content(content)
                 .cellsJson(c.getCellsJson())
+                .tableName(c.getTableName())
+                .rowIndex(c.getRowIndex())
+                .groupContext(c.getGroupContext())
                 .chunkType(c.getChunkType())
                 .sectionId(c.getSectionId())
                 .sectionTitle(c.getSectionTitle())

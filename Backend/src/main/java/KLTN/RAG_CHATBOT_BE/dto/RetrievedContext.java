@@ -13,6 +13,9 @@ public class RetrievedContext {
     private String fileName;
     private String content;
     private String cellsJson;
+    private String tableName;
+    private Integer rowIndex;
+    private String groupContext;
     private String chunkType;
     private String sectionId;
     private String sectionTitle;
