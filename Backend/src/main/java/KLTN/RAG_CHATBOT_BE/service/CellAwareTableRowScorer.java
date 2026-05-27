@@ -26,6 +26,8 @@ public final class CellAwareTableRowScorer {
 
     static final double EXACT_IDENTIFIER_CELL = 8.0;
     static final double EXACT_LABEL_CELL = 6.0;
+    /** Value present in cell but header key does not semantically match label type (e.g. col_N headers). */
+    static final double VALUE_COVERAGE_CELL = 4.0;
     static final double MULTI_SIGNAL_SAME_ROW = 5.0;
     static final double PHRASE_CELL = 2.0;
     static final double COLUMN_INTENT = 1.5;
@@ -85,6 +87,7 @@ public final class CellAwareTableRowScorer {
         for (ParsedStructuredLabel label : labels) {
             boolean matched = false;
             boolean conflict = false;
+            boolean valueCovered = false;
             for (Map.Entry<String, String> cell : cells.entrySet()) {
                 if (cellMatchesLabel(cell.getKey(), cell.getValue(), label)) {
                     exactLabel += EXACT_LABEL_CELL;
@@ -92,10 +95,17 @@ public final class CellAwareTableRowScorer {
                     matchedCategories.add("label");
                 } else if (cellConflictsWithLabel(cell.getKey(), cell.getValue(), label)) {
                     conflict = true;
+                } else if (!valueCovered && valueCoverageMatch(cell.getValue(), label)) {
+                    valueCovered = true;
                 }
             }
-            if (!matched && conflict) {
-                mismatch += MISMATCH_PENALTY;
+            if (!matched) {
+                if (valueCovered) {
+                    exactLabel += VALUE_COVERAGE_CELL;
+                    matchedCategories.add("label");
+                } else if (conflict) {
+                    mismatch += MISMATCH_PENALTY;
+                }
             }
         }
 
@@ -216,6 +226,27 @@ public final class CellAwareTableRowScorer {
         String value = QuerySignalExtractor.normalize(labelValue);
         String text = QuerySignalExtractor.normalize(normalizedText);
         return boundaryTokenEquals(text, value);
+    }
+
+    /**
+     * Value-level coverage: the label value appears in the cell (boundary match)
+     * regardless of whether the column key semantically matches the label type.
+     * Used as a fallback when headers are generic (col_N) and header-prefix
+     * similarity is too low for full label matching.
+     */
+    static boolean valueCoverageMatch(String cellValue, ParsedStructuredLabel label) {
+        if (label == null || label.value() == null || label.value().isBlank()) {
+            return false;
+        }
+        if (cellValue == null || cellValue.isBlank()) {
+            return false;
+        }
+        String normLabelValue = QuerySignalExtractor.normalize(label.value());
+        if (normLabelValue.isBlank()) {
+            return false;
+        }
+        String normCell = QuerySignalExtractor.normalize(cellValue);
+        return boundaryTokenEquals(normCell, normLabelValue);
     }
 
     private static boolean boundaryTokenEquals(String normalizedText, String normalizedNeedle) {

@@ -136,7 +136,12 @@ public class DocumentService {
                         "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
                         "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
                         "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
-                        "valuesPreservedCount={} valuesDroppedCount={}",
+                        "valuesPreservedCount={} valuesDroppedCount={} rawTableModelsCreated={} " +
+                        "rawTableModelsCreatedFromSpreadsheet={} rawTableModelsCreatedFromBasic={} " +
+                        "rawTableCellsWithCoordinates={} rawTableCellsMissingCoordinates={} " +
+                        "structuredTablesNormalized={} markdownTablesNormalizedLegacy={} " +
+                        "pdfTablesUsingMarkdownBridge={} spreadsheetTablesUsingMarkdownBridge={} " +
+                        "basicTablesUsingMarkdownBridge={} pageAttributionPhysicalCount={}",
                 document.getFileName(),
                 sections.size(),
                 chunks.size(),
@@ -171,7 +176,18 @@ public class DocumentService {
                 tableMetrics.getHeaderFragmentsWithCoordinates(),
                 tableMetrics.getHeaderFragmentsWithoutCoordinates(),
                 tableMetrics.getValuesPreservedCount(),
-                tableMetrics.getValuesDroppedCount()
+                tableMetrics.getValuesDroppedCount(),
+                tableMetrics.getRawTableModelsCreated(),
+                tableMetrics.getRawTableModelsCreatedFromSpreadsheet(),
+                tableMetrics.getRawTableModelsCreatedFromBasic(),
+                tableMetrics.getRawTableCellsWithCoordinates(),
+                tableMetrics.getRawTableCellsMissingCoordinates(),
+                tableMetrics.getStructuredTablesNormalized(),
+                tableMetrics.getMarkdownTablesNormalizedLegacy(),
+                tableMetrics.getPdfTablesUsingMarkdownBridge(),
+                tableMetrics.getSpreadsheetTablesUsingMarkdownBridge(),
+                tableMetrics.getBasicTablesUsingMarkdownBridge(),
+                tableMetrics.getPageAttributionPhysicalCount()
         );
 
         UUID widgetId = document.getWidgetConfig().getId();

@@ -26,6 +26,19 @@ public class NormalizedTableService {
     /** Max page span stored on a single normalized row batch. */
     static final int MAX_ROW_PAGE_SPAN = 3;
 
+    /**
+     * A coordinate header cell is "broad spanning" when its width exceeds this multiple of the target
+     * slot width. Broad cells are demoted from leaf-column headers to parent/context role.
+     */
+    private static final double BROAD_HEADER_CELL_FACTOR = 2.5;
+
+    /**
+     * When {@code >= BROAD_HEADER_REUSE_MIN} consecutive slots end up with the same non-generic
+     * pre-disambiguation header text, the run is treated as a broad-spanning parent header and all
+     * slots in the run are replaced with {@code col_N} fallbacks.
+     */
+    private static final int BROAD_HEADER_REUSE_MIN = 3;
+
     public record NormalizationRequest(
             String tableMarkdown,
             String sectionTitle,
@@ -76,11 +89,14 @@ public class NormalizedTableService {
             int headerFragmentsWithCoordinates,
             int headerFragmentsWithoutCoordinates,
             int valuesPreservedCount,
-            int valuesDroppedCount
+            int valuesDroppedCount,
+            int zeroOverlapHeaderRejected,
+            int broadSpanningHeaderDemoted,
+            int collisionSuffixPrevented
     ) {
         static QualityStats empty() {
             return new QualityStats(0, 0, 0.0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
     }
 
@@ -262,7 +278,8 @@ public class NormalizedTableService {
                 crossPageHeaderCarryCount,
                 mergeResult.sparseRowsRepaired(),
                 mergeResult.droppedCellFragments(),
-                headerAttribution);
+                headerAttribution,
+                0, 0, 0);
         String summary = buildNeutralTableSummary(
                 tableName, headers, outRows.size(), pageStart, pageEnd,
                 effectiveGroupContext(groupContext, headerContext));
@@ -281,6 +298,77 @@ public class NormalizedTableService {
 
         return new NormalizationResult(
                 true, tableName, outRows, summary, newState, null, confidence, stats);
+    }
+
+    public NormalizationResult normalizeRawTable(RawTableModel table, NormalizationRequest request) {
+        if (table == null || table.rows() == null || table.rows().isEmpty()) {
+            return NormalizationResult.fail("empty-raw-table");
+        }
+        int maxCols = table.rows().stream().mapToInt(r -> r.cells() == null ? 0 : r.cells().size()).max().orElse(0);
+        if (maxCols < 2) {
+            return NormalizationResult.fail("insufficient-raw-columns");
+        }
+
+        int scanFrom = firstSubstantiveRawRow(table.rows());
+        int dataStart = inferRawDataStart(table.rows(), scanFrom, maxCols);
+        if (dataStart <= scanFrom && dataStart < table.rows().size() && !isStrongRawDataRow(table.rows().get(dataStart), maxCols)) {
+            dataStart = Math.min(table.rows().size(), scanFrom + 1);
+        }
+        CoordInferenceResult inferResult = inferHeadersFromCoordinates(table, scanFrom, dataStart, maxCols);
+        List<CoordinateHeaderSlot> slots = inferResult.slots();
+        if (slots.size() < 2) {
+            return NormalizationResult.fail("insufficient-coordinate-headers");
+        }
+
+        CoordinateMergeResult mergeResult = mergeWrappedRowsWithCoordinateGuard(
+                table.rows().subList(Math.min(dataStart, table.rows().size()), table.rows().size()), slots);
+        String tableName = resolveTableName(request, null);
+        int requestPageStart = request == null ? 1 : request.pageStart();
+        int pageStart = table.pageNumber() > 0 ? table.pageNumber() : requestPageStart;
+        if (pageStart <= 0) {
+            pageStart = 1;
+        }
+        int pageEnd = pageStart;
+        List<String> headers = slots.stream().map(CoordinateHeaderSlot::header).toList();
+        List<NormalizedTableRow> outRows = new ArrayList<>();
+        int rowCounter = 0;
+        for (CoordinateLogicalRow row : mergeResult.rows()) {
+            Map<String, String> cells = mapCellsFromCoordinates(row, slots);
+            if (!isDataRow(cells)) {
+                continue;
+            }
+            rowCounter++;
+            outRows.add(NormalizedTableRow.of(tableName, rowCounter, cells, pageStart, pageEnd, null));
+        }
+        if (outRows.isEmpty()) {
+            return NormalizationResult.fail("no-coordinate-data-rows");
+        }
+
+        HeaderAttribution attribution = coordinateAttribution(slots);
+        QualityStats stats = buildStats(
+                outRows,
+                (int) slots.stream().filter(CoordinateHeaderSlot::fallbackGeneric).count(),
+                mergeResult.acceptedMerges(),
+                Math.max(0, dataStart - scanFrom - 1),
+                0,
+                mergeResult.acceptedMerges(),
+                0,
+                attribution,
+                inferResult.zeroOverlapRejected(),
+                inferResult.broadSpanningDemoted(),
+                inferResult.collisionSuffixPrevented());
+        String summary = buildNeutralTableSummary(tableName, headers, outRows.size(), pageStart, pageEnd, null);
+        LogicalTableState state = new LogicalTableState(
+                "lt_raw_" + table.pageNumber() + "_" + table.tableIndexOnPage(),
+                tableName,
+                headers,
+                headers.stream().map(NormalizedTableService::headerToKey).toList(),
+                headers.size(),
+                pageEnd,
+                request == null ? null : request.sectionTitle(),
+                null,
+                rowCounter);
+        return new NormalizationResult(true, tableName, outRows, summary, state, null, 0.95, stats);
     }
 
     public static String buildCanonicalText(
@@ -383,6 +471,24 @@ public class NormalizedTableService {
             }
         }
         return new SuppressionProfile(Set.copyOf(cells), Set.copyOf(headers));
+    }
+
+    public SuppressionProfile buildSuppressionProfile(List<RawTableModel> rawTables) {
+        if (rawTables == null || rawTables.isEmpty()) {
+            return SuppressionProfile.empty();
+        }
+        Set<String> cells = new LinkedHashSet<>();
+        for (RawTableModel table : rawTables) {
+            if (table == null || table.rows() == null) {
+                continue;
+            }
+            for (RawTableRow row : table.rows()) {
+                for (RawTableCell cell : row.cells()) {
+                    addTokensFromCell(cell.text(), cells, 3);
+                }
+            }
+        }
+        return new SuppressionProfile(Set.copyOf(cells), Set.of());
     }
 
     public SuppressionProfile buildSuppressionProfile(NormalizationResult result) {
@@ -1195,6 +1301,561 @@ public class NormalizedTableService {
         return value == null || value.replaceAll("[|\\-\\s:]", "").isBlank();
     }
 
+    /** Fragment text together with the source cell's x-range; used for broad-spanning detection. */
+    private record CoordFragment(String text, double srcX, double srcXEnd) {}
+
+    /** Return value of {@link #inferHeadersFromCoordinates} carrying both slots and diagnostic counts. */
+    private record CoordInferenceResult(
+            List<CoordinateHeaderSlot> slots,
+            int zeroOverlapRejected,
+            int broadSpanningDemoted,
+            int collisionSuffixPrevented
+    ) {}
+
+    private record CoordinateHeaderSlot(
+            int columnIndex,
+            String header,
+            double x,
+            double xEnd,
+            boolean fallbackGeneric,
+            List<String> fragments
+    ) {}
+
+    private record CoordinateLogicalRow(
+            Map<Integer, List<RawTableCell>> cellsByColumn,
+            int pageNumber
+    ) {}
+
+    private record CoordinateMergeResult(
+            List<CoordinateLogicalRow> rows,
+            int attempts,
+            int acceptedMerges,
+            int rejectedByNewIdentifier,
+            int rejectedByNewRowNumber,
+            int rejectedByXOverlap
+    ) {}
+
+    private static int firstSubstantiveRawRow(List<RawTableRow> rows) {
+        for (int i = 0; i < rows.size(); i++) {
+            if (rows.get(i).cells().stream().anyMatch(c -> c.text() != null && !c.text().isBlank())) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static int inferRawDataStart(List<RawTableRow> rows, int scanFrom, int maxCols) {
+        int limit = Math.min(rows.size(), scanFrom + 8);
+        int lastHeader = scanFrom - 1;
+        for (int i = scanFrom; i < limit; i++) {
+            RawTableRow row = rows.get(i);
+            if (isRawBlankRow(row)) {
+                continue;
+            }
+            if (isStrongRawDataRow(row, maxCols)) {
+                return i;
+            }
+            if (countNonEmptyRaw(row) >= 1) {
+                lastHeader = i;
+            }
+        }
+        if (rows.size() - scanFrom >= 3) {
+            return Math.min(rows.size(), scanFrom + 2);
+        }
+        return Math.min(rows.size(), scanFrom + 1);
+    }
+
+    private static boolean isRawBlankRow(RawTableRow row) {
+        return row == null || row.cells() == null
+                || row.cells().stream().allMatch(c -> c.text() == null || c.text().isBlank());
+    }
+
+    private static int countNonEmptyRaw(RawTableRow row) {
+        if (row == null || row.cells() == null) {
+            return 0;
+        }
+        int count = 0;
+        for (RawTableCell cell : row.cells()) {
+            if (cell.text() != null && !cell.text().isBlank()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isStrongRawDataRow(RawTableRow row, int maxCols) {
+        if (row == null || row.cells() == null) {
+            return false;
+        }
+        int nonEmpty = countNonEmptyRaw(row);
+        if (nonEmpty < 2) {
+            return false;
+        }
+        for (RawTableCell cell : row.cells()) {
+            String text = safe(cell.text());
+            if (text.isBlank()) {
+                continue;
+            }
+            if (cell.physicalColIndex() <= 1 && ROW_NUMBER_START.matcher(text).matches()) {
+                return true;
+            }
+            if (cell.physicalColIndex() <= Math.min(4, maxCols - 1) && looksLikeIdentifierToken(text)) {
+                return true;
+            }
+        }
+        int numeric = 0;
+        for (RawTableCell cell : row.cells()) {
+            String text = safe(cell.text());
+            if (!text.isBlank() && text.matches("^\\d+([.,]\\d+)?$")) {
+                numeric++;
+            }
+        }
+        return maxCols >= 3 && numeric >= Math.max(2, nonEmpty / 2);
+    }
+
+    private static CoordInferenceResult inferHeadersFromCoordinates(
+            RawTableModel table,
+            int headerStart,
+            int dataStart,
+            int maxCols
+    ) {
+        // ---- Step 1: compute slot x-ranges from data cells ----
+        double[] slotX    = new double[maxCols];
+        double[] slotXEnd = new double[maxCols];
+        java.util.Arrays.fill(slotX, Double.MAX_VALUE);
+        java.util.Arrays.fill(slotXEnd, 0.0);
+        for (int col = 0; col < maxCols; col++) {
+            for (int r = Math.max(0, dataStart); r < table.rows().size(); r++) {
+                RawTableCell cell = cellAt(table.rows().get(r), col);
+                if (cell != null && cell.hasCoordinates()) {
+                    slotX[col]    = Math.min(slotX[col],    cell.x());
+                    slotXEnd[col] = Math.max(slotXEnd[col], cell.xEnd());
+                }
+            }
+            if (slotX[col] == Double.MAX_VALUE) {
+                for (RawTableRow row : table.rows()) {
+                    RawTableCell cell = cellAt(row, col);
+                    if (cell != null && cell.hasCoordinates()) {
+                        slotX[col]    = Math.min(slotX[col],    cell.x());
+                        slotXEnd[col] = Math.max(slotXEnd[col], cell.xEnd());
+                    }
+                }
+            }
+            if (slotX[col] == Double.MAX_VALUE) {
+                slotX[col]    = col;
+                slotXEnd[col] = col + 1.0;
+            }
+        }
+
+        // ---- Step 2: collect fragments with zero-overlap rejection and broad classification ----
+        // Fix 1: fragments with overlap <= 0 are rejected (they come from nearest-center fallback
+        //        and would introduce wrong repeated parent keys across unrelated columns).
+        // Fix 3: fragments are classified as child (narrow, well-aligned) or parent (broad spanning).
+        int zeroOverlapRejected = 0;
+        int broadSpanningCandidates = 0;
+        List<List<CoordFragment>> childFragsPerSlot  = new ArrayList<>();
+        List<List<CoordFragment>> parentFragsPerSlot = new ArrayList<>();
+
+        for (int col = 0; col < maxCols; col++) {
+            double sx = slotX[col], sx2 = slotXEnd[col];
+            double slotWidth = sx2 - sx;
+            List<CoordFragment> childFrags  = new ArrayList<>();
+            List<CoordFragment> parentFrags = new ArrayList<>();
+
+            for (int r = Math.max(0, headerStart); r < Math.min(dataStart, table.rows().size()); r++) {
+                RawTableRow headerRow = table.rows().get(r);
+                RawTableCell best = bestHeaderCellForSlot(headerRow, sx, sx2, col);
+                if (best == null || best.text() == null || best.text().isBlank()) continue;
+
+                double ov = overlap(best.x(), best.xEnd(), sx, sx2);
+                if (ov <= 0.0) {
+                    // Fix 1: reject zero-overlap — prevents wrong parent keys from being inherited
+                    zeroOverlapRejected++;
+                    continue;
+                }
+
+                String fragText = best.text().trim().replaceAll("\\s+", " ");
+                CoordFragment frag = new CoordFragment(fragText, best.x(), best.xEnd());
+
+                // Fix 3: classify by cell width relative to slot width
+                double srcWidth = best.xEnd() - best.x();
+                boolean isBroad = slotWidth > 0.0 && srcWidth > slotWidth * BROAD_HEADER_CELL_FACTOR;
+                if (isBroad) {
+                    parentFrags.add(frag);
+                    broadSpanningCandidates++;
+                } else {
+                    childFrags.add(frag);
+                }
+            }
+            childFragsPerSlot.add(childFrags);
+            parentFragsPerSlot.add(parentFrags);
+        }
+
+        // ---- Step 3: select final header per slot (child preferred over broad parent) ----
+        // Fix 3: if child fragments exist, use them; fall back to parent only when no child.
+        List<CoordinateHeaderSlot> rawSlots = new ArrayList<>();
+        int broadFallbackUsed = 0;
+
+        for (int col = 0; col < maxCols; col++) {
+            double sx = slotX[col], sx2 = slotXEnd[col];
+            List<CoordFragment> childFrags  = childFragsPerSlot.get(col);
+            List<CoordFragment> parentFrags = parentFragsPerSlot.get(col);
+
+            // Fix 3: prefer child (non-broad) over broad parent
+            List<CoordFragment> preferred = childFrags.isEmpty() ? parentFrags : childFrags;
+            if (childFrags.isEmpty() && !parentFrags.isEmpty()) broadFallbackUsed++;
+
+            // Collect all fragment texts for diagnostic/metadata
+            List<String> allFragsText = new ArrayList<>();
+            childFrags.forEach(f -> allFragsText.add(f.text()));
+            parentFrags.forEach(f -> { if (!allFragsText.contains(f.text())) allFragsText.add(f.text()); });
+
+            String selected = "";
+            for (int i = preferred.size() - 1; i >= 0; i--) {
+                String candidate = cleanSameColumnHeader(preferred.get(i).text());
+                if (!candidate.isBlank() && !isAmbiguousSingleColumnHeader(candidate)) {
+                    selected = candidate;
+                    break;
+                }
+            }
+            boolean fallback = selected.isBlank();
+            if (fallback) selected = "col_" + (col + 1);
+
+            rawSlots.add(new CoordinateHeaderSlot(col, selected, sx, sx2, fallback, List.copyOf(allFragsText)));
+        }
+
+        // ---- Step 4: demote broad spanning parent headers reused across adjacent slots ----
+        // Fix 2 + Fix 4: if the same non-generic header text appears in >= BROAD_HEADER_REUSE_MIN
+        // consecutive slots (before disambiguation), it came from one broad spanning parent cell and
+        // must not be collision-suffixed into key, key_2, key_3, … — replace entire run with col_N.
+        BroadDemotionResult demotionResult = applyBroadSpanningFallback(rawSlots);
+        List<CoordinateHeaderSlot> slots = disambiguateCoordinateSlots(demotionResult.slots());
+
+        return new CoordInferenceResult(
+                slots,
+                zeroOverlapRejected,
+                demotionResult.demotedCount(),
+                demotionResult.collisionSuffixPrevented());
+    }
+
+    private record BroadDemotionResult(
+            List<CoordinateHeaderSlot> slots,
+            int demotedCount,
+            int collisionSuffixPrevented
+    ) {}
+
+    /**
+     * Replace runs of {@code >= BROAD_HEADER_REUSE_MIN} adjacent slots that share the same
+     * non-generic header with generic {@code col_N} fallbacks.
+     *
+     * <p>This prevents one broad spanning parent cell from producing {@code key}, {@code key_2},
+     * {@code key_3}, … across many structurally distinct columns.</p>
+     */
+    private static BroadDemotionResult applyBroadSpanningFallback(List<CoordinateHeaderSlot> slots) {
+        if (slots == null || slots.size() < BROAD_HEADER_REUSE_MIN) {
+            return new BroadDemotionResult(
+                    slots == null ? List.of() : List.copyOf(slots), 0, 0);
+        }
+        int n = slots.size();
+        boolean[] demote = new boolean[n];
+        int i = 0;
+        while (i < n) {
+            CoordinateHeaderSlot s = slots.get(i);
+            if (s.fallbackGeneric()) { i++; continue; }
+            String norm = normalizeForMatch(s.header());
+            if (norm.isBlank()) { i++; continue; }
+
+            int j = i + 1;
+            while (j < n && !slots.get(j).fallbackGeneric()
+                    && normalizeForMatch(slots.get(j).header()).equals(norm)) {
+                j++;
+            }
+            int runLen = j - i;
+            if (runLen >= BROAD_HEADER_REUSE_MIN) {
+                for (int k = i; k < j; k++) demote[k] = true;
+            }
+            i = j;
+        }
+
+        List<CoordinateHeaderSlot> result = new ArrayList<>();
+        int demoted = 0;
+        for (int k = 0; k < n; k++) {
+            CoordinateHeaderSlot slot = slots.get(k);
+            if (demote[k]) {
+                result.add(new CoordinateHeaderSlot(
+                        slot.columnIndex(), "col_" + (slot.columnIndex() + 1),
+                        slot.x(), slot.xEnd(), true, slot.fragments()));
+                demoted++;
+            } else {
+                result.add(slot);
+            }
+        }
+        return new BroadDemotionResult(List.copyOf(result), demoted, demoted);
+    }
+
+    private static RawTableCell bestHeaderCellForSlot(RawTableRow row, double x, double xEnd, int fallbackCol) {
+        if (row == null || row.cells() == null) {
+            return null;
+        }
+        RawTableCell best = null;
+        double bestScore = 0.0;
+        double center = (x + xEnd) / 2.0;
+        for (RawTableCell cell : row.cells()) {
+            String text = safe(cell.text());
+            if (text.isBlank()) {
+                continue;
+            }
+            double overlap = overlap(cell.x(), cell.xEnd(), x, xEnd);
+            double score = overlap > 0.0 ? overlap : 1.0 / (1.0 + Math.abs(cell.centerX() - center));
+            if (score > bestScore) {
+                best = cell;
+                bestScore = score;
+            }
+        }
+        if (best == null) {
+            best = cellAt(row, fallbackCol);
+        }
+        return best;
+    }
+
+    private static List<CoordinateHeaderSlot> disambiguateCoordinateSlots(List<CoordinateHeaderSlot> slots) {
+        Map<String, Integer> seen = new HashMap<>();
+        List<CoordinateHeaderSlot> out = new ArrayList<>();
+        for (CoordinateHeaderSlot slot : slots) {
+            String header = safe(slot.header()).isBlank() ? "col_" + (slot.columnIndex() + 1) : slot.header();
+            String key = normalizeForMatch(header);
+            int count = seen.getOrDefault(key, 0) + 1;
+            seen.put(key, count);
+            String unique = count == 1 ? header : header + "_" + count;
+            out.add(new CoordinateHeaderSlot(
+                    slot.columnIndex(), unique, slot.x(), slot.xEnd(), slot.fallbackGeneric(), slot.fragments()));
+        }
+        return List.copyOf(out);
+    }
+
+    private static CoordinateMergeResult mergeWrappedRowsWithCoordinateGuard(
+            List<RawTableRow> physicalRows,
+            List<CoordinateHeaderSlot> slots
+    ) {
+        List<CoordinateLogicalRow> merged = new ArrayList<>();
+        int attempts = 0;
+        int accepted = 0;
+        int rejectId = 0;
+        int rejectNum = 0;
+        int rejectX = 0;
+        double medianHeight = medianCellHeight(physicalRows);
+        double previousY = -1.0;
+        for (RawTableRow row : physicalRows) {
+            if (isRawBlankRow(row)) {
+                continue;
+            }
+            CoordinateLogicalRow current = toLogicalRow(row, slots);
+            if (merged.isEmpty()) {
+                merged.add(current);
+                previousY = rowY(row);
+                continue;
+            }
+            attempts++;
+            MergeDecision decision = coordinateContinuationDecision(row, current, slots, previousY, medianHeight);
+            if (decision == MergeDecision.ACCEPT) {
+                mergeLogicalRows(merged.get(merged.size() - 1), current);
+                accepted++;
+            } else {
+                if (decision == MergeDecision.NEW_IDENTIFIER) {
+                    rejectId++;
+                } else if (decision == MergeDecision.NEW_ROW_NUMBER) {
+                    rejectNum++;
+                } else if (decision == MergeDecision.X_OVERLAP) {
+                    rejectX++;
+                }
+                merged.add(current);
+            }
+            previousY = rowY(row);
+        }
+        return new CoordinateMergeResult(List.copyOf(merged), attempts, accepted, rejectId, rejectNum, rejectX);
+    }
+
+    private enum MergeDecision { ACCEPT, NEW_IDENTIFIER, NEW_ROW_NUMBER, X_OVERLAP, NEW_ROW_SHAPE }
+
+    private static MergeDecision coordinateContinuationDecision(
+            RawTableRow row,
+            CoordinateLogicalRow logicalRow,
+            List<CoordinateHeaderSlot> slots,
+            double previousY,
+            double medianHeight
+    ) {
+        int nonEmpty = countNonEmptyRaw(row);
+        if (hasRowNumberInLeadingColumns(row)) {
+            return MergeDecision.NEW_ROW_NUMBER;
+        }
+        if (hasIdentifierInLeadingColumns(row)) {
+            return MergeDecision.NEW_IDENTIFIER;
+        }
+        if (nonEmpty == 0) {
+            return MergeDecision.NEW_ROW_SHAPE;
+        }
+        if (nonEmpty >= 3) {
+            return MergeDecision.NEW_ROW_SHAPE;
+        }
+        if (nonEmpty == 1) {
+            return MergeDecision.ACCEPT;
+        }
+        double yGap = previousY < 0.0 ? 0.0 : Math.abs(rowY(row) - previousY);
+        if (medianHeight > 0.0 && yGap > medianHeight * 1.8) {
+            return MergeDecision.NEW_ROW_SHAPE;
+        }
+        for (RawTableCell cell : row.cells()) {
+            if (safe(cell.text()).isBlank()) {
+                continue;
+            }
+            CoordinateHeaderSlot slot = bestSlotForCell(cell, slots);
+            if (slot == null || overlap(cell.x(), cell.xEnd(), slot.x(), slot.xEnd()) <= 0.0) {
+                return MergeDecision.X_OVERLAP;
+            }
+        }
+        return MergeDecision.ACCEPT;
+    }
+
+    private static CoordinateLogicalRow toLogicalRow(RawTableRow row, List<CoordinateHeaderSlot> slots) {
+        Map<Integer, List<RawTableCell>> byColumn = new LinkedHashMap<>();
+        for (RawTableCell cell : row.cells()) {
+            if (safe(cell.text()).isBlank()) {
+                continue;
+            }
+            CoordinateHeaderSlot slot = bestSlotForCell(cell, slots);
+            int col = slot == null ? cell.physicalColIndex() : slot.columnIndex();
+            byColumn.computeIfAbsent(col, ignored -> new ArrayList<>()).add(cell);
+        }
+        int page = row.cells().isEmpty() ? 1 : row.cells().get(0).pageNumber();
+        return new CoordinateLogicalRow(byColumn, page);
+    }
+
+    private static void mergeLogicalRows(CoordinateLogicalRow previous, CoordinateLogicalRow continuation) {
+        for (Map.Entry<Integer, List<RawTableCell>> entry : continuation.cellsByColumn().entrySet()) {
+            previous.cellsByColumn().computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>()).addAll(entry.getValue());
+        }
+    }
+
+    private static Map<String, String> mapCellsFromCoordinates(
+            CoordinateLogicalRow row,
+            List<CoordinateHeaderSlot> slots
+    ) {
+        Map<String, String> cells = new LinkedHashMap<>();
+        for (CoordinateHeaderSlot slot : slots) {
+            List<RawTableCell> values = row.cellsByColumn().getOrDefault(slot.columnIndex(), List.of());
+            String value = values.stream()
+                    .map(RawTableCell::text)
+                    .filter(v -> v != null && !v.isBlank())
+                    .map(v -> v.trim().replaceAll("\\s+", " "))
+                    .reduce((a, b) -> a + " " + b)
+                    .orElse("");
+            cells.put(slot.header(), value);
+        }
+        return cells;
+    }
+
+    private static CoordinateHeaderSlot bestSlotForCell(RawTableCell cell, List<CoordinateHeaderSlot> slots) {
+        CoordinateHeaderSlot best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (CoordinateHeaderSlot slot : slots) {
+            double overlap = overlap(cell.x(), cell.xEnd(), slot.x(), slot.xEnd());
+            double score = overlap > 0.0
+                    ? overlap
+                    : -Math.abs(cell.centerX() - ((slot.x() + slot.xEnd()) / 2.0));
+            if (score > bestScore) {
+                best = slot;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    private static RawTableCell cellAt(RawTableRow row, int col) {
+        if (row == null || row.cells() == null || col < 0 || col >= row.cells().size()) {
+            return null;
+        }
+        return row.cells().get(col);
+    }
+
+    private static double overlap(double aStart, double aEnd, double bStart, double bEnd) {
+        return Math.max(0.0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+    }
+
+    private static double medianCellHeight(List<RawTableRow> rows) {
+        List<Double> heights = new ArrayList<>();
+        for (RawTableRow row : rows) {
+            for (RawTableCell cell : row.cells()) {
+                if (cell.height() > 0.0) {
+                    heights.add(cell.height());
+                }
+            }
+        }
+        if (heights.isEmpty()) {
+            return 0.0;
+        }
+        heights.sort(Double::compareTo);
+        return heights.get(heights.size() / 2);
+    }
+
+    private static double rowY(RawTableRow row) {
+        return row.cells().stream()
+                .filter(RawTableCell::hasCoordinates)
+                .mapToDouble(RawTableCell::y)
+                .min()
+                .orElse(0.0);
+    }
+
+    private static boolean hasRowNumberInLeadingColumns(RawTableRow row) {
+        for (RawTableCell cell : row.cells()) {
+            if (cell.physicalColIndex() <= 1 && ROW_NUMBER_START.matcher(safe(cell.text())).matches()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasIdentifierInLeadingColumns(RawTableRow row) {
+        for (RawTableCell cell : row.cells()) {
+            if (cell.physicalColIndex() <= 4 && looksLikeIdentifierToken(safe(cell.text()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean looksLikeIdentifierToken(String text) {
+        if (text == null) {
+            return false;
+        }
+        String t = text.trim();
+        return t.matches("(?=.*[A-Z])(?=.*\\d)[A-Z][A-Z0-9._-]{2,20}");
+    }
+
+    private static HeaderAttribution coordinateAttribution(List<CoordinateHeaderSlot> slots) {
+        List<HeaderSlot> headerSlots = new ArrayList<>();
+        int tokens = 0;
+        int noisy = 0;
+        for (CoordinateHeaderSlot slot : slots) {
+            tokens += tokenCount(slot.header());
+            if (isNoisyHeader(slot.header(), slot.fragments().size())) {
+                noisy++;
+            }
+            headerSlots.add(new HeaderSlot(
+                    slot.columnIndex(),
+                    slot.header(),
+                    slot.fragments(),
+                    slot.fallbackGeneric() ? 0.35 : 0.95,
+                    slot.fallbackGeneric(),
+                    slot.fragments().isEmpty() ? 0 : 1,
+                    false));
+        }
+        double avg = (double) tokens / Math.max(1, slots.size());
+        int fallback = (int) slots.stream().filter(CoordinateHeaderSlot::fallbackGeneric).count();
+        return new HeaderAttribution(
+                List.copyOf(headerSlots), 0, fallback, 0, 0,
+                slots.size(), 0, slots.size(), 0, avg, avg, noisy, noisy, List.of());
+    }
+
     private static QualityStats buildStats(
             List<NormalizedTableRow> rows,
             int genericColumnKeys,
@@ -1203,7 +1864,10 @@ public class NormalizedTableService {
             int crossPageHeaderCarryCount,
             int sparseRowsRepaired,
             int droppedCellFragments,
-            HeaderAttribution headerAttribution
+            HeaderAttribution headerAttribution,
+            int zeroOverlapRejected,
+            int broadSpanningDemoted,
+            int collisionSuffixPrevented
     ) {
         if (rows == null || rows.isEmpty()) {
             return QualityStats.empty();
@@ -1258,7 +1922,10 @@ public class NormalizedTableService {
                 attribution.fragmentsWithCoordinates(),
                 attribution.fragmentsWithoutCoordinates(),
                 valuesPreserved,
-                0);
+                0,
+                zeroOverlapRejected,
+                broadSpanningDemoted,
+                collisionSuffixPrevented);
     }
 
     private static Map<String, String> mapCells(List<String> headers, List<String> raw) {

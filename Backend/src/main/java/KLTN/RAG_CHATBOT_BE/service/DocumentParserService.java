@@ -90,6 +90,7 @@ public class DocumentParserService {
             String[] currentHeader = { "" };
             
             Map<Integer, String> pageContents = new java.util.HashMap<>();
+            Map<String, RawTableModel> rawTableRegistry = new java.util.LinkedHashMap<>();
             String lastTableHeader = null;
             int lastTableHeaderPage = -1;
 
@@ -107,7 +108,7 @@ public class DocumentParserService {
                 String pageText = stripper.getText(document);
 
                 // 2. Tabula extraction — chạy TRƯỚC để quyết định có cần EarlyDetect không
-                List<Table> tabulaTables = new java.util.ArrayList<>();
+                List<ExtractedTable> tabulaTables = new java.util.ArrayList<>();
                 boolean tabulaSpreadsheetFound = false;
                 long usableFromSpreadsheet = 0;
                 try {
@@ -116,13 +117,14 @@ public class DocumentParserService {
                     // Ưu tiên SpreadsheetExtractionAlgorithm (bảng có đường kẻ/ruling lines)
                     List<Table> spreadsheetTables = sea.extract(page);
                     tabulaSpreadsheetFound = !spreadsheetTables.isEmpty();
-                    tabulaTables.addAll(spreadsheetTables);
+                    for (Table table : spreadsheetTables) {
+                        tabulaTables.add(new ExtractedTable(table, RawTableModel.ExtractorType.SPREADSHEET));
+                    }
 
                     // Đếm số bảng usable từ SpreadsheetAlgo (quick pre-check, không log)
                     if (tabulaSpreadsheetFound) {
                         for (Table t : spreadsheetTables) {
-                            String md = convertTableToMarkdown(t, new String[]{""});
-                            if (isUsableTable(t, md)) {
+                            if (isUsableTable(t)) {
                                 usableFromSpreadsheet++;
                                 break; // Chỉ cần 1 usable là đủ để giữ SpreadsheetAlgo result
                             }
@@ -143,7 +145,9 @@ public class DocumentParserService {
                             log.debug("[Parse] Page {}: BasicAlgo={} tables (fallback từ SpreadsheetAlgo={} tables, 0 usable)",
                                     pageNum, basicTables.size(), tabulaTables.size());
                             tabulaTables.clear();
-                            tabulaTables.addAll(basicTables);
+                            for (Table table : basicTables) {
+                                tabulaTables.add(new ExtractedTable(table, RawTableModel.ExtractorType.BASIC));
+                            }
                         }
                     }
                 } catch (Exception e) {
@@ -151,9 +155,12 @@ public class DocumentParserService {
                 }
 
                 // 3. Extract accepted Tabula tables (markdown) — chưa ghi vào pageBuilder
-                StringBuilder acceptedMarkdownForPage = new StringBuilder();
-                List<String> tableBlocksForPage = new ArrayList<>();
-                for (Table table : tabulaTables) {
+                List<RawTableModel> acceptedRawTablesForPage = new ArrayList<>();
+                List<String> tableRefsForPage = new ArrayList<>();
+                int tableIndexOnPage = 0;
+                for (ExtractedTable extracted : tabulaTables) {
+                    Table table = extracted.table();
+                    /*
                     String headerBeforeConvert = currentHeader[0];
                     CrossPageMergeOutcome mergeOutcome = attemptCrossPageMerge(
                             table, pageNum, lastTableHeaderPage, headerBeforeConvert, currentHeader, pageContents);
@@ -167,33 +174,41 @@ public class DocumentParserService {
                         continue;
                     }
 
-                    String tableMarkdown = convertTableToMarkdown(table, currentHeader);
-                    if (!isUsableTable(table, tableMarkdown)) {
-                        logRejectedTable(table, tableMarkdown, pageNum);
+                    */
+                    if (!isUsableTable(table)) {
+                        logRejectedTable(table, pageNum);
+                        tableIndexOnPage++;
                         continue;
                     }
                     int acceptedRows = table.getRows() == null ? 0 : table.getRows().size();
                     int acceptedCols = table.getRows() == null || table.getRows().isEmpty() ? 0
                             : table.getRows().stream().mapToInt(List::size).max().orElse(0);
-                    String acceptedPreview = tableMarkdown.length() > 200
+                    RawTableModel rawTable = convertTabulaTableToRawTableModel(
+                            table, pageNum, tableIndexOnPage, extracted.extractorType(), pageText);
+                    String acceptedPreview = previewRawTable(rawTable);
+                    /*
+                    String legacyPreview = tableMarkdown.length() > 200
                             ? tableMarkdown.substring(0, 200).replace("\n", "↵") + "…"
                             : tableMarkdown.replace("\n", "↵");
-                    log.info("[Parse] Table ACCEPTED page={}: rows={} cols={} preview='{}'",
-                            pageNum, acceptedRows, acceptedCols, acceptedPreview);
-                    tableBlocksForPage.add(tableMarkdown);
-                    acceptedMarkdownForPage.append(tableMarkdown).append("\n");
-                    lastTableHeader = currentHeader[0];
+                    */
+                    log.info("[Parse] Table ACCEPTED page={}: extractor={} rows={} cols={} preview='{}'",
+                            pageNum, extracted.extractorType(), acceptedRows, acceptedCols, acceptedPreview);
+                    acceptedRawTablesForPage.add(rawTable);
+                    rawTableRegistry.put(rawTable.tableId(), rawTable);
+                    tableRefsForPage.add("[RAW_TABLE_REF:" + rawTable.tableId() + "]");
+                    lastTableHeader = "";
                     lastTableHeaderPage = pageNum;
+                    tableIndexOnPage++;
                 }
 
                 // 4. Text ngoài bảng — suppress raw overlap trước khi append
                 String processedText = (usableFromSpreadsheet > 0)
                         ? pageText
                         : detectTablesInRawText(pageText, pageNum);
-                if (acceptedMarkdownForPage.length() > 0) {
+                if (!acceptedRawTablesForPage.isEmpty()) {
                     int rawBefore = processedText == null ? 0 : processedText.length();
                     NormalizedTableService.SuppressionProfile pageProfile =
-                            normalizedTableService.buildSuppressionProfile(acceptedMarkdownForPage.toString());
+                            normalizedTableService.buildSuppressionProfile(acceptedRawTablesForPage);
                     NormalizedTableService.SuppressResult suppressResult =
                             normalizedTableService.suppressRawTableText(processedText, pageProfile);
                     processedText = suppressResult.text();
@@ -201,7 +216,7 @@ public class DocumentParserService {
                         log.info("[TableSuppress] page={} tablesOnPage={} cellValues={} rawCharsBefore={} "
                                         + "rawCharsAfter={} suppressedRawChars={} suppressedLines={} tableLikeLinesDropped={}",
                                 pageNum,
-                                tableBlocksForPage.size(),
+                                tableRefsForPage.size(),
                                 pageProfile.cellTokens().size(),
                                 rawBefore,
                                 processedText.length(),
@@ -212,10 +227,8 @@ public class DocumentParserService {
                 }
                 pageBuilder.append(cleanText(processedText)).append("\n");
 
-                for (String tableMarkdown : tableBlocksForPage) {
-                    pageBuilder.append("\n[TABLE_START]\n");
-                    pageBuilder.append(tableMarkdown);
-                    pageBuilder.append("[TABLE_END]\n");
+                for (String rawTableRef : tableRefsForPage) {
+                    pageBuilder.append("\n").append(rawTableRef).append("\n");
                 }
 
                 if (!tabulaTables.isEmpty()) {
@@ -228,7 +241,7 @@ public class DocumentParserService {
             }
             
             // Xử lý chia Section
-            return parseSections(pageContents); 
+            return parseSections(pageContents, rawTableRegistry); 
         }
     }
 
@@ -251,6 +264,10 @@ public class DocumentParserService {
     // 4. CORE LOGIC: CHIA SECTION TỪ MAP THEO TRANG
     // ==========================================
     public List<Section> parseSections(Map<Integer, String> pageContents) {
+        return parseSections(pageContents, Map.of());
+    }
+
+    public List<Section> parseSections(Map<Integer, String> pageContents, Map<String, RawTableModel> rawTableRegistry) {
         List<Section> sections = new ArrayList<>();
         TreeMap<Integer, String> sortedPages = new TreeMap<>(pageContents);
 
@@ -364,7 +381,34 @@ public class DocumentParserService {
             log.warn("[Parse] WARNING: 0 sections created from non-empty document. Check heading detection.");
         }
 
-        return sections;
+        return attachRawTablesToSections(sections, rawTableRegistry);
+    }
+
+    private List<Section> attachRawTablesToSections(List<Section> sections, Map<String, RawTableModel> registry) {
+        if (sections == null || sections.isEmpty() || registry == null || registry.isEmpty()) {
+            return sections;
+        }
+        Pattern markerPattern = Pattern.compile("\\[RAW_TABLE_REF:([^\\]]+)]");
+        List<Section> out = new ArrayList<>();
+        for (Section section : sections) {
+            Matcher matcher = markerPattern.matcher(section.content() == null ? "" : section.content());
+            List<RawTableBlock> blocks = new ArrayList<>();
+            while (matcher.find()) {
+                RawTableModel table = registry.get(matcher.group(1));
+                if (table != null) {
+                    blocks.add(new RawTableBlock(matcher.group(1), table));
+                }
+            }
+            out.add(new Section(
+                    section.header(),
+                    section.startPage(),
+                    section.endPage(),
+                    section.content(),
+                    section.orderIndex(),
+                    section.headingLevel(),
+                    blocks));
+        }
+        return out;
     }
 
     private static String safeTrim(String s) {
@@ -601,6 +645,97 @@ public class DocumentParserService {
 
     private record HeaderPlan(List<String> headers, int dataStart, int columnCount) {}
 
+    private record ExtractedTable(Table table, RawTableModel.ExtractorType extractorType) {}
+
+    RawTableModel convertTabulaTableToRawTableModel(
+            Table table,
+            int pageNumber,
+            int tableIndexOnPage,
+            RawTableModel.ExtractorType extractorType,
+            String rawPageContext
+    ) {
+        List<RawTableRow> rawRows = new ArrayList<>();
+        double minX = Double.MAX_VALUE;
+        double minY = Double.MAX_VALUE;
+        double maxX = 0.0;
+        double maxY = 0.0;
+        List<List<RectangularTextContainer>> rows = table == null ? List.of() : table.getRows();
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<RawTableCell> cells = new ArrayList<>();
+            List<RectangularTextContainer> row = rows.get(rowIndex);
+            for (int colIndex = 0; colIndex < row.size(); colIndex++) {
+                RectangularTextContainer cell = row.get(colIndex);
+                String text = cell.getText() == null ? "" : cell.getText().trim().replace("\n", " ")
+                        .replaceAll("\\s+", " ");
+                double x = cell.getX();
+                double y = cell.getY();
+                double width = cell.getWidth();
+                double height = cell.getHeight();
+                double xEnd = x + width;
+                double yEnd = y + height;
+                if (width > 0.0 && height > 0.0) {
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, xEnd);
+                    maxY = Math.max(maxY, yEnd);
+                }
+                String provenanceId = "p" + pageNumber + "_t" + tableIndexOnPage
+                        + "_r" + rowIndex + "_c" + colIndex;
+                cells.add(new RawTableCell(
+                        text,
+                        rowIndex,
+                        colIndex,
+                        pageNumber,
+                        x,
+                        y,
+                        width,
+                        height,
+                        xEnd,
+                        yEnd,
+                        tableIndexOnPage,
+                        extractorType,
+                        provenanceId));
+            }
+            rawRows.add(new RawTableRow(rowIndex, List.copyOf(cells)));
+        }
+        if (minX == Double.MAX_VALUE) {
+            minX = 0.0;
+            minY = 0.0;
+        }
+        String tableId = "raw_p" + pageNumber + "_t" + tableIndexOnPage + "_" + extractorType.name().toLowerCase();
+        return new RawTableModel(
+                tableId,
+                null,
+                pageNumber,
+                tableIndexOnPage,
+                extractorType,
+                minX,
+                minY,
+                Math.max(0.0, maxX - minX),
+                Math.max(0.0, maxY - minY),
+                List.copyOf(rawRows),
+                null,
+                rawPageContext,
+                null);
+    }
+
+    private String previewRawTable(RawTableModel table) {
+        if (table == null || table.rows() == null) {
+            return "";
+        }
+        String preview = table.rows().stream()
+                .limit(3)
+                .map(row -> row.cells().stream()
+                        .map(RawTableCell::text)
+                        .filter(text -> text != null && !text.isBlank())
+                        .reduce((a, b) -> a + " | " + b)
+                        .orElse(""))
+                .filter(s -> !s.isBlank())
+                .reduce((a, b) -> a + " / " + b)
+                .orElse("");
+        return preview.length() > 200 ? preview.substring(0, 200) : preview;
+    }
+
     private HeaderPlan inferMarkdownHeader(List<List<RectangularTextContainer>> rows) {
         if (rows == null || rows.isEmpty()) {
             return null;
@@ -760,6 +895,21 @@ public class DocumentParserService {
                 pageNum, reason, rows, cols, preview);
     }
 
+    private void logRejectedTable(Table table, int pageNum) {
+        if (table == null) {
+            log.info("[Parser] Table REJECTED page={}: reason=null-table", pageNum);
+            return;
+        }
+        String reason = getTableRejectionReason(table, "");
+        int rows = table.getRows() == null ? 0 : table.getRows().size();
+        int cols = table.getRows() == null || table.getRows().isEmpty() ? 0
+                : table.getRows().stream().mapToInt(List::size).max().orElse(0);
+        String preview = previewRawTable(convertTabulaTableToRawTableModel(
+                table, pageNum, -1, RawTableModel.ExtractorType.SPREADSHEET, null));
+        log.info("[Parser] Table REJECTED page={}: reason='{}' rows={} cols={} preview='{}'",
+                pageNum, reason, rows, cols, preview);
+    }
+
     /**
      * Tính lý do reject của bảng (không thay đổi isUsableTable để tránh side-effects).
      * Trả về chuỗi mô tả lý do đầu tiên tìm được.
@@ -801,6 +951,58 @@ public class DocumentParserService {
         if (textChars < 40) return "too-little-text(" + textChars + "<40chars)";
 
         return "unknown";
+    }
+
+    private boolean isUsableTable(Table table) {
+        if (table == null) {
+            return false;
+        }
+
+        List<List<RectangularTextContainer>> rows = table.getRows();
+        if (rows == null || rows.size() < 3) {
+            return false;
+        }
+
+        int maxColumns = rows.stream()
+                .mapToInt(List::size)
+                .max()
+                .orElse(0);
+        if (maxColumns < 2) {
+            return false;
+        }
+
+        int nonEmptyCells = 0;
+        int textChars = 0;
+        int emptyCells = 0;
+        int totalCells = 0;
+        for (List<RectangularTextContainer> row : rows) {
+            for (RectangularTextContainer cell : row) {
+                String text = cell.getText() == null ? "" : cell.getText().trim();
+                totalCells++;
+                if (!text.isBlank()) {
+                    nonEmptyCells++;
+                    textChars += text.length();
+                } else {
+                    emptyCells++;
+                }
+            }
+        }
+
+        boolean sparseButStructured = isSparseButStructuredTable(rows, textChars, nonEmptyCells);
+        if (totalCells > 0 && (double) emptyCells / totalCells > 0.6 && !sparseButStructured) {
+            log.debug("[Parser] Table rejected: too many empty cells ({}/{})", emptyCells, totalCells);
+            return false;
+        }
+
+        HeaderPlan inferredHeader = inferMarkdownHeader(rows);
+        long headerNonEmpty = inferredHeader == null ? 0
+                : inferredHeader.headers().stream().filter(h -> h != null && !h.isBlank()).count();
+        if (headerNonEmpty < 2) {
+            log.debug("[Parser] Table rejected: inferred header has too few non-empty cells ({})", headerNonEmpty);
+            return false;
+        }
+
+        return nonEmptyCells >= 4 && textChars >= 40;
     }
 
     private boolean isUsableTable(Table table, String markdown) {

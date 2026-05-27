@@ -35,6 +35,8 @@ public class ChunkingService2 {
 
     private static final Pattern SECTION_NUMBER_PATTERN =
             Pattern.compile("^(\\d+(?:\\.\\d+)*)[.\\s]");
+    private static final Pattern RAW_TABLE_REF_PATTERN =
+            Pattern.compile("^\\[RAW_TABLE_REF:([^\\]]+)]$");
 
     // ===================================================================
     // PUBLIC ENTRY POINT
@@ -100,7 +102,8 @@ public class ChunkingService2 {
             // --- Phase 1b: Xử lý nội dung trực tiếp của section (text + table) ---
             // Áp dụng pseudo-table detection nếu section chưa có bảng từ parser
             String enrichedContent = section.content();
-            boolean hadExplicitTable = enrichedContent != null && enrichedContent.contains("[TABLE_START]");
+            boolean hadExplicitTable = enrichedContent != null
+                    && (enrichedContent.contains("[TABLE_START]") || enrichedContent.contains("[RAW_TABLE_REF:"));
             if (!hadExplicitTable) {
                 String beforeDetect = enrichedContent;
                 enrichedContent = detectAndConvertTextTables(enrichedContent);
@@ -122,7 +125,7 @@ public class ChunkingService2 {
 
             // Section summary (cho section dài có nhiều text)
             List<String> textSegments = segments.stream()
-                    .filter(s -> !s.startsWith("[TABLE_START]"))
+                    .filter(s -> !s.startsWith("[TABLE_START]") && !s.startsWith("[RAW_TABLE_REF:"))
                     .toList();
             int totalTextChars = textSegments.stream().mapToInt(String::length).sum();
             if (totalTextChars > SECTION_SUMMARY_THRESHOLD) {
@@ -138,7 +141,32 @@ public class ChunkingService2 {
             }
 
             for (String segment : segments) {
-                if (segment.startsWith("[TABLE_START]")) {
+                if (segment.startsWith("[RAW_TABLE_REF:")) {
+                    RawTableBlock block = findRawTableBlock(section, segment);
+                    if (block == null || block.table() == null) {
+                        continue;
+                    }
+                    lastIngestMetrics.incDetectedTables();
+                    lastIngestMetrics.incRawTableModelsCreated(block.table().extractorType());
+                    String tableId = "tbl_" + sectionIndex + "_" + globalOrder;
+                    int[] orderHolder = { globalOrder, contentChunksThisSection };
+                    logicalTableState = processNormalizedRawTable(
+                            block.table(),
+                            section,
+                            sectionId,
+                            parentId,
+                            tableId,
+                            headingPathText,
+                            sectionOrder,
+                            headingLevel,
+                            tableIndexInSection,
+                            logicalTableState,
+                            finalChunks,
+                            orderHolder);
+                    globalOrder = orderHolder[0];
+                    contentChunksThisSection = orderHolder[1];
+                    tableIndexInSection++;
+                } else if (segment.startsWith("[TABLE_START]")) {
                     String tableContent = segment
                             .replace("[TABLE_START]", "").replace("[TABLE_END]", "").trim();
                     if (tableContent.isBlank()) {
@@ -225,7 +253,12 @@ public class ChunkingService2 {
                 "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
                 "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
                 "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
-                "valuesPreservedCount={} valuesDroppedCount={}",
+                "valuesPreservedCount={} valuesDroppedCount={} rawTableModelsCreated={} " +
+                "rawTableModelsCreatedFromSpreadsheet={} rawTableModelsCreatedFromBasic={} " +
+                "rawTableCellsWithCoordinates={} rawTableCellsMissingCoordinates={} " +
+                "structuredTablesNormalized={} markdownTablesNormalizedLegacy={} " +
+                "pdfTablesUsingMarkdownBridge={} spreadsheetTablesUsingMarkdownBridge={} " +
+                "basicTablesUsingMarkdownBridge={} pageAttributionPhysicalCount={}",
                 sections.size(), finalChunks.size(), parentSummaryCount,
                 finalChunks.stream().filter(c -> "section_summary".equals(c.chunkType())).count(),
                 finalChunks.stream().filter(c -> "table_summary".equals(c.chunkType())).count(),
@@ -262,7 +295,18 @@ public class ChunkingService2 {
                 lastIngestMetrics.getHeaderFragmentsWithCoordinates(),
                 lastIngestMetrics.getHeaderFragmentsWithoutCoordinates(),
                 lastIngestMetrics.getValuesPreservedCount(),
-                lastIngestMetrics.getValuesDroppedCount());
+                lastIngestMetrics.getValuesDroppedCount(),
+                lastIngestMetrics.getRawTableModelsCreated(),
+                lastIngestMetrics.getRawTableModelsCreatedFromSpreadsheet(),
+                lastIngestMetrics.getRawTableModelsCreatedFromBasic(),
+                lastIngestMetrics.getRawTableCellsWithCoordinates(),
+                lastIngestMetrics.getRawTableCellsMissingCoordinates(),
+                lastIngestMetrics.getStructuredTablesNormalized(),
+                lastIngestMetrics.getMarkdownTablesNormalizedLegacy(),
+                lastIngestMetrics.getPdfTablesUsingMarkdownBridge(),
+                lastIngestMetrics.getSpreadsheetTablesUsingMarkdownBridge(),
+                lastIngestMetrics.getBasicTablesUsingMarkdownBridge(),
+                lastIngestMetrics.getPageAttributionPhysicalCount());
 
         return finalChunks;
     }
@@ -276,6 +320,13 @@ public class ChunkingService2 {
         LogicalTableState state = null;
         int tableIndex = 0;
         for (String segment : segments) {
+            if (segment.startsWith("[RAW_TABLE_REF:")) {
+                RawTableBlock block = findRawTableBlock(section, segment);
+                if (block != null && block.table() != null) {
+                    profile = profile.merge(normalizedTableService.buildSuppressionProfile(List.of(block.table())));
+                }
+                continue;
+            }
             if (!segment.startsWith("[TABLE_START]")) {
                 continue;
             }
@@ -336,6 +387,7 @@ public class ChunkingService2 {
         }
 
         lastIngestMetrics.incNormalizedTables();
+        lastIngestMetrics.incMarkdownTablesNormalizedLegacy();
         lastIngestMetrics.addNormalizedRows(result.rows().size());
         lastIngestMetrics.addQualityStats(result.stats());
 
@@ -371,6 +423,91 @@ public class ChunkingService2 {
         }
 
         return result.updatedState();
+    }
+
+    private LogicalTableState processNormalizedRawTable(
+            RawTableModel rawTable,
+            Section section,
+            String sectionId,
+            String parentId,
+            String tableId,
+            String headingPathText,
+            int sectionOrder,
+            int headingLevel,
+            int tableIndexInSection,
+            LogicalTableState continuationState,
+            List<DocumentChunk> finalChunks,
+            int[] orderCountAndProfile
+    ) {
+        NormalizedTableService.NormalizationRequest request =
+                new NormalizedTableService.NormalizationRequest(
+                        null,
+                        section.header(),
+                        null,
+                        rawTable.pageNumber(),
+                        rawTable.pageNumber(),
+                        tableIndexInSection,
+                        continuationState);
+
+        NormalizedTableService.NormalizationResult result =
+                normalizedTableService.normalizeRawTable(rawTable, request);
+        if (!result.success()) {
+            lastIngestMetrics.incFailedTables();
+            log.warn("[Chunk] Raw table normalization FAILED section='{}' tableId={} reason={}",
+                    sectionId, tableId, result.failureReason());
+            return continuationState;
+        }
+
+        lastIngestMetrics.incNormalizedTables();
+        lastIngestMetrics.incStructuredTablesNormalized();
+        lastIngestMetrics.addNormalizedRows(result.rows().size());
+        lastIngestMetrics.addQualityStats(result.stats());
+        lastIngestMetrics.addRawTableCoordinateStats(rawTable);
+
+        finalChunks.add(createTableSummaryChunk(
+                result.tableSummaryContent(),
+                section,
+                sectionId,
+                parentId,
+                tableId,
+                headingPathText,
+                orderCountAndProfile[0],
+                sectionOrder,
+                headingLevel,
+                result.tableName()));
+        orderCountAndProfile[0]++;
+        orderCountAndProfile[1]++;
+        lastIngestMetrics.incTableSummaries();
+
+        for (NormalizedTableRow row : result.rows()) {
+            finalChunks.add(createNormalizedRowChunk(
+                    row,
+                    section,
+                    sectionId,
+                    parentId,
+                    tableId,
+                    headingPathText,
+                    orderCountAndProfile[0],
+                    sectionOrder,
+                    headingLevel));
+            orderCountAndProfile[0]++;
+            orderCountAndProfile[1]++;
+            lastIngestMetrics.incNormalizedTableRowChunks();
+        }
+
+        return result.updatedState();
+    }
+
+    private RawTableBlock findRawTableBlock(Section section, String segment) {
+        Matcher matcher = RAW_TABLE_REF_PATTERN.matcher(segment.trim());
+        if (!matcher.matches()) {
+            return null;
+        }
+        String markerId = matcher.group(1);
+        return section.rawTableBlocks().stream()
+                .filter(block -> markerId.equals(block.markerId()))
+                .findFirst()
+                .orElse(null);
     }
 
     private String applySectionSuppression(String segment,
@@ -737,7 +874,7 @@ public class ChunkingService2 {
         List<String> result = new ArrayList<>();
         if (content == null || content.isBlank()) return result;
 
-        if (content.contains("[TABLE_START]")) {
+        if (content.contains("[TABLE_START]") || content.contains("[RAW_TABLE_REF:")) {
             return splitByExplicitTableMarkers(content);
         }
 
@@ -783,7 +920,22 @@ public class ChunkingService2 {
         int searchFrom = 0;
         while (searchFrom < content.length()) {
             int tableStart = content.indexOf("[TABLE_START]", searchFrom);
-            if (tableStart < 0) { addIfNotBlank(result, content.substring(searchFrom)); break; }
+            int rawStart = content.indexOf("[RAW_TABLE_REF:", searchFrom);
+            if (tableStart < 0 || (rawStart >= 0 && rawStart < tableStart)) {
+                if (rawStart < 0) {
+                    addIfNotBlank(result, content.substring(searchFrom));
+                    break;
+                }
+                addIfNotBlank(result, content.substring(searchFrom, rawStart));
+                int rawEnd = content.indexOf("]", rawStart);
+                if (rawEnd < 0) {
+                    addIfNotBlank(result, content.substring(rawStart));
+                    break;
+                }
+                addIfNotBlank(result, content.substring(rawStart, rawEnd + 1));
+                searchFrom = rawEnd + 1;
+                continue;
+            }
             addIfNotBlank(result, content.substring(searchFrom, tableStart));
 
             int tableContentStart = tableStart + "[TABLE_START]".length();

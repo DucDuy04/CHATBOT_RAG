@@ -1600,7 +1600,8 @@ public class RagRetrievalService {
             for (CellAwareTableRowScorer.ParsedStructuredLabel label : labels) {
                 for (Map.Entry<String, String> cell : cells.entrySet()) {
                     if (CellAwareTableRowScorer.cellMatchesLabel(
-                            cell.getKey(), cell.getValue(), label)) {
+                            cell.getKey(), cell.getValue(), label)
+                            || CellAwareTableRowScorer.valueCoverageMatch(cell.getValue(), label)) {
                         coveredLabels.add(label.raw());
                     }
                 }
@@ -1629,7 +1630,8 @@ public class RagRetrievalService {
                     .filter(sc -> {
                         Map<String, String> cells = CellAwareTableRowScorer.parseCells(sc.chunk());
                         return cells.entrySet().stream().anyMatch(e ->
-                                CellAwareTableRowScorer.cellMatchesLabel(e.getKey(), e.getValue(), target));
+                                CellAwareTableRowScorer.cellMatchesLabel(e.getKey(), e.getValue(), target)
+                                || CellAwareTableRowScorer.valueCoverageMatch(e.getValue(), target));
                     })
                     .max(Comparator.comparingDouble(ScoredChunk::finalScore));
             if (best.isPresent() && result.stream().noneMatch(c -> c.getId() != null
@@ -1660,7 +1662,8 @@ public class RagRetrievalService {
         Map<String, String> cells = CellAwareTableRowScorer.parseCells(chunk);
         boolean matchesAnyLabel = labels.stream().anyMatch(label -> cells.entrySet().stream()
                 .anyMatch(e -> CellAwareTableRowScorer.cellMatchesLabel(
-                        e.getKey(), e.getValue(), label)));
+                        e.getKey(), e.getValue(), label)
+                        || CellAwareTableRowScorer.valueCoverageMatch(e.getValue(), label)));
         if (matchesAnyLabel) {
             return false;
         }

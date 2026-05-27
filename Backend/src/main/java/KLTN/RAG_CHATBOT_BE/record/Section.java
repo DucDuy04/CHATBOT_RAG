@@ -1,5 +1,8 @@
 package KLTN.RAG_CHATBOT_BE.record;
 
+import KLTN.RAG_CHATBOT_BE.service.RawTableBlock;
+import java.util.List;
+
 /**
  * Pipeline DTO đại diện cho một section trong tài liệu sau khi parse.
  *
@@ -16,5 +19,21 @@ public record Section(
     int endPage,
     String content,
     int orderIndex,
-    int headingLevel
-) {}
+    int headingLevel,
+    List<RawTableBlock> rawTableBlocks
+) {
+    public Section(
+            String header,
+            int startPage,
+            int endPage,
+            String content,
+            int orderIndex,
+            int headingLevel
+    ) {
+        this(header, startPage, endPage, content, orderIndex, headingLevel, List.of());
+    }
+
+    public Section {
+        rawTableBlocks = rawTableBlocks == null ? List.of() : List.copyOf(rawTableBlocks);
+    }
+}

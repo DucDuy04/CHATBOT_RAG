@@ -46,6 +46,28 @@ public class TableIngestMetrics {
     private int headerFragmentsWithoutCoordinates;
     private int valuesPreservedCount;
     private int valuesDroppedCount;
+    private int rawTableModelsCreated;
+    private int rawTableModelsCreatedFromSpreadsheet;
+    private int rawTableModelsCreatedFromBasic;
+    private int rawTableCellsWithCoordinates;
+    private int rawTableCellsMissingCoordinates;
+    private int structuredTablesNormalized;
+    private int markdownTablesNormalizedLegacy;
+    private int pdfTablesUsingMarkdownBridge;
+    private int spreadsheetTablesUsingMarkdownBridge;
+    private int basicTablesUsingMarkdownBridge;
+    private int coordinateHeaderSlotsCreated;
+    private int coordinateHeaderFallbackColCount;
+    private int coordinateRowMergeAttempts;
+    private int coordinateRowMergesAccepted;
+    private int coordinateRowMergesRejectedByNewIdentifier;
+    private int coordinateRowMergesRejectedByNewRowNumber;
+    private int coordinateRowMergesRejectedByXOverlap;
+    private int malformedMultiIdentifierRowsCount;
+    private int pageAttributionPhysicalCount;
+    private int zeroOverlapHeaderRejected;
+    private int broadSpanningHeaderDemoted;
+    private int collisionSuffixPrevented;
 
     public void reset() {
         detectedTables = 0;
@@ -86,6 +108,28 @@ public class TableIngestMetrics {
         headerFragmentsWithoutCoordinates = 0;
         valuesPreservedCount = 0;
         valuesDroppedCount = 0;
+        rawTableModelsCreated = 0;
+        rawTableModelsCreatedFromSpreadsheet = 0;
+        rawTableModelsCreatedFromBasic = 0;
+        rawTableCellsWithCoordinates = 0;
+        rawTableCellsMissingCoordinates = 0;
+        structuredTablesNormalized = 0;
+        markdownTablesNormalizedLegacy = 0;
+        pdfTablesUsingMarkdownBridge = 0;
+        spreadsheetTablesUsingMarkdownBridge = 0;
+        basicTablesUsingMarkdownBridge = 0;
+        coordinateHeaderSlotsCreated = 0;
+        coordinateHeaderFallbackColCount = 0;
+        coordinateRowMergeAttempts = 0;
+        coordinateRowMergesAccepted = 0;
+        coordinateRowMergesRejectedByNewIdentifier = 0;
+        coordinateRowMergesRejectedByNewRowNumber = 0;
+        coordinateRowMergesRejectedByXOverlap = 0;
+        malformedMultiIdentifierRowsCount = 0;
+        pageAttributionPhysicalCount = 0;
+        zeroOverlapHeaderRejected = 0;
+        broadSpanningHeaderDemoted = 0;
+        collisionSuffixPrevented = 0;
     }
 
     public void incDetectedTables() {
@@ -184,6 +228,42 @@ public class TableIngestMetrics {
         headerFragmentsWithoutCoordinates += stats.headerFragmentsWithoutCoordinates();
         valuesPreservedCount += stats.valuesPreservedCount();
         valuesDroppedCount += stats.valuesDroppedCount();
+        zeroOverlapHeaderRejected += stats.zeroOverlapHeaderRejected();
+        broadSpanningHeaderDemoted += stats.broadSpanningHeaderDemoted();
+        collisionSuffixPrevented += stats.collisionSuffixPrevented();
+    }
+
+    public void incRawTableModelsCreated(RawTableModel.ExtractorType extractorType) {
+        rawTableModelsCreated++;
+        if (extractorType == RawTableModel.ExtractorType.BASIC) {
+            rawTableModelsCreatedFromBasic++;
+        } else if (extractorType == RawTableModel.ExtractorType.SPREADSHEET) {
+            rawTableModelsCreatedFromSpreadsheet++;
+        }
+    }
+
+    public void addRawTableCoordinateStats(RawTableModel table) {
+        if (table == null || table.rows() == null) {
+            return;
+        }
+        pageAttributionPhysicalCount++;
+        for (RawTableRow row : table.rows()) {
+            for (RawTableCell cell : row.cells()) {
+                if (cell.hasCoordinates()) {
+                    rawTableCellsWithCoordinates++;
+                } else {
+                    rawTableCellsMissingCoordinates++;
+                }
+            }
+        }
+    }
+
+    public void incStructuredTablesNormalized() {
+        structuredTablesNormalized++;
+    }
+
+    public void incMarkdownTablesNormalizedLegacy() {
+        markdownTablesNormalizedLegacy++;
     }
 
     public void tallyFromChunks(java.util.List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks) {
