@@ -12,6 +12,14 @@ import java.util.regex.Pattern;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
+import org.apache.poi.xwpf.usermodel.XWPFTableRow;
+import org.apache.poi.xwpf.usermodel.IBodyElement;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTcPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTVMerge;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import lombok.extern.slf4j.Slf4j;
@@ -67,13 +75,16 @@ public class DocumentParserService {
         }
 
         // Dù là định dạng gì thì Output cuối cùng luôn là List<Section>
-        if (fileName.toLowerCase().endsWith(".pdf")) {
+        String lowerName = fileName.toLowerCase();
+        if (lowerName.endsWith(".pdf")) {
             return parsePdf(file);
-        } else if (fileName.toLowerCase().endsWith(".txt")) {
+        } else if (lowerName.endsWith(".txt")) {
             return parseTxt(file);
+        } else if (lowerName.endsWith(".docx")) {
+            return parseDocx(file);
         } else {
             throw new IllegalArgumentException(
-                    "Chỉ hỗ trợ file PDF và TXT. File bạn upload: " + fileName);
+                    "Chỉ hỗ trợ file PDF, TXT và DOCX. File bạn upload: " + fileName);
         }
     }
 
@@ -258,6 +269,235 @@ public class DocumentParserService {
 
         // Đưa cho hàm Regex phân tích như bình thường
         return parseSections(pageContents);
+    }
+
+    // ==========================================
+    // 3b. PARSE DOCX
+    // ==========================================
+    /**
+     * Parse DOCX file using Apache POI.
+     *
+     * Page convention: DOCX does not expose reliable page numbers via POI.
+     * All pages are set to 1 (page_start = 1, page_end = 1).
+     * This is documented intentionally — do NOT fabricate page numbers.
+     *
+     * Flow:
+     *   XWPFDocument
+     *   → paragraphs/headings (in document order via body elements)
+     *   → XWPFTable → RawTableModel (logical grid coordinates, gridSpan/vMerge)
+     *   → parseSections() → NormalizedTableService
+     */
+    List<Section> parseDocx(MultipartFile file) throws IOException {
+        byte[] bytes = file.getBytes();
+        try (XWPFDocument doc = new XWPFDocument(new java.io.ByteArrayInputStream(bytes))) {
+            StringBuilder pageBuilder = new StringBuilder();
+            Map<String, RawTableModel> rawTableRegistry = new java.util.LinkedHashMap<>();
+            int tableIndexInDoc = 0;
+
+            // Walk body elements in document order (paragraphs interleaved with tables)
+            for (IBodyElement element : doc.getBodyElements()) {
+                if (element instanceof XWPFParagraph para) {
+                    String text = extractDocxParagraphText(para);
+                    if (!text.isBlank()) {
+                        pageBuilder.append(text).append("\n");
+                    }
+                } else if (element instanceof XWPFTable table) {
+                    RawTableModel rawTable = convertDocxTableToRawTableModel(
+                            table, tableIndexInDoc, file.getOriginalFilename());
+                    if (rawTable != null && !rawTable.rows().isEmpty()) {
+                        rawTableRegistry.put(rawTable.tableId(), rawTable);
+                        pageBuilder.append("\n[RAW_TABLE_REF:").append(rawTable.tableId()).append("]\n");
+                        log.info("[ParseDocx] Table ACCEPTED idx={}: rows={} cols={} id='{}'",
+                                tableIndexInDoc,
+                                rawTable.rows().size(),
+                                rawTable.rows().isEmpty() ? 0
+                                        : rawTable.rows().get(0).cells().size(),
+                                rawTable.tableId());
+                    }
+                    tableIndexInDoc++;
+                }
+            }
+
+            // Treat entire DOCX as page 1 (reliable page number unavailable via POI)
+            Map<Integer, String> pageContents = Map.of(1, pageBuilder.toString());
+            log.info("[ParseDocx] file='{}' paragraphChars={} tables={}",
+                    file.getOriginalFilename(), pageBuilder.length(), rawTableRegistry.size());
+            return parseSections(pageContents, rawTableRegistry);
+        }
+    }
+
+    /**
+     * Extract text from a single DOCX paragraph, joining all runs.
+     * Returns the combined text including heading style prefix if useful.
+     */
+    private String extractDocxParagraphText(XWPFParagraph para) {
+        if (para == null) return "";
+        String text = para.getText();
+        if (text == null) return "";
+        // Normalize whitespace — preserve meaningful content
+        text = text.replace('\u00A0', ' ')
+                   .replaceAll("[ \\t]+", " ")
+                   .trim();
+        return text;
+    }
+
+    /**
+     * Convert a single XWPFTable to a RawTableModel with logical grid coordinates.
+     *
+     * Handles:
+     *  - gridSpan (horizontal merge): one RawTableCell with width = gridSpan
+     *  - vMerge continue (vertical merge): cell skipped/noted but not duplicated as data
+     *
+     * Coordinate convention for DOCX (logical grid, not physical pixels):
+     *  x = logical column start (0-based, expanded for spans)
+     *  y = row index
+     *  width = gridSpan (1 for normal cells)
+     *  height = 1 (vertical merge not expanded into multiple rows)
+     *  xEnd = x + width
+     *  yEnd = y + 1
+     *  pageNumber = 1 (DOCX page unreliable)
+     */
+    RawTableModel convertDocxTableToRawTableModel(XWPFTable table, int tableIndex, String fileName) {
+        if (table == null) return null;
+        List<XWPFTableRow> rows = table.getRows();
+        if (rows == null || rows.isEmpty()) return null;
+
+        List<RawTableRow> rawRows = new ArrayList<>();
+        int totalCells = 0;
+        int horizontalSpanCells = 0;
+        int verticalMergeContinueCells = 0;
+
+        for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
+            XWPFTableRow row = rows.get(rowIdx);
+            List<XWPFTableCell> cells = row.getTableCells();
+            if (cells == null) continue;
+
+            List<RawTableCell> rawCells = new ArrayList<>();
+            int logicalCol = 0; // logical column index, accounting for spans in previous cells
+
+            for (int cellIdx = 0; cellIdx < cells.size(); cellIdx++) {
+                XWPFTableCell cell = cells.get(cellIdx);
+
+                // Detect vMerge continue — skip these cells (they are continuations of a prior row's cell)
+                boolean isVMergeContinue = isVMergeContinue(cell);
+                if (isVMergeContinue) {
+                    verticalMergeContinueCells++;
+                    // Advance logical column by this cell's gridSpan so columns stay aligned
+                    logicalCol += getGridSpan(cell);
+                    continue;
+                }
+
+                // gridSpan: how many logical columns this cell spans
+                int gridSpan = getGridSpan(cell);
+
+                // Extract text from all paragraphs in the cell
+                String text = extractDocxCellText(cell);
+
+                String provenanceId = "docx_t" + tableIndex + "_r" + rowIdx + "_c" + cellIdx;
+
+                // Use logical grid coordinates (not physical pixels)
+                // width and xEnd encode gridSpan for the normalizer to use
+                RawTableCell rawCell = new RawTableCell(
+                        text,
+                        rowIdx,          // physicalRowIndex
+                        logicalCol,      // physicalColIndex = logical column start
+                        1,               // pageNumber = 1 (DOCX convention)
+                        logicalCol,      // x = logical col start
+                        rowIdx,          // y = row index
+                        gridSpan,        // width = gridSpan
+                        1.0,             // height = 1 row
+                        logicalCol + gridSpan, // xEnd
+                        rowIdx + 1.0,    // yEnd
+                        tableIndex,
+                        RawTableModel.ExtractorType.DOCX,
+                        provenanceId
+                );
+                rawCells.add(rawCell);
+                totalCells++;
+                if (gridSpan > 1) horizontalSpanCells++;
+
+                logicalCol += gridSpan;
+            }
+
+            if (!rawCells.isEmpty()) {
+                rawRows.add(new RawTableRow(rowIdx, List.copyOf(rawCells)));
+            }
+        }
+
+        if (rawRows.isEmpty()) return null;
+
+        String tableId = "docx_t" + tableIndex + "_" + sanitizeForId(fileName);
+        log.debug("[ParseDocx] Table id='{}' rows={} totalCells={} hSpans={} vMergeContinue={}",
+                tableId, rawRows.size(), totalCells, horizontalSpanCells, verticalMergeContinueCells);
+
+        return new RawTableModel(
+                tableId,
+                null,         // documentId set later
+                1,            // pageNumber = 1 (DOCX convention)
+                tableIndex,
+                RawTableModel.ExtractorType.DOCX,
+                0.0, 0.0,     // x, y (no physical coordinates)
+                0.0, 0.0,     // width, height (no physical bounding box)
+                List.copyOf(rawRows),
+                null,         // titleCandidate
+                null,         // rawPageContext
+                null          // sectionContext
+        );
+    }
+
+    /** Extract all paragraph text from a DOCX table cell, joining with a space. */
+    private String extractDocxCellText(XWPFTableCell cell) {
+        if (cell == null) return "";
+        List<XWPFParagraph> paras = cell.getParagraphs();
+        if (paras == null || paras.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (XWPFParagraph para : paras) {
+            String t = para.getText();
+            if (t != null && !t.isBlank()) {
+                if (!sb.isEmpty()) sb.append(" ");
+                sb.append(t.replace('\u00A0', ' ').replaceAll("[ \\t]+", " ").trim());
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * Returns the gridSpan value for a cell (how many logical columns it occupies).
+     * Default = 1 if no gridSpan defined.
+     */
+    private int getGridSpan(XWPFTableCell cell) {
+        try {
+            CTTcPr tcPr = cell.getCTTc().getTcPr();
+            if (tcPr != null && tcPr.isSetGridSpan()) {
+                int span = tcPr.getGridSpan().getVal().intValue();
+                return span > 1 ? span : 1;
+            }
+        } catch (Exception ignored) { }
+        return 1;
+    }
+
+    /**
+     * Returns true if this cell is a vMerge continuation (not restart).
+     * A restart cell has vMerge with val="restart" or no val.
+     * A continue cell has vMerge with no val attribute.
+     */
+    private boolean isVMergeContinue(XWPFTableCell cell) {
+        try {
+            CTTcPr tcPr = cell.getCTTc().getTcPr();
+            if (tcPr == null || !tcPr.isSetVMerge()) return false;
+            CTVMerge vMerge = tcPr.getVMerge();
+            // If vMerge is set but has no val, it is a continuation cell.
+            // If val == STMerge.RESTART, it is the first cell of the merged group.
+            String val = vMerge.isSetVal() ? vMerge.getVal().toString() : "";
+            return !"RESTART".equalsIgnoreCase(val);
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private String sanitizeForId(String fileName) {
+        if (fileName == null) return "unknown";
+        String base = fileName.replaceAll("(?i)\\.docx$", "");
+        return base.replaceAll("[^a-zA-Z0-9_-]", "_").toLowerCase();
     }
 
     // ==========================================

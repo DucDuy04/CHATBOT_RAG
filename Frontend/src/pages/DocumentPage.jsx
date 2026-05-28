@@ -160,12 +160,12 @@ export default function DocumentPage() {
         ) : (
           <>
             <p className="font-medium text-gray-700">Click để chọn file</p>
-            <p className="mt-1">Hỗ trợ PDF, TXT — tối đa 50MB</p>
+            <p className="mt-1">Hỗ trợ PDF, TXT, DOCX — tối đa 50MB</p>
           </>
         )}
         <input
           type="file"
-          accept=".pdf,.txt"
+          accept=".pdf,.txt,.docx,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           onChange={handleFileChange}
           disabled={uploading}
           className="hidden"

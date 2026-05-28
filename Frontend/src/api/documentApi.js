@@ -1,6 +1,6 @@
 import axiosInstance from "./axiosInstance";
 
-// Upload file PDF hoặc TXT
+// Upload file PDF, TXT hoặc DOCX
 export const uploadDocument = async (file, widgetConfigId) => {
   if (!widgetConfigId) {
     throw new Error("Thiếu widgetConfigId.");

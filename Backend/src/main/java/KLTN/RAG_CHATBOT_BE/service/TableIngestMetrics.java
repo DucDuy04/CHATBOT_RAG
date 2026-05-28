@@ -69,6 +69,20 @@ public class TableIngestMetrics {
     private int broadSpanningHeaderDemoted;
     private int collisionSuffixPrevented;
 
+    // DOCX-specific metrics
+    private int docxFilesParsed;
+    private int docxParagraphsExtracted;
+    private int docxTablesDetected;
+    private int docxTablesNormalized;
+    private int docxTableRowsNormalized;
+    private int docxCellsExtracted;
+    private int docxMergedCellsDetected;
+    private int docxHorizontalSpansDetected;
+    private int docxVerticalMergesDetected;
+    private int docxTablesUsingMarkdownBridge;
+    private int docxTablesUsingRawTableModel;
+    private int groupContextPopulatedCount;
+
     public void reset() {
         detectedTables = 0;
         normalizedTables = 0;
@@ -130,6 +144,18 @@ public class TableIngestMetrics {
         zeroOverlapHeaderRejected = 0;
         broadSpanningHeaderDemoted = 0;
         collisionSuffixPrevented = 0;
+        docxFilesParsed = 0;
+        docxParagraphsExtracted = 0;
+        docxTablesDetected = 0;
+        docxTablesNormalized = 0;
+        docxTableRowsNormalized = 0;
+        docxCellsExtracted = 0;
+        docxMergedCellsDetected = 0;
+        docxHorizontalSpansDetected = 0;
+        docxVerticalMergesDetected = 0;
+        docxTablesUsingMarkdownBridge = 0;
+        docxTablesUsingRawTableModel = 0;
+        groupContextPopulatedCount = 0;
     }
 
     public void incDetectedTables() {
@@ -241,6 +267,20 @@ public class TableIngestMetrics {
             rawTableModelsCreatedFromSpreadsheet++;
         }
     }
+
+    // ---- DOCX increment helpers ----
+    public void incDocxFilesParsed()               { docxFilesParsed++; }
+    public void addDocxParagraphsExtracted(int n)  { docxParagraphsExtracted += n; }
+    public void incDocxTablesDetected()            { docxTablesDetected++; }
+    public void incDocxTablesNormalized()          { docxTablesNormalized++; }
+    public void addDocxTableRowsNormalized(int n)  { docxTableRowsNormalized += n; }
+    public void addDocxCellsExtracted(int n)       { docxCellsExtracted += n; }
+    public void incDocxMergedCellsDetected()       { docxMergedCellsDetected++; }
+    public void addDocxHorizontalSpans(int n)      { docxHorizontalSpansDetected += n; }
+    public void incDocxVerticalMerges()            { docxVerticalMergesDetected++; }
+    public void incDocxTablesUsingMarkdownBridge() { docxTablesUsingMarkdownBridge++; }
+    public void incDocxTablesUsingRawTableModel()  { docxTablesUsingRawTableModel++; }
+    public void incGroupContextPopulated()         { groupContextPopulatedCount++; }
 
     public void addRawTableCoordinateStats(RawTableModel table) {
         if (table == null || table.rows() == null) {

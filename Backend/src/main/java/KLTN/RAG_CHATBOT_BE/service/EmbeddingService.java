@@ -4,7 +4,6 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.qdrant.QdrantEmbeddingStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,8 +25,10 @@ import java.util.UUID;
 public class EmbeddingService {
 
     private final EmbeddingModel embeddingModel;
-    private final QdrantEmbeddingStore qdrantEmbeddingStore;
     private final RestClient restClient = RestClient.create();
+
+    /** Number of Qdrant points per REST upsert batch (kept low for low-RAM production). */
+    private static final int QDRANT_UPSERT_BATCH_SIZE = 100;
 
     private static final long QUERY_EMBEDDING_CACHE_TTL_MS = 60L * 60L * 1000L;
     private static final int QUERY_EMBEDDING_CACHE_MAX_SIZE = 1000;
@@ -119,9 +120,55 @@ public class EmbeddingService {
 
         List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
 
-        qdrantEmbeddingStore.addAll(embeddings, segments);
+        upsertToQdrant(embeddings, segments, documentId);
 
         log.info("Đã lưu {} vectors vào Qdrant cho document={}", embeddings.size(), documentId);
+    }
+
+    /**
+     * Upsert embeddings + metadata to Qdrant via REST (HTTP) API.
+     *
+     * <p>Uses Spring {@link RestClient} → Jackson JSON serialization, which preserves UTF-8/Unicode
+     * exactly. This replaces the previous LangChain4j gRPC write path that corrupted Vietnamese
+     * Unicode characters in payload strings (mojibake bug, root cause: gRPC protobuf bytes
+     * conversion did not preserve multi-byte UTF-8 characters correctly).</p>
+     */
+    private void upsertToQdrant(List<Embedding> embeddings, List<TextSegment> segments, UUID documentId) {
+        if (embeddings.isEmpty()) {
+            return;
+        }
+
+        List<Map<String, Object>> points = new ArrayList<>(embeddings.size());
+        for (int i = 0; i < embeddings.size(); i++) {
+            Embedding emb = embeddings.get(i);
+            TextSegment seg = segments.get(i);
+
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("text_segment", seg.text());
+            payload.putAll(seg.metadata().toMap());
+
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("id", UUID.randomUUID().toString());
+            point.put("vector", emb.vectorAsList());
+            point.put("payload", payload);
+            points.add(point);
+        }
+
+        String upsertUrl = qdrantBaseUrl() + "/collections/" + qdrantCollectionName + "/points";
+        int total = points.size();
+        int batches = 0;
+        for (int start = 0; start < total; start += QDRANT_UPSERT_BATCH_SIZE) {
+            int end = Math.min(start + QDRANT_UPSERT_BATCH_SIZE, total);
+            List<Map<String, Object>> batch = points.subList(start, end);
+            restClient.put()
+                    .uri(upsertUrl)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("points", batch))
+                    .retrieve()
+                    .toBodilessEntity();
+            batches++;
+        }
+        log.info("[EmbeddingUpsert] document={} points={} batches={}", documentId, total, batches);
     }
 
     private String buildEmbeddingText(KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk chunk) {
@@ -233,7 +280,7 @@ public class EmbeddingService {
         return queryCacheKey(query, embeddingModel.getClass().getName(), qdrantCollectionName);
     }
 
-    static String queryCacheKey(String query, String embeddingProvider, String collectionName) {
+    public static String queryCacheKey(String query, String embeddingProvider, String collectionName) {
         String normalized = query == null ? "" : query.replaceAll("\\s+", " ")
                 .trim()
                 .toLowerCase(Locale.ROOT);

@@ -1722,8 +1722,19 @@ public class NormalizedTableService {
             if (safe(cell.text()).isBlank()) {
                 continue;
             }
-            CoordinateHeaderSlot slot = bestSlotForCell(cell, slots);
-            int col = slot == null ? cell.physicalColIndex() : slot.columnIndex();
+            int col;
+            if (cell.extractorType() == RawTableModel.ExtractorType.DOCX
+                    && cell.physicalColIndex() >= 0
+                    && cell.physicalColIndex() < slots.size()) {
+                // DOCX logical-grid: physicalColIndex is the definitive column assignment.
+                // Coordinate x-overlap is not reliable for DOCX because merged group-header
+                // rows within the table body can contaminate slot x-ranges, causing all cells
+                // in a row to be falsely packed into slot 0 via tie-broken overlap scoring.
+                col = cell.physicalColIndex();
+            } else {
+                CoordinateHeaderSlot slot = bestSlotForCell(cell, slots);
+                col = slot == null ? cell.physicalColIndex() : slot.columnIndex();
+            }
             byColumn.computeIfAbsent(col, ignored -> new ArrayList<>()).add(cell);
         }
         int page = row.cells().isEmpty() ? 1 : row.cells().get(0).pageNumber();

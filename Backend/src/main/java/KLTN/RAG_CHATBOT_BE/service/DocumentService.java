@@ -69,7 +69,7 @@ public class DocumentService {
 
     /** Must match {@link DocumentParserService} supported types. */
     public static final String UNSUPPORTED_UPLOAD_FILE_MSG =
-            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF và TXT.";
+            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF, TXT và DOCX.";
 
     public Document uploadAndProcess(MultipartFile file, UUID widgetId) throws IOException {
         WidgetConfig widgetConfig = widgetConfigRepository.findById(widgetId)
@@ -189,6 +189,21 @@ public class DocumentService {
                 tableMetrics.getBasicTablesUsingMarkdownBridge(),
                 tableMetrics.getPageAttributionPhysicalCount()
         );
+
+        // DOCX-specific metrics log (only printed when docxTablesDetected > 0)
+        if (tableMetrics.getDocxTablesDetected() > 0) {
+            log.info(
+                    "DOCX metrics document={} docxTablesDetected={} docxTablesNormalized={} " +
+                            "docxTablesUsingRawTableModel={} docxTablesUsingMarkdownBridge={} " +
+                            "docxTableRowsNormalized={}",
+                    document.getFileName(),
+                    tableMetrics.getDocxTablesDetected(),
+                    tableMetrics.getDocxTablesNormalized(),
+                    tableMetrics.getDocxTablesUsingRawTableModel(),
+                    tableMetrics.getDocxTablesUsingMarkdownBridge(),
+                    tableMetrics.getDocxTableRowsNormalized()
+            );
+        }
 
         UUID widgetId = document.getWidgetConfig().getId();
 
@@ -484,9 +499,20 @@ public class DocumentService {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
         }
         String lower = original.toLowerCase();
-        if (!lower.endsWith(".pdf") && !lower.endsWith(".txt")) {
+        boolean isPdf  = lower.endsWith(".pdf");
+        boolean isTxt  = lower.endsWith(".txt");
+        boolean isDocx = lower.endsWith(".docx");
+
+        // Reject dangerous Office macro-enabled formats explicitly
+        if (lower.endsWith(".doc") || lower.endsWith(".docm") || lower.endsWith(".dotm")) {
+            throw new IllegalArgumentException(
+                    "Định dạng .doc/.docm/.dotm không được hỗ trợ. Vui lòng chuyển sang .docx.");
+        }
+
+        if (!isPdf && !isTxt && !isDocx) {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
         }
+
         String mime = file.getContentType();
         if (mime == null || mime.isBlank()) {
             return;
@@ -494,10 +520,28 @@ public class DocumentService {
         String m = mime.toLowerCase().trim();
         boolean ok = m.equals("application/pdf")
                 || m.startsWith("text/plain")
+                || m.equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 || m.equals("application/octet-stream")
                 || m.equals("binary/octet-stream");
         if (!ok) {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
+        }
+
+        // DOCX OOXML signature check: a valid DOCX is a ZIP (PK signature 0x504B0304).
+        if (isDocx) {
+            try {
+                byte[] header = file.getBytes();
+                if (header.length < 4
+                        || (header[0] & 0xFF) != 0x50
+                        || (header[1] & 0xFF) != 0x4B
+                        || (header[2] & 0xFF) != 0x03
+                        || (header[3] & 0xFF) != 0x04) {
+                    throw new IllegalArgumentException(
+                            "File .docx không hợp lệ: không phải OOXML/ZIP. Vui lòng kiểm tra lại file.");
+                }
+            } catch (java.io.IOException e) {
+                throw new IllegalArgumentException("Không thể đọc file để kiểm tra định dạng DOCX.", e);
+            }
         }
     }
 

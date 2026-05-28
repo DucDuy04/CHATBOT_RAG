@@ -31,7 +31,7 @@
 		 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 		<!-- <spring-ai.version>2.0.0-M2</spring-ai.version> -->
-		
+		<poi.version>5.3.0</poi.version>
 	</properties>
 	<repositories>
 		<repository>
@@ -96,6 +96,13 @@
 			<groupId>org.apache.pdfbox</groupId>
 			<artifactId>pdfbox</artifactId>
 			<version>3.0.2</version>
+		</dependency>
+
+		<!-- Apache POI — đọc file DOCX -->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>${poi.version}</version>
 		</dependency>
 
 		<!-- Spring Security -->

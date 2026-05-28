@@ -148,6 +148,9 @@ public class ChunkingService2 {
                     }
                     lastIngestMetrics.incDetectedTables();
                     lastIngestMetrics.incRawTableModelsCreated(block.table().extractorType());
+                    if (block.table().extractorType() == RawTableModel.ExtractorType.DOCX) {
+                        lastIngestMetrics.incDocxTablesDetected();
+                    }
                     String tableId = "tbl_" + sectionIndex + "_" + globalOrder;
                     int[] orderHolder = { globalOrder, contentChunksThisSection };
                     logicalTableState = processNormalizedRawTable(
@@ -463,6 +466,13 @@ public class ChunkingService2 {
         lastIngestMetrics.addNormalizedRows(result.rows().size());
         lastIngestMetrics.addQualityStats(result.stats());
         lastIngestMetrics.addRawTableCoordinateStats(rawTable);
+
+        // DOCX-specific counters
+        if (rawTable.extractorType() == RawTableModel.ExtractorType.DOCX) {
+            lastIngestMetrics.incDocxTablesNormalized();
+            lastIngestMetrics.addDocxTableRowsNormalized(result.rows().size());
+            lastIngestMetrics.incDocxTablesUsingRawTableModel();
+        }
 
         finalChunks.add(createTableSummaryChunk(
                 result.tableSummaryContent(),

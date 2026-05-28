@@ -19,6 +19,7 @@ public record RawTableModel(
 ) {
     public enum ExtractorType {
         SPREADSHEET,
-        BASIC
+        BASIC,
+        DOCX
     }
 }

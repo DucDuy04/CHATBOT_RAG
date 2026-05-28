@@ -1,6 +1,5 @@
 package KLTN.RAG_CHATBOT_BE.config;
 
-import dev.langchain4j.store.embedding.qdrant.QdrantEmbeddingStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
@@ -19,9 +18,6 @@ public class QdrantConfig {
     @Value("${qdrant.host}")
     private String host;
 
-    @Value("${qdrant.port}")
-    private int port;
-
     @Value("${qdrant.http-port}")
     private int httpPort;
 
@@ -30,15 +26,6 @@ public class QdrantConfig {
 
     @Value("${qdrant.vector-size}")
     private int vectorSize;
-
-    @Bean
-    public QdrantEmbeddingStore qdrantEmbeddingStore() {
-        return QdrantEmbeddingStore.builder()
-                .host(host)
-                .port(port)
-                .collectionName(collectionName)
-                .build();
-    }
 
     @Bean
     public ApplicationRunner initQdrantCollection() {
