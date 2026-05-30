@@ -120,6 +120,17 @@ public class ChatService {
     @Qualifier("streamingExecutor")
     private Executor streamingExecutor;
 
+    /** Injected only when {@code rag.runtime.async-persist.enabled=true}. */
+    @Autowired(required = false)
+    @Qualifier("chatPersistExecutor")
+    private Executor chatPersistExecutor;
+
+    @Value("${rag.runtime.async-persist.enabled:false}")
+    private boolean asyncPersistEnabled;
+
+    @Value("${rag.runtime.async-persist.log-payload-size:false}")
+    private boolean logPersistPayloadSize;
+
     @Value("${groq.api-key}")
     private String groqApiKey;
 
@@ -1015,22 +1026,115 @@ public class ChatService {
         return String.valueOf(pageStart != null ? pageStart : pageEnd);
     }
 
+    /**
+     * Persists a chat message. USER messages are always persisted synchronously so
+     * the current-turn history read (which follows immediately) sees them.
+     *
+     * <p>ASSISTANT messages are persisted asynchronously when
+     * {@code rag.runtime.async-persist.enabled=true}, removing their JPA/JSON save
+     * time from the user-visible response path. If the async executor queue is full,
+     * the rejection handler falls back to caller-thread execution (sync) with a
+     * warning log — persistence is never silently dropped.
+     */
     private void saveChatMessage(
             ChatSession session,
             MessageRole role,
             String content,
             List<ChatResponse.SourceDto> sources
     ) {
-        ChatMessage.ChatMessageBuilder builder = ChatMessage.builder()
-                .session(session)
-                .role(role)
-                .content(content);
+        if (role == MessageRole.ASSISTANT && asyncPersistEnabled && chatPersistExecutor != null) {
+            persistAssistantMessageAsync(session, content, sources);
+        } else {
+            persistChatMessageSync(session, role, content, sources);
+        }
+    }
 
-        if (sources != null && !sources.isEmpty()) {
-            builder.sources(toSourceMaps(sources));
+    /**
+     * Sync persist path — always used for USER messages, and for ASSISTANT when
+     * async is disabled or not available.
+     */
+    private void persistChatMessageSync(
+            ChatSession session,
+            MessageRole role,
+            String content,
+            List<ChatResponse.SourceDto> sources
+    ) {
+        long persistStart = RagLatencyTrace.now();
+        try {
+            ChatMessage.ChatMessageBuilder builder = ChatMessage.builder()
+                    .session(session)
+                    .role(role)
+                    .content(content);
+            if (sources != null && !sources.isEmpty()) {
+                builder.sources(toSourceMaps(sources));
+            }
+            chatMessageRepository.save(builder.build());
+        } finally {
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addPersistMs(RagLatencyTrace.elapsedMs(persistStart));
+                if (role == MessageRole.ASSISTANT) {
+                    trace.setPersistMode("sync");
+                }
+            }
+        }
+    }
+
+    /**
+     * Submits the assistant message save to the bounded {@code chatPersistExecutor}.
+     * Source maps are serialized in the caller thread before submission to avoid
+     * cross-thread access to the {@link ChatResponse.SourceDto} objects.
+     *
+     * <p>The rejection handler in {@link AsyncPersistConfig} will run the task
+     * synchronously (CallerRuns-style) and log a warning if the queue is full.
+     */
+    private void persistAssistantMessageAsync(
+            ChatSession session,
+            String content,
+            List<ChatResponse.SourceDto> sources
+    ) {
+        UUID sessionId = session.getId();
+        List<Map<String, Object>> sourceMaps =
+                (sources != null && !sources.isEmpty()) ? toSourceMaps(sources) : null;
+
+        if (logPersistPayloadSize && sourceMaps != null) {
+            int approxBytes = sourceMaps.stream()
+                    .mapToInt(m -> m.values().stream()
+                            .mapToInt(v -> v instanceof String s ? s.length() : 4)
+                            .sum())
+                    .sum();
+            log.debug("[ChatPersistAsync] payloadApproxBytes={} session={}", approxBytes, sessionId);
         }
 
-        chatMessageRepository.save(builder.build());
+        RagLatencyTrace trace = RagLatencyTrace.current();
+        String traceId = trace != null ? trace.traceId() : "none";
+        long submitStart = RagLatencyTrace.now();
+
+        chatPersistExecutor.execute(() -> {
+            long taskStart = RagLatencyTrace.now();
+            try {
+                // getReferenceById avoids a SELECT — proxy is resolved only for FK insert
+                ChatSession sessionRef = chatSessionRepository.getReferenceById(sessionId);
+                ChatMessage.ChatMessageBuilder builder = ChatMessage.builder()
+                        .session(sessionRef)
+                        .role(MessageRole.ASSISTANT)
+                        .content(content);
+                if (sourceMaps != null) {
+                    builder.sources(sourceMaps);
+                }
+                chatMessageRepository.save(builder.build());
+                log.info("[ChatPersistAsync] status=OK trace={} session={} elapsedMs={}",
+                        traceId, sessionId, RagLatencyTrace.elapsedMs(taskStart));
+            } catch (Exception e) {
+                log.error("[ChatPersistAsync] status=FAIL trace={} session={} elapsedMs={} error={}",
+                        traceId, sessionId, RagLatencyTrace.elapsedMs(taskStart), e.getMessage());
+            }
+        });
+
+        if (trace != null) {
+            trace.addPersistMs(RagLatencyTrace.elapsedMs(submitStart));
+            trace.setPersistMode("async");
+        }
     }
 
     private List<Map<String, Object>> toSourceMaps(List<ChatResponse.SourceDto> sources) {

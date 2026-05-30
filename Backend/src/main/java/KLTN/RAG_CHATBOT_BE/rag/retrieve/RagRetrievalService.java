@@ -11,6 +11,7 @@ import KLTN.RAG_CHATBOT_BE.rag.budget.PromptBudgetResolver;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QuerySignalExtractor;
 import KLTN.RAG_CHATBOT_BE.audit.metrics.RagLatencyTrace;
+import KLTN.RAG_CHATBOT_BE.rag.rerank.RerankGuard;
 import KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService;
 import dev.langchain4j.data.segment.TextSegment;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
 import java.util.*;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -100,6 +102,7 @@ public class RagRetrievalService {
     private final DocumentSectionRepository documentSectionRepository;
     private final QueryAnalyzerService queryAnalyzerService;
     private final RerankService rerankService;
+    private final RerankGuard rerankGuard;
     private final KeywordSearchService keywordSearchService;
     private final PromptBudgetResolver promptBudgetResolver;
 
@@ -114,6 +117,12 @@ public class RagRetrievalService {
 
     @Value("${rag.retrieval.hybrid.rerank-weight:0.30}")
     private double hybridRerankWeight;
+
+    @Value("${rag.retrieval.query-variant-dedupe.enabled:true}")
+    private boolean variantDedupeEnabled;
+
+    @Value("${rag.retrieval.query-variant-dedupe.log-skipped-variants:true}")
+    private boolean variantDedupeLogSkipped;
 
     public record ScoredChunk(DocumentChunk chunk, double finalScore) {}
 
@@ -177,8 +186,8 @@ public class RagRetrievalService {
         log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
 
         // ── STEP 1: Fetch all sections once (shared by heading match + scope expansion) ──
-        List<DocumentSection> allSections =
-                documentSectionRepository.findByWidgetConfigIdOrderByOrderIndexAsc(widgetId);
+        List<DocumentSection> allSections = timedDbFetch(
+                () -> documentSectionRepository.findByWidgetConfigIdOrderByOrderIndexAsc(widgetId));
 
         // ── STEP 2: Heading-first match ────────────────────────────────
         // Pass pre-fetched sections to avoid a second DB round-trip.
@@ -216,17 +225,38 @@ public class RagRetrievalService {
         List<String> queryVariants = queryAnalyzerService.rewriteQuery(question);
         log.info("[RAG] Query variants: {}", queryVariants);
 
-        // ── STEP 3: Vector search (all variants) ──────────────────────
+        // ── STEP 2b: Deduplicate query variants before vector search ───
+        // Uses conservative normalized-text dedupe; distinct scope/mode variants are preserved.
+        String scopeFilterKey = widgetId != null ? widgetId.toString() : "";
+        QueryVariantDedupe.DedupeResult dedupeResult = QueryVariantDedupe.dedupe(
+                queryVariants, variantDedupeEnabled, scopeFilterKey, "VECTOR");
+        if (trace != null) {
+            trace.setQueryVariantDedupeStats(
+                    dedupeResult.total(),
+                    dedupeResult.unique(),
+                    dedupeResult.skipped(),
+                    variantDedupeEnabled ? "normalized_text" : "DISABLED",
+                    0);  // qdrantSearchCalls updated below
+        }
+        if (dedupeResult.skipped() > 0 && variantDedupeLogSkipped) {
+            log.info("[RAG][variant-dedupe] total={} unique={} skipped={} mode=normalized_text",
+                    dedupeResult.total(), dedupeResult.unique(), dedupeResult.skipped());
+        }
+
+        // ── STEP 3: Vector search (unique variants only) ──────────────
         Set<UUID> anchorChunkIds = new LinkedHashSet<>();
         Set<String> sectionIds = new LinkedHashSet<>();
         Set<String> tableIds = new LinkedHashSet<>();
         Set<UUID> vectorDocumentIds = new LinkedHashSet<>();
         int excludedByScope = 0;
+        int qdrantSearchCalls = 0;
 
-        for (String variant : queryVariants) {
+        for (QueryVariantDedupe.QueryVariant qv : dedupeResult.uniqueVariants()) {
+            String variant = qv.originalText();
             List<TextSegment> anchors;
             try {
                 anchors = embeddingService.search(variant, fixedVectorAnchorK, widgetId);
+                qdrantSearchCalls++;
             } catch (Exception e) {
                 log.error("[RAG] Qdrant error for variant='{}': {}", variant, e.getMessage());
                 continue;
@@ -264,6 +294,15 @@ public class RagRetrievalService {
             log.info("[RAG] Semantic results excluded (out of locked scope): {} segments", excludedByScope);
         }
 
+        if (trace != null) {
+            trace.setQueryVariantDedupeStats(
+                    dedupeResult.total(),
+                    dedupeResult.unique(),
+                    dedupeResult.skipped(),
+                    variantDedupeEnabled ? "normalized_text" : "DISABLED",
+                    qdrantSearchCalls);
+        }
+
         log.info("[RAG] Vector anchors: chunks={} sections={} tables={} docs={}",
                 anchorChunkIds.size(), sectionIds.size(), tableIds.size(), vectorDocumentIds.size());
 
@@ -290,9 +329,11 @@ public class RagRetrievalService {
             // ── LOCKED-SCOPE MODE ──
             // Fetch ALL chunks from the locked section tree directly from DB.
             // This guarantees completeness for list/count/overview queries.
-            List<DocumentChunk> lockedChunks = documentChunkRepository
-                    .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
-                            widgetId, lockedSectionIds);
+            final Set<String> scopeSectionIds = lockedSectionIds;
+            List<DocumentChunk> lockedChunks = timedDbFetch(
+                    () -> documentChunkRepository
+                            .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                                    widgetId, scopeSectionIds));
             log.info("[RAG] Locked scope: {} chunks fetched from DB for sectionIds={}",
                     lockedChunks.size(), lockedSectionIds);
 
@@ -312,9 +353,10 @@ public class RagRetrievalService {
 
                 // Also pull any table chunks that vector search found within scope
                 if (!tableIds.isEmpty()) {
-                    List<DocumentChunk> tableChunks = documentChunkRepository
-                            .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
-                                    widgetId, tableIds);
+                    List<DocumentChunk> tableChunks = timedDbFetch(
+                            () -> documentChunkRepository
+                                    .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
+                                            widgetId, tableIds));
                     log.info("[RAG] Table expansion (locked mode): {} chunks from {} tableIds",
                             tableChunks.size(), tableIds.size());
                     expanded.addAll(tableChunks);
@@ -823,9 +865,10 @@ public class RagRetrievalService {
 
         if (parentSectionIds.isEmpty()) return List.of();
 
-        List<DocumentChunk> candidates = documentChunkRepository
-                .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
-                        widgetId, parentSectionIds);
+        List<DocumentChunk> candidates = timedDbFetch(
+                () -> documentChunkRepository
+                        .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
+                                widgetId, parentSectionIds));
 
         return candidates.stream()
                 .filter(c -> "section_summary".equals(c.getChunkType())
@@ -845,9 +888,10 @@ public class RagRetrievalService {
             return List.of();
         }
 
-        return documentChunkRepository
-                .findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
-                        widgetId, vectorDocumentIds)
+        return timedDbFetch(
+                () -> documentChunkRepository
+                        .findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
+                                widgetId, vectorDocumentIds))
                 .stream()
                 .map(chunk -> Map.entry(chunk, lexicalScore(chunk, terms)))
                 .filter(entry -> entry.getValue() > 0)
@@ -877,9 +921,9 @@ public class RagRetrievalService {
 
         if (scopedDocIds.isEmpty()) return List.of();
 
-        List<DocumentChunk> allChunks =
-                documentChunkRepository.findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
-                        widgetId, scopedDocIds);
+        List<DocumentChunk> allChunks = timedDbFetch(
+                () -> documentChunkRepository.findByWidgetConfigIdAndDocumentIdInOrderByDocumentIdAscOrderIndexAsc(
+                        widgetId, scopedDocIds));
         if (allChunks.isEmpty()) return List.of();
 
         Map<UUID, List<DocumentChunk>> byDocument = allChunks.stream()
@@ -1229,21 +1273,32 @@ public class RagRetrievalService {
         List<DocumentChunk> expensiveSubset = selectExpensiveScoringSubset(
                 cheapScored, budget, keywordScoresByChunkId);
         int droppedByCheapGate = Math.max(0, deduped.size() - expensiveSubset.size());
-        long cellAwareStart = RagLatencyTrace.now();
         Map<UUID, Double> rerankScores = new HashMap<>();
         String scorer = scorerHint;
         if (rerankService.isEnabled()) {
-            List<RerankService.ScoredChunk> reranked = rerankService.scoreCandidates(question, expensiveSubset);
-            for (RerankService.ScoredChunk rc : reranked) {
-                if (rc.chunk().getId() != null) {
-                    rerankScores.put(rc.chunk().getId(), rc.score());
-                }
+            double topCheapScore = cheapScored.isEmpty() ? 0.0 : cheapScored.get(0).score();
+            double secondCheapScore = cheapScored.size() < 2 ? 0.0 : cheapScored.get(1).score();
+            RerankGuard.Decision guardDecision = rerankGuard.decide(
+                    queryType, expensiveSubset.size(), topCheapScore, secondCheapScore);
+            RagLatencyTrace guardTrace = RagLatencyTrace.current();
+            if (guardTrace != null) {
+                guardTrace.setRerankGuardDecision(
+                        guardDecision.shouldSkip(), guardDecision.reason().name(), expensiveSubset.size());
             }
-            if (!rerankScores.isEmpty()) {
-                scorer = "RERANK_SERVICE";
+            if (!guardDecision.shouldSkip()) {
+                List<RerankService.ScoredChunk> reranked = rerankService.scoreCandidates(question, expensiveSubset);
+                for (RerankService.ScoredChunk rc : reranked) {
+                    if (rc.chunk().getId() != null) {
+                        rerankScores.put(rc.chunk().getId(), rc.score());
+                    }
+                }
+                if (!rerankScores.isEmpty()) {
+                    scorer = "RERANK_SERVICE";
+                }
             }
         }
 
+        long cellAwareStart = RagLatencyTrace.now();
         Map<String, Double> idfByTerm = computeIdfWeights(expensiveSubset, extractQueryTermsForScoring(question));
         double maxLexical = expensiveSubset.stream()
                 .mapToDouble(c -> lexicalIdfScore(c, idfByTerm))
@@ -2108,6 +2163,18 @@ public class RagRetrievalService {
     // ================================================================
     // INNER RECORDS
     // ================================================================
+
+    private <T> T timedDbFetch(Supplier<T> fetch) {
+        long start = RagLatencyTrace.now();
+        try {
+            return fetch.get();
+        } finally {
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addDbMs(RagLatencyTrace.elapsedMs(start));
+            }
+        }
+    }
 
     private record HeadingInfo(String number, String title) {
         int level() { return number.split("\\.").length; }

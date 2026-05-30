@@ -73,6 +73,9 @@ public class DocumentService {
     @Value("${app.upload-dir}")
     private String uploadDir;
 
+    @Value("${rag.retrieval.hybrid.max-keyword-scan-chunks:3000}")
+    private int keywordIndexCorpusLimit;
+
     /** Must match {@link DocumentParserService} supported types. */
     public static final String UNSUPPORTED_UPLOAD_FILE_MSG =
             "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF, TXT và DOCX.";
@@ -250,6 +253,7 @@ public class DocumentService {
         document.setChunkCount(savedChunks.size());
         documentRepository.save(document);
         keywordIndexCache.invalidate(widgetId, "document_indexed");
+        keywordIndexCache.warm(widgetId, keywordIndexCorpusLimit);
 
         log.info(
                 "Xử lý xong document={}, sections={}, tables={}, chunks={}",

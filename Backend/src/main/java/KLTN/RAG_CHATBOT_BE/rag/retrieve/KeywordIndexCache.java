@@ -96,6 +96,30 @@ public class KeywordIndexCache {
         log.info("[RAG][keyword-index] widget={} invalidated reason={}", widgetId, reason);
     }
 
+    /**
+     * Pre-build keyword index after ingest so first chat query does not pay index-build latency.
+     * Safe no-op when index is already warm and not expired.
+     */
+    public void warm(UUID widgetId, int corpusLimit) {
+        if (widgetId == null || documentChunkRepository == null) {
+            return;
+        }
+        long started = RagLatencyTrace.now();
+        CacheEntry entry = entries.compute(widgetId, (id, existing) -> {
+            if (existing != null && !existing.isExpired(ttlMillis())) {
+                return existing;
+            }
+            WidgetKeywordIndex index = buildIndex(id, corpusLimit);
+            log.info("[RAG][keyword-index] widget={} status=warm chunks={} buildMs={} terms={}",
+                    id, index.totalChunks(), RagLatencyTrace.elapsedMs(started), index.termCount());
+            return new CacheEntry(index, RagLatencyTrace.elapsedMs(started));
+        });
+        evictIfNeeded();
+        if (entry != null) {
+            entry.touch();
+        }
+    }
+
     public int cachedWidgetCount() {
         return entries.size();
     }

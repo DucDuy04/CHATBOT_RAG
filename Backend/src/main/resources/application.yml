@@ -21,8 +21,48 @@ server:
 groq:
   api-key: ${GROQ_API_KEY}
 rag:
+  runtime:
+    async-persist:
+      # Move assistant message persistence out of the synchronous response path
+      enabled: true
+      # Bounded pool — do not increase beyond 4 on 1-core/1.5GB production
+      pool-size: 2
+      queue-capacity: 100
+      # Max wait for async task before logging TIMEOUT (does not block the request thread)
+      timeout-ms: 3000
+      # Set true only for debugging — logs source JSON byte size on each async persist
+      log-payload-size: false
   retrieval:
     vector-anchor-k: 30
+    keyword-index:
+      # TTL and eviction (defaults in KeywordIndexCache: ttl=3600000ms, max-widgets=25)
+      ttl-ms: 3600000
+      max-widgets: 25
+      # Startup prewarm — warms keyword indexes for active widgets after backend restart
+      prewarm-on-startup: true
+      prewarm-async: true
+      prewarm-max-widgets: 20
+      # Should match rag.retrieval.hybrid.max-keyword-scan-chunks (3000)
+      prewarm-corpus-limit: 3000
+      prewarm-delay-ms: 2000
+    rerank-guard:
+      enabled: true
+      # Skip rerank when candidate count is at/below this — rerank adds little value over tiny sets
+      skip-when-candidates-lte: 5
+      # Skip rerank when cheap pre-score gap (rank1 - rank2) >= this — winner already clear
+      skip-when-top-score-gap-gte: 0.35
+      # Skip rerank for TABLE_LOOKUP when top cheap pre-score >= this — exact row already found
+      skip-exact-lookup-when-cell-score-gte: 0.80
+    query-variant-dedupe:
+      # Master switch — false preserves old behavior (all variants → all Qdrant calls)
+      enabled: true
+      # Safe default: exact normalized-text hash dedupe only
+      mode: normalized_text
+      # Cosine-similarity dedupe requires embeddings; deferred to future task (27E+)
+      cosine-enabled: false
+      cosine-threshold: 0.98
+      # Log variant skip events at INFO level (skipped text NOT logged; only counts)
+      log-skipped-variants: true
     hybrid:
       enabled: true
       keyword-top-m: 30
