@@ -1,6 +1,7 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
+import KLTN.RAG_CHATBOT_BE.domain.document.Document;
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentRepository;
 import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfig;
 import KLTN.RAG_CHATBOT_BE.domain.widget.WidgetConfigRepository;
@@ -12,7 +13,10 @@ import KLTN.RAG_CHATBOT_BE.dto.EmbedConfigResponse;
 import KLTN.RAG_CHATBOT_BE.dto.EmbedConfigUpdateRequest;
 import KLTN.RAG_CHATBOT_BE.dto.WidgetCreateRequest;
 import KLTN.RAG_CHATBOT_BE.dto.WidgetCreateResponse;
+import KLTN.RAG_CHATBOT_BE.llm.LlmGenerationOptions;
+import KLTN.RAG_CHATBOT_BE.rag.retrieve.RagRetrievalService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -32,6 +36,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class WidgetService {
@@ -54,6 +59,7 @@ public class WidgetService {
 
     private final WidgetConfigRepository repository;
     private final DocumentRepository documentRepository;
+    private final DocumentService documentService;
     private final ChatMessageRepository chatMessageRepository;
 
     public WidgetCreateResponse createWidgetConfig(WidgetCreateRequest request) {
@@ -188,6 +194,10 @@ public class WidgetService {
         });
     }
 
+    /**
+     * Soft-delete chatbot after purging all active documents (DB rows + Qdrant via {@link DocumentService#softDeleteDocument}).
+     * Fails fast if any document delete fails; chatbot row is not soft-deleted in that case.
+     */
     @Transactional
     public boolean softDeleteChatbot(UUID id) {
         Optional<WidgetConfig> opt = repository.findById(id);
@@ -195,6 +205,12 @@ public class WidgetService {
             return false;
         }
         WidgetConfig w = opt.get();
+        List<Document> activeDocuments = documentRepository.findByWidgetConfigId(id);
+        for (Document doc : activeDocuments) {
+            documentService.softDeleteDocument(doc.getId());
+        }
+        log.info("[ChatbotDelete] chatbot={} documentsDeleted={}", id, activeDocuments.size());
+
         w.setDeletedAt(LocalDateTime.now());
         w.setActive(false);
         Map<String, Object> ui = mutableUi(w);

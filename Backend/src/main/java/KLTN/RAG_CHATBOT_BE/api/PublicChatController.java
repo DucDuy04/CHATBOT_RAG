@@ -3,7 +3,7 @@ package KLTN.RAG_CHATBOT_BE.api;
 import KLTN.RAG_CHATBOT_BE.dto.ChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PublicChatResponse;
-import KLTN.RAG_CHATBOT_BE.service.ChatService;
+import KLTN.RAG_CHATBOT_BE.rag.runtime.ChatService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;

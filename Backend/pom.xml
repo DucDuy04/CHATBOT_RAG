@@ -84,13 +84,6 @@
 			<!-- <version>0.32.0</version> -->
 		</dependency>
 
-		<!-- LangChain4j — kết nối Qdrant -->
-		<dependency>
-			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-qdrant</artifactId>
-			 <!-- <version>0.36.2</version> -->
-		</dependency>
-
 		<!-- Apache PDFBox — đọc file PDF -->
 		<dependency>
 			<groupId>org.apache.pdfbox</groupId>
@@ -150,6 +143,13 @@
 							<version>1.18.40</version>
 						</path>
 					</annotationProcessorPaths>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<excludedGroups>integration</excludedGroups>
 				</configuration>
 			</plugin>
 			<plugin>

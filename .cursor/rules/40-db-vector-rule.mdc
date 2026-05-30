@@ -1,6 +1,6 @@
 ---
 description: Apply when modifying entities, repositories, SQL/schema, MySQL queries, Qdrant config, vector collection, embedding storage, retrieval filters, or data migration.
-globs: schema*.sql,**/*schema*.sql,**/*migration*.sql,Backend/src/main/java/**/domain/**/*,Backend/src/main/java/**/repository/**/*,Backend/src/main/java/**/config/QdrantConfig.java,Backend/src/main/java/**/service/EmbeddingService.java,Backend/src/main/java/**/service/RagRetrievalService.java,Backend/src/main/resources/application*.yml
+globs: schema*.sql,**/*schema*.sql,**/*migration*.sql,Backend/src/main/java/**/domain/**/*,Backend/src/main/java/**/repository/**/*,Backend/src/main/java/**/index/qdrant/**/*,Backend/src/main/java/**/index/embedding/**/*,Backend/src/main/java/**/rag/retrieve/**/*,Backend/src/main/resources/application*.yml
 alwaysApply: false
 ---
 
@@ -14,19 +14,25 @@ MySQL/DB:
 
 - entity trong `Backend/src/main/java/**/domain/**`
 - repository trong `Backend/src/main/java/**/repository/**`
-- service gọi repository liên quan
+- `service.DocumentService` nếu task upload/status
 - `schema_update.sql`
 - backup/migration SQL nếu task liên quan dữ liệu
 - application config datasource/JPA
 
 Qdrant/vector:
 
-- `QdrantConfig.java`
-- `EmbeddingService.java`
-- `RagRetrievalService.java`
-- ingestion service gọi upsert vector
-- config collection/vector-size
+- `index.qdrant.QdrantConfig`
+- `index.embedding.EmbeddingService`
+- `rag.retrieve.RagRetrievalService`
+- `service.DocumentService` (orchestrate upsert/purge)
+- config collection/vector-size (`qdrant.http-port`, không dùng gRPC write)
 - retrieval filter theo document/widget/session nếu có
+
+## Qdrant write path (canonical)
+
+- Upsert/search: **REST** qua `EmbeddingService` (`PUT/POST` collections/points, port `6333`).
+- Serialization: Spring `RestClient` + Jackson → **UTF-8 Unicode safe** (fix 24D4).
+- **Không** dùng `QdrantEmbeddingStore`, `langchain4j-qdrant`, hoặc gRPC upsert trong application code.
 
 ## Nguyên tắc DB/vector
 
@@ -38,6 +44,7 @@ Qdrant/vector:
 - Không tăng top-k lớn để “fix chất lượng” nếu không có căn cứ.
 - Không lưu text/payload quá lớn nếu không cần.
 - Không tạo query full scan nếu có thể giới hạn bằng index/where rõ ràng.
+- Payload `cells_json` / `group_context`: không đổi schema nếu task không yêu cầu.
 
 ## Checklist MySQL
 
@@ -61,6 +68,7 @@ Trong phạm vi task, kiểm tra:
 - filter widget/document có đúng không
 - top-k/context có phù hợp môi trường yếu không
 - external embedding provider fail thì status/error xử lý thế nào
+- Vietnamese Unicode trong payload sau upsert (không mojibake)
 
 ## Kiểm tra
 

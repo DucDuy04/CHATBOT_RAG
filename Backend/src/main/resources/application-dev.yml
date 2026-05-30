@@ -19,8 +19,7 @@ spring:
 # Cấu hình Qdrant
 qdrant:
   host: localhost
-  port: 6334                    # Dùng cổng gRPC
-  http-port: 6333               # Dùng cổng HTTP cho REST API
+  http-port: 6333               # REST API (EmbeddingService upsert + QdrantConfig init)
   collection-name: documents
   vector-size: 768             # gemini-embedding-001 = 3072 dimensions
 
@@ -63,7 +62,7 @@ server:
 
 logging:
   level:
-    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG
+    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG
 
 
 

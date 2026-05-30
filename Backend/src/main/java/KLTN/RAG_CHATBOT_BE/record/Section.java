@@ -1,6 +1,6 @@
 package KLTN.RAG_CHATBOT_BE.record;
 
-import KLTN.RAG_CHATBOT_BE.service.RawTableBlock;
+import KLTN.RAG_CHATBOT_BE.ingest.parser.RawTableBlock;
 import java.util.List;
 
 /**

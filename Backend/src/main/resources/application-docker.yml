@@ -13,9 +13,7 @@ spring:
 
 qdrant:
   host: qdrant
-  port: 6334
   http-port: 6333
-  url: http://qdrant:6333
   collection-name: documents
   vector-size: 768
 
@@ -44,6 +42,6 @@ server:
 logging:
   level:
     # Bật debug để thấy log parse/chunk trong docker logs
-    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG

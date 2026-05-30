@@ -56,5 +56,5 @@ app:
 
 logging:
   level:
-    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG

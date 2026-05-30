@@ -5,7 +5,7 @@ import KLTN.RAG_CHATBOT_BE.dto.ChatFeedbackRequest;
 import KLTN.RAG_CHATBOT_BE.dto.ChatFeedbackResponse;
 import KLTN.RAG_CHATBOT_BE.dto.ChatResponse;
 import KLTN.RAG_CHATBOT_BE.service.ChatFeedbackService;
-import KLTN.RAG_CHATBOT_BE.service.ChatService;
+import KLTN.RAG_CHATBOT_BE.rag.runtime.ChatService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;

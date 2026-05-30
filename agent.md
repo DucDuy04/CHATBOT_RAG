@@ -72,16 +72,22 @@ MySQL (`ragchatbot`):
 
 Qdrant:
 - Collection: `documents`, vector size `768`, distance Cosine.
-- Port: gRPC `6334` (LangChain4j), HTTP `6333` (REST admin).
-- Payload: `widgetId`, `documentId`, `fileName`, `chunk_id`, `section_id`, `section_title`, `heading_path`, `chunk_type`, `child_section_ids`, `table_id`, `page_start`, `page_end`, `order_index`, `section_order`.
+- Write/search path: HTTP REST `6333` qua `index.embedding.EmbeddingService` (UTF-8 JSON; không dùng LangChain4j `QdrantEmbeddingStore` / gRPC write).
+- Port `6334` (gRPC) có thể expose trong Docker cho tooling; backend không ghi vector qua gRPC.
+- Payload: `widgetId`, `documentId`, `fileName`, `chunk_id`, `section_id`, `section_title`, `heading_path`, `chunk_type`, `cells_json`, `group_context`, `child_section_ids`, `table_id`, `page_start`, `page_end`, `order_index`, `section_order`.
 - Tất cả search đều filter theo `widgetId`.
 
 # 📂 PROJECT STRUCTURE
 - `Backend/`: Spring Boot API.
-  - `api/`: ChatController, DocumentController, WidgetController.
-  - `service/`: ChatService, DocumentService, DocumentParserService, ChunkingService2, EmbeddingService, RagRetrievalService, QueryAnalyzerService, PromptBuilderService, LlmFallbackService, RerankService, WidgetService.
-  - `domain/`: chat/ (ChatSession, ChatMessage), document/ (Document, DocumentChunk, DocumentSection, DocumentTable + repos), widget/ (WidgetConfig + repo), enums/.
-  - `config/`: GroqConfig, QdrantConfig, SecurityConfig, WidgetAuthFilter, AppConfig.
+  - `api/`: ChatController, DocumentController, WidgetController, PlaygroundController.
+  - `ingest.parser` / `ingest.normalize` / `ingest.chunking`: parse PDF/DOCX/TXT, `RawTableModel`, normalized rows, chunking.
+  - `index.embedding` / `index.qdrant`: Nomic embed + Qdrant REST upsert/search; collection bootstrap/purge.
+  - `rag.retrieve` / `rag.prompt` / `rag.analysis` / `rag.rerank` / `rag.budget` / `rag.runtime`: retrieval, prompt, query signals, rerank, budget, ChatService/PlaygroundService.
+  - `llm/`: LlmFallbackService, LlmGenerationOptions.
+  - `audit.metrics/`: RagTokenAudit, RagLatencyTrace.
+  - `service/`: DocumentService, WidgetService (upload lifecycle + admin only).
+  - `domain/`: chat/, document/, widget/, enums/.
+  - `config/`: GroqConfig, SecurityConfig, WidgetAuthFilter, AppConfig (QdrantConfig ở `index.qdrant`).
   - `resources/`: application.yml, application-dev.yml, application-docker.yml.
 - `Frontend/`: React app + widget.
   - `src/pages/`: ChatPage, DocumentPage, WidgetChatPage.
@@ -92,10 +98,11 @@ Qdrant:
 - `preprocess/`: standalone Java module (không phụ thuộc Backend runtime).
 
 # 🔌 CORE MODULES
-- Document Ingestion: `DocumentService` → `DocumentParserService` → `ChunkingService2` → `EmbeddingService`.
-  - ChunkingService2 tạo: `text`, `section_summary`, `parent_section_summary`, `table_summary`, `table_row_group`, `text_table_like`.
-  - Chunk size: max 2200 chars, overlap 250 chars. Table rows: 10 rows/group.
-- Chat/RAG: `ChatService` → `RagRetrievalService` (7 bước) → `PromptBuilderService` → Groq LLM.
+- Document Ingestion: `DocumentService` → `DocumentParserService` → `NormalizedTableService` → `ChunkingService2` → `EmbeddingService`.
+  - DOCX/PDF tables: `RawTableModel` (logical grid; DOCX dùng `physicalColIndex`) → `normalized_table_row` + `table_summary`.
+  - ChunkingService2 còn tạo: `text`, `section_summary`, `parent_section_summary`. Không tạo `table_row_group` / `text_table_like` trên ingest mới.
+  - Chunk size: max 2200 chars, overlap 250 chars.
+- Chat/RAG: `rag.runtime.ChatService` → `rag.retrieve.RagRetrievalService` (7 bước) → `rag.prompt.PromptBuilderService` → `llm.LlmFallbackService` → Groq LLM.
   - Retrieval: ANCHOR_TOP_K=30; final limit 10/20/60 tùy intent + locked scope.
   - Rerank: Cohere Cross-Encoder, optional.
   - LLM fallback: llama-3.3-70b → llama-3.1-8b-instant → llama-4-scout → qwen3-32b.
