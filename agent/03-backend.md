@@ -6,7 +6,7 @@ Backend-specific guide. Package truth: [`02-architecture.md`](02-architecture.md
 
 ## Tech stack
 
-- Java 21, Spring Boot 3.4.4, Maven
+- Java 21, Spring Boot 3.4.4, Maven (`Backend/mvnw.cmd` included)
 - Spring Web, Data JPA, Security
 - LangChain4j 1.0.0-beta1: `langchain4j`, `langchain4j-open-ai`, `langchain4j-nomic` — **LLM/embedding adapters only**
 - **No** `langchain4j-qdrant` / `QdrantEmbeddingStore` in application code
@@ -23,6 +23,25 @@ Backend-specific guide. Package truth: [`02-architecture.md`](02-architecture.md
 | `docker` | `application-docker.yml` | Container: host `mysql`, `qdrant` |
 
 Common settings in `application.yml`: multipart 50MB, upload dir `./uploads`, hybrid retrieval config, cleaner config.
+
+### Runtime optimizations (config paths)
+
+```yaml
+rag:
+  runtime:
+    async-persist:
+      enabled: true
+      pool-size: 2
+  retrieval:
+    keyword-index:
+      prewarm-on-startup: true
+    rerank-guard:
+      enabled: true
+    query-variant-dedupe:
+      enabled: true
+```
+
+**Wrong path (do not document):** `rag.retrieval.async-persist` — async persist is under `rag.runtime.async-persist`.
 
 ---
 
@@ -41,6 +60,10 @@ Common settings in `application.yml`: multipart 50MB, upload dir `./uploads`, hy
 | Chat runtime | `rag.runtime.ChatService` |
 | LLM | `llm.LlmFallbackService` |
 | Widget auth | `config.WidgetAuthFilter` |
+| Audit metrics | `audit.metrics.RagTokenAudit`, `RagLatencyTrace` |
+| Domain / repos | `domain.*`, JPA repositories |
+
+Package layers: `api` → `service` (lifecycle only) → `ingest` / `index` / `rag` / `llm` → `domain`.
 
 ---
 
@@ -117,11 +140,23 @@ $env:JAVA_HOME='C:\Program Files\Java\jdk-21'
 .\mvnw.cmd clean test
 ```
 
-Expected: 71 tests, 0 failures. See [`05-testing.md`](05-testing.md).
+Expected: **120 tests**, 0 failures. See [`05-testing.md`](05-testing.md).
 
 ---
 
 ## Common troubleshooting
+
+### PowerShell env scope (Process / User / Machine)
+
+**Symptom:** Key works in one terminal but not another; Docker container has different key.
+
+```powershell
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "Process")
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "User")
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "Machine")
+```
+
+Process env mất khi đóng terminal. Docker dùng `.env` tại repo root — restart backend sau khi sửa.
 
 ### NOMIC key mismatch (Process / User / .env / Docker)
 
@@ -173,6 +208,21 @@ Ensure same key in `.env` (compose), PowerShell session, and not overridden by s
 - Check backend logs: parse/chunk/embed exceptions
 - File size ≤ 50MB
 - Groq/Nomic API availability
+
+### Widget key / auth failures
+
+**Symptom:** 401 on `/api/chat` or `/api/chat/stream`.
+
+- Header: `X-Widget-Key` (widget iframe / admin chat)
+- Public chat: `x-api-key` or `X-Widget-Key` on `/api/public/chat`
+- Key = `WidgetConfig.apiKey` UUID from embed config — not settings API keys
+
+### Removed feedback DB artifacts
+
+**Symptom:** Old branch fails on missing `chat_feedbacks` or `notify_new_feedback`.
+
+- Current codebase (28A+) does not map these — use current branch.
+- Optional cleanup after backup: `DROP TABLE chat_feedbacks`; `ALTER TABLE settings_profiles DROP COLUMN notify_new_feedback`
 
 ---
 

@@ -9,11 +9,11 @@ cd Backend
 
 | Metric | Expected |
 |--------|----------|
-| Total tests | **71** |
+| Total tests | **120** |
 | Failures | **0** |
 | Errors | **0** |
 
-Baseline verified after tasks 25F–25K and doc tasks 26A–26C.
+Baseline verified after tasks 27A–27F (optimizations), 28A–28C (cleanup + E2E), 29A (README).
 
 ---
 

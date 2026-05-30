@@ -1,35 +1,38 @@
-# AGENT DOCS — CHATBOT_RAG
+# Agent Entry Point — CHATBOT_RAG
 
-Entry point cho AI/Cursor sessions và developer onboarding. Đọc file này trước khi sửa code hoặc docs.
+Concise entry point cho AI/Cursor sessions. Human onboarding: [`README.md`](README.md).
 
 ---
 
-## Current project state
+## Current verified baseline (28C / 29A, 2026-05-30)
 
-- **Backend:** Spring Boot 3.4.4 / Java 21 — ổn định sau refactor 25B–25K.
-- **Test baseline:** `mvn clean test` → **71 tests, 0 failures, 0 errors** (default tests không cần live MySQL/Qdrant/API keys).
-- **Data baseline (eval snapshot 25I–25K):** 5 active chatbots, 3 completed documents, 9888 DB chunks = 9888 Qdrant points, 0 orphans.
-- **Qdrant write path:** REST HTTP 6333 qua `index.embedding.EmbeddingService` — **không** gRPC, **không** `QdrantEmbeddingStore`.
-- **Chatbot delete:** cascade active documents qua `DocumentService.softDeleteDocument` trước khi soft-delete chatbot.
+| Check | Result |
+|-------|--------|
+| Backend tests (`mvn clean test`) | **120 PASS**, 0 failures |
+| Frontend build | **PASS** |
+| Frontend lint | **PASS** |
+| Widget build (`npm run build:widget`) | **PASS** |
+| Docker compose config | **PASS** |
+| Widget E2E | **PASS** |
+| DB/Qdrant parity (active COMPLETED docs) | **PASS** — chunk count = point count per document |
+
+Default unit tests **không** cần live MySQL/Qdrant/API keys.
+
+**Removed (không còn active):** feedback endpoint, satisfaction/rating metrics, `newFeedback` notification, frontend mock mode, `USE_MOCK_API`. Frontend clients gọi backend thật only.
 
 ---
 
 ## Read first
 
-1. [`docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md`](docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md)
-2. [`docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md`](docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md)
-3. [`.cursor/rules/10-backend-rag-rule.mdc`](.cursor/rules/10-backend-rag-rule.mdc)
-4. [`.cursor/rules/40-db-vector-rule.mdc`](.cursor/rules/40-db-vector-rule.mdc)
+1. [`README.md`](README.md) — clone-and-run handoff
+2. [`docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md`](docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md)
+3. [`docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md`](docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md)
+4. [`docs/api/API_REFERENCE_20260530.md`](docs/api/API_REFERENCE_20260530.md)
+5. [`agent/04-runbook.md`](agent/04-runbook.md)
+6. [`agent/05-api.md`](agent/05-api.md)
+7. [`agent/06-operations.md`](agent/06-operations.md)
 
-Thesis handoff (optional):
-
-- [`docs/architecture/THESIS_ARCHITECTURE_SUMMARY_20260529.md`](docs/architecture/THESIS_ARCHITECTURE_SUMMARY_20260529.md)
-
-API docs:
-
-- [`docs/api/API_REFERENCE_20260530.md`](docs/api/API_REFERENCE_20260530.md)
-- [`docs/api/API_QUICKSTART_20260530.md`](docs/api/API_QUICKSTART_20260530.md)
-- [`agent/05-api.md`](agent/05-api.md)
+Cursor rules: `.cursor/rules/00-core-working-rule.mdc`, `10-backend-rag-rule.mdc`, `40-db-vector-rule.mdc`.
 
 ---
 
@@ -41,37 +44,10 @@ API docs:
 | [`agent/02-architecture.md`](agent/02-architecture.md) | Kiến trúc truth — package map, pipelines |
 | [`agent/03-backend.md`](agent/03-backend.md) | Backend chi tiết, troubleshooting |
 | [`agent/04-runbook.md`](agent/04-runbook.md) | Lệnh vận hành |
+| [`agent/05-api.md`](agent/05-api.md) | API reference nhanh |
 | [`agent/05-testing.md`](agent/05-testing.md) | Test suite, baseline |
 | [`agent/06-operations.md`](agent/06-operations.md) | Data lifecycle, delete, Qdrant parity |
 | [`agent/04-frontend.md`](agent/04-frontend.md) | Frontend + widget (legacy index) |
-| [`agent/05-api.md`](agent/05-api.md) | API reference nhanh |
-
-Human entry: [`README.md`](README.md)
-
----
-
-## Canonical package map
-
-```text
-api
-service                    ← upload lifecycle, widget/admin only
-ingest.parser              ← DocumentParserService, RawTableModel
-ingest.normalize           ← NormalizedTableService
-ingest.chunking            ← ChunkingService2
-index.embedding            ← EmbeddingService (Nomic + Qdrant REST)
-index.qdrant               ← QdrantConfig, QdrantPurgeService
-rag.retrieve               ← RagRetrievalService, KeywordSearchService
-rag.prompt                 ← PromptBuilderService
-rag.analysis               ← QueryAnalyzerService, QuerySignalExtractor
-rag.rerank                 ← RerankService
-rag.budget                 ← PromptBudgetResolver
-rag.runtime                ← ChatService, PlaygroundService
-audit.metrics              ← RagTokenAudit, RagLatencyTrace
-llm                        ← LlmFallbackService, LlmGenerationOptions
-domain                     ← entities + repositories
-```
-
-**Không** tìm RAG core trong `service.ChatService`, `service.EmbeddingService`, `service.RagRetrievalService`, `service.DocumentParserService`, `service.LlmFallbackService` — đã chuyển package (25B–25D).
 
 ---
 
@@ -79,44 +55,85 @@ domain                     ← entities + repositories
 
 | Invariant | Chi tiết |
 |-----------|----------|
-| No Qdrant gRPC write path | Upsert/search chỉ REST `:6333` qua `EmbeddingService` |
+| No Qdrant gRPC write/search path | Upsert/search chỉ REST `:6333` qua `EmbeddingService` |
 | No LangChain4j QdrantEmbeddingStore | Không dùng cho write/search |
+| No frontend mock mode / USE_MOCK_API | Development bắt buộc backend thật |
+| No feedback/satisfaction/rating/newFeedback | Endpoint và metrics đã gỡ (28A/28B) |
 | No DOCX Markdown bridge as primary | Structured tables → `RawTableModel`; DOCX `physicalColIndex`, PDF x-overlap |
 | No `table_row_group` / `text_table_like` on new ingest | Legacy read-compatible only |
 | `cells_json` UTF-8 | Vietnamese Unicode phải readable sau Qdrant upsert |
 | DB chunks = Qdrant points | Cho documents `COMPLETED` |
-| Chatbot delete cascades documents | `WidgetService.softDeleteChatbot` → `DocumentService.softDeleteDocument` |
+| Chatbot delete cascades documents | Purge Qdrant by `document_id`, soft-delete DB rows |
 | No adaptive context-N | Budget cố định theo query type — chưa implement dynamic topK |
+| Do not cache final answers | Mỗi request retrieval + LLM fresh (trừ embedding/query cache nội bộ) |
 
 ---
 
-## How to run tests
+## Current architecture summary
+
+```text
+Frontend / Admin / Widget
+        ↓ REST / SSE
+   Spring Boot API (api, service)
+   ├── ingest.parser / normalize / chunking
+   ├── index.embedding (Qdrant REST) / index.qdrant (bootstrap/purge)
+   ├── rag.retrieve / prompt / analysis / rerank / budget / runtime
+   ├── llm (Groq adapter)
+   └── audit.metrics
+        ↓                    ↓
+     MySQL              Qdrant (:6333 REST)
+        ↓
+   Nomic + Groq (+ Cohere optional)
+```
+
+RAG core **không** nằm trong `service.*` (moved 25B–25D). Current chunk types: `text`, `section_summary`, `parent_section_summary`, `table_summary`, `normalized_table_row`.
+
+---
+
+## Current optimization status
+
+| Optimization | Status | Config path |
+|--------------|--------|-------------|
+| Startup keyword index prewarm | **PASS** (27B verified) | `rag.retrieval.keyword-index.prewarm-*` |
+| Rerank guard | **PASS** (27C verified) | `rag.retrieval.rerank-guard.*` |
+| Async assistant message persistence | **PASS** (27F verified) | `rag.runtime.async-persist.*` |
+| Query variant dedupe | **PARTIAL** — safe, low impact on current V1–V5 workload | `rag.retrieval.query-variant-dedupe.*` |
+
+---
+
+## Validation commands
 
 ```powershell
 cd Backend
-$env:JAVA_HOME='C:\Program Files\Java\jdk-21'
-.\mvnw.cmd clean test
-```
+.\mvnw.cmd clean test          # Expected: 120 tests, 0 failures
 
-Expected: **71 tests, 0 failures, 0 errors**.
+cd ..\Frontend
+npm run build
+npm run lint
+npm run build:widget
 
-```powershell
+cd ..
 docker compose config -q
 ```
+
+Widget E2E evidence: [`docs/eval/results/FULL_PROJECT_WIDGET_E2E_VERIFY_28C_20260530.md`](docs/eval/results/FULL_PROJECT_WIDGET_E2E_VERIFY_28C_20260530.md).
+
+---
+
+## Do not touch casually
+
+- Parser / normalizer logic (`ingest.parser`, `ingest.normalize`)
+- Qdrant payload shape và `cells_json` encoding
+- Retrieval semantics (`rag.retrieve`) without eval baseline
+- Vector size (768) / collection name (`documents`) without re-embed plan
+- Chatbot delete cascade order
+- Docker service names in `application-docker.yml` (`mysql`, `qdrant`)
 
 ---
 
 ## Important warnings
 
-- **Không** drop Qdrant collection / `docker compose down -v` cho cleanup thường.
+- **Không** `docker compose down -v` cho cleanup thường.
 - **Không** log full API keys, prompts, hoặc document content dài.
-- **Không** claim production auth nếu endpoint vẫn `permitAll` (trừ widget chat qua `X-Widget-Key`).
-- **Không** sửa Qdrant payload shape / DB schema / ingest logic ngoài scope task.
-- Admin endpoints (`/api/documents/**`, `/api/chatbots/**`) chưa hardening — ghi rõ trong report nếu deploy production.
-- Sau mỗi task sửa code: tạo report trong `docs/<TEN_REPORT>.md` theo rule 90.
-
----
-
-## Cursor rules
-
-`.cursor/rules/` — `00-core-working-rule.mdc` và `90-report-verification-rule.mdc` có `alwaysApply: true`.
+- **Không** claim production auth — admin endpoints vẫn `permitAll` (trừ widget chat qua `X-Widget-Key` / `x-api-key`).
+- Sau mỗi task sửa code: tạo report theo `.cursor/rules/90-report-verification-rule.mdc`.

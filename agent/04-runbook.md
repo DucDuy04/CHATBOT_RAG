@@ -17,8 +17,10 @@ Operational commands cho CHATBOT_RAG. PowerShell examples trên Windows; Linux/m
 ```powershell
 cd E:\chatbot-rag-workspace\CHATBOT_RAG
 docker compose config -q
-docker compose up -d mysql qdrant backend
+docker compose up -d mysql qdrant
+docker compose up --build -d backend
 docker compose ps
+docker compose logs backend --tail=200
 ```
 
 Optional frontend:
@@ -94,7 +96,7 @@ $env:JAVA_HOME='C:\Program Files\Java\jdk-21'
 .\mvnw.cmd clean test
 ```
 
-Expected: **71 tests, 0 failures, 0 errors**.
+Expected: **120 tests**, 0 failures, 0 errors.
 
 Compile only:
 
@@ -115,10 +117,27 @@ npm run dev
 Build + widget:
 
 ```powershell
-npm run lint
 npm run build
+npm run lint
 npm run build:widget
 ```
+
+Output: `dist-widget/chatbot-widget.iife.js` → synced to `public/dist-widget/`.
+
+Local widget test: http://localhost:5173/widget?widgetKey=YOUR_UUID
+
+---
+
+## DB cleanup verification (historical feedback artifacts)
+
+Optional — verify legacy feedback schema removed or still present on old DB:
+
+```sql
+SHOW TABLES LIKE 'chat_feedbacks';
+SHOW COLUMNS FROM settings_profiles LIKE 'notify_new_feedback';
+```
+
+**Expected on cleaned DB:** no rows. Backend 28A+ does not require these; safe to drop after backup if still present.
 
 ---
 

@@ -19,6 +19,8 @@ Delete → soft-delete DB rows (deleted_at)
 - Soft-deleted rows remain in MySQL until optional hard purge.
 - Qdrant points removed on document delete — not on chatbot soft-delete alone (documents purged first in cascade).
 
+**Removed (28A/28B):** feedback collection, satisfaction metrics, frontend mock mode — not part of active operations.
+
 ---
 
 ## Document deletion
@@ -77,6 +79,17 @@ Delete → soft-delete DB rows (deleted_at)
 
 ---
 
+## Runtime optimizations
+
+| Feature | Config | Notes |
+|---------|--------|-------|
+| Startup keyword index prewarm | `rag.retrieval.keyword-index.prewarm-*` | Warms keyword cache after restart; reduces first-chat latency |
+| Rerank guard | `rag.retrieval.rerank-guard.*` | Skips Cohere rerank when cheap pre-score already decisive |
+| Async assistant persist | `rag.runtime.async-persist.*` | Assistant message saved async — **eventual consistency** if JVM dies immediately after response |
+| Query variant dedupe | `rag.retrieval.query-variant-dedupe.*` | PARTIAL impact on current workload; safe to keep enabled |
+
+---
+
 ## DB / Qdrant parity checks
 
 For each `COMPLETED` document:
@@ -85,15 +98,16 @@ For each `COMPLETED` document:
 document.chunkCount == COUNT(qdrant points where document_id = doc.id)
 ```
 
-Baseline snapshot (25J):
+Baseline snapshot (28C verify):
 
 | Metric | Value |
 |--------|-------|
-| Active completed documents | 3 |
-| DB chunks | 9888 |
-| Qdrant points | 9888 |
-| Orphan chunks | 0 |
-| Stray Qdrant points | 0 |
+| Backend unit tests | 120 PASS |
+| Widget E2E | PASS |
+| Active completed documents (eval env) | 3 |
+| DB chunks per doc | 3296 each |
+| Qdrant points per doc | 3296 each (parity PASS) |
+| Removed feedback endpoint | 404 PASS |
 
 Manual verification (Qdrant REST):
 
@@ -139,6 +153,19 @@ Optional: `COHERE_API_KEY`, `COHERE_RERANK_ENABLED=false`
 
 ---
 
+## Historical DB cleanup (feedback — removed)
+
+Backend 28A+ does not map `chat_feedbacks` or `settings_profiles.notify_new_feedback`. If old DB still has them:
+
+```sql
+SHOW TABLES LIKE 'chat_feedbacks';
+SHOW COLUMNS FROM settings_profiles LIKE 'notify_new_feedback';
+```
+
+Optional drop after backup — not required for current runtime.
+
+---
+
 ## Destructive operations — warning
 
 **Never for routine maintenance:**
@@ -168,12 +195,14 @@ Only for intentional full environment reset with backup.
 ## Build verification
 
 ```powershell
-cd Backend && .\mvnw.cmd clean test
+cd Backend && .\mvnw.cmd clean test    # Expected: 120 tests, 0 failures
 docker compose config -q
-cd Frontend && npm run lint && npm run build
+cd Frontend && npm run lint && npm run build && npm run build:widget
 ```
 
-Frontend env: `VITE_API_URL=http://localhost:8080`
+Frontend env: `VITE_API_URL=http://localhost:8080` (or empty for Vite dev proxy).
+
+Widget E2E baseline: `docs/eval/results/FULL_PROJECT_WIDGET_E2E_VERIFY_28C_20260530.md`.
 
 ---
 

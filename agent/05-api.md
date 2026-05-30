@@ -31,6 +31,18 @@ Backend/src/main/java/KLTN/RAG_CHATBOT_BE/dto/
 - **Admin endpoints are dev-oriented** — `permitAll` unless auth is implemented; do not claim production security.
 - **Qdrant:** REST `:6333` only in application path — do not document gRPC as write path.
 - **No `INDEXED` status** — use `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`.
+- **No feedback/satisfaction/rating** — removed 28A/28B; do not document as active.
+- **No mock mode** — frontend calls real backend only.
+
+---
+
+## Removed endpoints
+
+```text
+POST /api/chat/feedback   → 404 (removed task 28A)
+```
+
+Do not document rating filters, `avgSatisfaction`, `newFeedback`, or satisfaction fields on dashboard/analytics/settings responses.
 
 ---
 
@@ -48,7 +60,9 @@ Backend/src/main/java/KLTN/RAG_CHATBOT_BE/dto/
 | `DashboardController` | `/api/dashboard` | None (admin — open) |
 | `SettingsController` | `/api/settings` | None (admin — open) |
 
-Retired chat-quality endpoint from task 28A is no longer part of the API contract.
+Retired chat-quality endpoint from task 28A is no longer part of the API contract (`POST /api/chat/feedback` → **404**).
+
+Dashboard/analytics/settings DTOs **do not** include satisfaction, rating, or `newFeedback` fields.
 
 ---
 
@@ -177,6 +191,9 @@ DELETE /api/chatbots/{id}
 | Sources have `pageStart`/`pageEnd` | Use `pages` string in `SourceDto` |
 | All `/api/chat/**` need widget key | **Only** `/api/chat` and `/api/chat/stream` |
 | Settings API keys = widget keys | **Different** — settings keys vs `WidgetConfig.apiKey` |
+| `POST /api/chat/feedback` active | **Removed** — expect 404 |
+| Frontend mock mode / USE_MOCK_API | **Removed** — real backend only |
+| Satisfaction/rating metrics in analytics | **Removed** |
 
 ---
 

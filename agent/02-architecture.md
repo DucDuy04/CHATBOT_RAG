@@ -96,6 +96,26 @@ Hybrid keyword: `KeywordSearchService` + cell-aware boost for `normalized_table_
 
 ---
 
+## Runtime optimizations (27A–27F)
+
+| Feature | Package / config | Status |
+|---------|------------------|--------|
+| Startup keyword index prewarm | `rag.retrieve.KeywordIndexStartupPrewarmer`, `rag.retrieval.keyword-index.prewarm-*` | PASS |
+| Rerank guard | `rag.rerank.RerankService`, `rag.retrieval.rerank-guard.*` | PASS |
+| Async assistant message persistence | `rag.runtime.ChatService`, `rag.runtime.async-persist.*` | PASS |
+| Query variant dedupe | `rag.retrieve`, `rag.retrieval.query-variant-dedupe.*` | PARTIAL — safe, low impact on V1–V5 |
+
+Async persist moves assistant message DB write off the synchronous response path — eventual consistency risk nếu process crash ngay sau response (xem `06-operations.md`).
+
+---
+
+## Removed features (28A/28B)
+
+- Feedback endpoint, satisfaction/rating metrics, `newFeedback` — removed from API and frontend.
+- Frontend mock mode / `USE_MOCK_API` — removed; all clients call real backend.
+
+---
+
 ## Delete cascade
 
 ```text
