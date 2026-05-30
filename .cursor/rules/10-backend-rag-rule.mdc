@@ -8,6 +8,35 @@ alwaysApply: false
 
 Áp dụng khi task liên quan backend, RAG, upload tài liệu, parsing, chunking, embedding, retrieval, chat sync, chat streaming, security hoặc service Java.
 
+## Package map (canonical sau 25D)
+
+| Concern | Package / class |
+|---|---|
+| Parse / raw tables | `ingest.parser.DocumentParserService`, `RawTableModel` |
+| Table normalization | `ingest.normalize.NormalizedTableService` |
+| Chunking | `ingest.chunking.ChunkingService2` |
+| Embed + Qdrant REST I/O | `index.embedding.EmbeddingService` |
+| Qdrant bootstrap / purge | `index.qdrant.QdrantConfig`, `QdrantPurgeService` |
+| Retrieval | `rag.retrieve.RagRetrievalService`, `KeywordSearchService` |
+| Prompt | `rag.prompt.PromptBuilderService` |
+| Query analysis | `rag.analysis.QueryAnalyzerService`, `QuerySignalExtractor` |
+| Rerank | `rag.rerank.RerankService` |
+| Context budget | `rag.budget.PromptBudgetResolver` |
+| Chat runtime | `rag.runtime.ChatService`, `PlaygroundService` |
+| Audit metrics | `audit.metrics.RagTokenAudit`, `RagLatencyTrace` |
+| LLM adapter | `llm.LlmFallbackService`, `LlmGenerationOptions` |
+| Upload / admin | `service.DocumentService`, `WidgetService` |
+
+**Không** tìm RAG core trong `service.*` (đã chuyển 25B–25D).
+
+## Qdrant / DOCX / Unicode (bắt buộc nhớ)
+
+- **Qdrant write path**: REST upsert/search qua `index.embedding.EmbeddingService` (Spring `RestClient` + Jackson UTF-8 JSON).
+- **Không** dùng LangChain4j `QdrantEmbeddingStore` / gRPC write path (đã gỡ 24D4/25A).
+- **DOCX tables**: logical-grid `RawTableModel`; value-to-slot mapping dùng `physicalColIndex` (DOCX) hoặc x-overlap (PDF Tabula).
+- **Qdrant payload**: giữ UTF-8 Vietnamese Unicode trong `cells_json`, `text_segment`, v.v.
+- **Ingest chunk types mới**: `normalized_table_row` + `table_summary`; không tạo `table_row_group` / `text_table_like` trên ingest mới.
+
 ## File nên đọc theo loại task
 
 ### Upload / ingestion
@@ -16,25 +45,27 @@ alwaysApply: false
 
 - `Backend/src/main/java/**/api/DocumentController.java`
 - `Backend/src/main/java/**/service/DocumentService.java`
-- `Backend/src/main/java/**/service/DocumentParserService.java`
-- `Backend/src/main/java/**/service/ChunkingService2.java`
-- `Backend/src/main/java/**/service/EmbeddingService.java`
+- `Backend/src/main/java/**/ingest/parser/DocumentParserService.java`
+- `Backend/src/main/java/**/ingest/normalize/NormalizedTableService.java`
+- `Backend/src/main/java/**/ingest/chunking/ChunkingService2.java`
+- `Backend/src/main/java/**/index/embedding/EmbeddingService.java`
+- `Backend/src/main/java/**/index/qdrant/QdrantConfig.java`
 - `Backend/src/main/java/**/domain/document/**`
 - repository liên quan document/chunk/section/table
 - config upload/multipart nếu có
-- Qdrant config nếu có lưu vector
 
 ### Chat sync / RAG answer
 
 Ưu tiên đọc:
 
 - `Backend/src/main/java/**/api/ChatController.java`
-- `Backend/src/main/java/**/service/ChatService.java`
-- `Backend/src/main/java/**/service/RagRetrievalService.java`
-- `Backend/src/main/java/**/service/EmbeddingService.java`
-- `Backend/src/main/java/**/service/PromptBuilderService.java`
-- `Backend/src/main/java/**/service/QueryAnalyzerService.java`
-- `Backend/src/main/java/**/service/RerankService.java`
+- `Backend/src/main/java/**/rag/runtime/ChatService.java`
+- `Backend/src/main/java/**/rag/retrieve/RagRetrievalService.java`
+- `Backend/src/main/java/**/index/embedding/EmbeddingService.java`
+- `Backend/src/main/java/**/rag/prompt/PromptBuilderService.java`
+- `Backend/src/main/java/**/rag/analysis/QueryAnalyzerService.java`
+- `Backend/src/main/java/**/rag/rerank/RerankService.java`
+- `Backend/src/main/java/**/llm/LlmFallbackService.java`
 - `Backend/src/main/java/**/domain/chat/**`
 - DTO request/response liên quan
 
@@ -43,9 +74,9 @@ alwaysApply: false
 Ưu tiên đọc:
 
 - `ChatController`
-- `ChatService` method stream nếu có
+- `rag.runtime.ChatService` method stream nếu có
+- `llm.LlmFallbackService`
 - DTO streaming nếu có
-- fallback model/provider
 - timeout/executor nếu có
 - frontend code gọi stream nếu bug thấy ở UI
 

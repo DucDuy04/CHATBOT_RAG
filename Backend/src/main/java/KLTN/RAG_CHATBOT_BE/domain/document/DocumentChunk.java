@@ -120,5 +120,16 @@ public class DocumentChunk {
 
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
-    
+
+    @Column(name = "table_name", length = 1000)
+    private String tableName;
+
+    @Column(name = "row_index")
+    private Integer rowIndex;
+
+    @Column(name = "cells_json", columnDefinition = "TEXT")
+    private String cellsJson;
+
+    @Column(name = "group_context", columnDefinition = "TEXT")
+    private String groupContext;
 }

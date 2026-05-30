@@ -54,16 +54,27 @@ export const documentsApi = {
       for (const file of files) {
         if (!(file instanceof File)) continue;
         const name = (file.name || "").toLowerCase();
-        if (!name.endsWith(".pdf") && !name.endsWith(".txt")) {
-          const err = new Error("Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF và TXT.");
+        if (name.endsWith(".doc") || name.endsWith(".docm") || name.endsWith(".dotm")) {
+          const err = new Error(
+            "Định dạng .doc/.docm/.dotm không được hỗ trợ. Vui lòng chuyển sang .docx."
+          );
+          err.response = { data: { message: err.message }, status: 400 };
+          throw err;
+        }
+        if (!name.endsWith(".pdf") && !name.endsWith(".txt") && !name.endsWith(".docx")) {
+          const err = new Error(
+            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF, TXT và DOCX."
+          );
           err.response = { data: { message: err.message }, status: 400 };
           throw err;
         }
         const ext = file.name.split(".").pop().toUpperCase();
+        const type =
+          ext === "PDF" ? "PDF" : ext === "TXT" ? "TXT" : ext === "DOCX" ? "DOCX" : "OTHER";
         const newDoc = {
           id: `doc-0${_nextDocId++}`,
           filename: file.name,
-          type: ["PDF", "TXT"].includes(ext) ? ext : "OTHER",
+          type,
           chatbotId: cid,
           chatbotName: bot ? bot.name : null,
           chunkCount: 0,

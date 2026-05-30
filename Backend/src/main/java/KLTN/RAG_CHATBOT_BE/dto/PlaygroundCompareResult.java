@@ -13,4 +13,5 @@ public class PlaygroundCompareResult {
     List<ChatResponse.SourceDto> sources;
     Long latency;
     Map<String, Object> config;
+    TokenUsageDto tokenUsage;
 }

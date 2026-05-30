@@ -14,6 +14,12 @@ import KLTN.RAG_CHATBOT_BE.dto.DocumentChunkResponse;
 import KLTN.RAG_CHATBOT_BE.dto.DocumentPageResponse;
 import KLTN.RAG_CHATBOT_BE.dto.DocumentResponse;
 import KLTN.RAG_CHATBOT_BE.dto.DocumentStatusResponse;
+import KLTN.RAG_CHATBOT_BE.index.embedding.EmbeddingService;
+import KLTN.RAG_CHATBOT_BE.index.qdrant.QdrantPurgeService;
+import KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2;
+import KLTN.RAG_CHATBOT_BE.ingest.normalize.TableIngestMetrics;
+import KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService;
+import KLTN.RAG_CHATBOT_BE.rag.retrieve.KeywordIndexCache;
 import KLTN.RAG_CHATBOT_BE.record.Section;
 import KLTN.RAG_CHATBOT_BE.support.BytesMultipartFile;
 import jakarta.persistence.EntityNotFoundException;
@@ -62,13 +68,14 @@ public class DocumentService {
     private final DocumentTableRepository documentTableRepository;
 
     private final QdrantPurgeService qdrantPurgeService;
+    private final KeywordIndexCache keywordIndexCache;
 
     @Value("${app.upload-dir}")
     private String uploadDir;
 
     /** Must match {@link DocumentParserService} supported types. */
     public static final String UNSUPPORTED_UPLOAD_FILE_MSG =
-            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF và TXT.";
+            "Định dạng file chưa được hỗ trợ. Hiện chỉ hỗ trợ PDF, TXT và DOCX.";
 
     public Document uploadAndProcess(MultipartFile file, UUID widgetId) throws IOException {
         WidgetConfig widgetConfig = widgetConfigRepository.findById(widgetId)
@@ -122,12 +129,87 @@ public class DocumentService {
         List<KLTN.RAG_CHATBOT_BE.record.DocumentChunk> chunks =
                 chunkingService2.processSections2(sections);
 
+        TableIngestMetrics tableMetrics = chunkingService2.getLastIngestMetrics();
         log.info(
-                "Parse document={} được {} sections, chunk được {} chunks",
+                "Parse document={} sections={} chunks={} tableIngest: detected={} normalized={} failed={} " +
+                        "normalizedRows={} suppressedRawChars={} suppressedLines={} droppedLeakyTextChunks={} " +
+                        "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
+                        "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
+                        "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={} " +
+                        "headerSlotsCreated={} headerSlotsFallbackGeneric={} headerSiblingContaminationPrevented={} " +
+                        "headerAmbiguousFallbackCount={} avgHeaderTokenCountBefore={} avgHeaderTokenCountAfter={} " +
+                        "noisyComposedHeaderBeforeCount={} noisyComposedHeaderAfterCount={} " +
+                        "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
+                        "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
+                        "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
+                        "valuesPreservedCount={} valuesDroppedCount={} rawTableModelsCreated={} " +
+                        "rawTableModelsCreatedFromSpreadsheet={} rawTableModelsCreatedFromBasic={} " +
+                        "rawTableCellsWithCoordinates={} rawTableCellsMissingCoordinates={} " +
+                        "structuredTablesNormalized={} markdownTablesNormalizedLegacy={} " +
+                        "pdfTablesUsingMarkdownBridge={} spreadsheetTablesUsingMarkdownBridge={} " +
+                        "basicTablesUsingMarkdownBridge={} pageAttributionPhysicalCount={}",
                 document.getFileName(),
                 sections.size(),
-                chunks.size()
+                chunks.size(),
+                tableMetrics.getDetectedTables(),
+                tableMetrics.getNormalizedTables(),
+                tableMetrics.getFailedTables(),
+                tableMetrics.getNormalizedRows(),
+                tableMetrics.getSuppressedRawTableTextChars(),
+                tableMetrics.getSuppressedLines(),
+                tableMetrics.getDroppedLeakyTextChunks(),
+                tableMetrics.getRowsWithCellsJson(),
+                tableMetrics.getRowsWithOnlyOneNonEmptyCell(),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getRowsWithEmptyCellsRatio()),
+                tableMetrics.getRowsWithGenericColumnKeys(),
+                tableMetrics.getContinuationRowsMerged(),
+                tableMetrics.getMultiRowHeadersMerged(),
+                tableMetrics.getCrossPageHeaderCarryCount(),
+                tableMetrics.getSparseRowsRepaired(),
+                tableMetrics.getDroppedCellFragments(),
+                tableMetrics.getHeaderSlotsCreated(),
+                tableMetrics.getHeaderSlotsFallbackGeneric(),
+                tableMetrics.getHeaderSiblingContaminationPrevented(),
+                tableMetrics.getHeaderAmbiguousFallbackCount(),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountBefore()),
+                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountAfter()),
+                tableMetrics.getNoisyComposedHeaderBeforeCount(),
+                tableMetrics.getNoisyComposedHeaderAfterCount(),
+                tableMetrics.getCompactHeaderSuspiciousCount(),
+                tableMetrics.getCompactHeaderFallbackCount(),
+                tableMetrics.getSpanAwareHeaderSelectedCount(),
+                tableMetrics.getMultiColumnHeaderRejectedCount(),
+                tableMetrics.getHeaderFragmentsWithCoordinates(),
+                tableMetrics.getHeaderFragmentsWithoutCoordinates(),
+                tableMetrics.getValuesPreservedCount(),
+                tableMetrics.getValuesDroppedCount(),
+                tableMetrics.getRawTableModelsCreated(),
+                tableMetrics.getRawTableModelsCreatedFromSpreadsheet(),
+                tableMetrics.getRawTableModelsCreatedFromBasic(),
+                tableMetrics.getRawTableCellsWithCoordinates(),
+                tableMetrics.getRawTableCellsMissingCoordinates(),
+                tableMetrics.getStructuredTablesNormalized(),
+                tableMetrics.getMarkdownTablesNormalizedLegacy(),
+                tableMetrics.getPdfTablesUsingMarkdownBridge(),
+                tableMetrics.getSpreadsheetTablesUsingMarkdownBridge(),
+                tableMetrics.getBasicTablesUsingMarkdownBridge(),
+                tableMetrics.getPageAttributionPhysicalCount()
         );
+
+        // DOCX-specific metrics log (only printed when docxTablesDetected > 0)
+        if (tableMetrics.getDocxTablesDetected() > 0) {
+            log.info(
+                    "DOCX metrics document={} docxTablesDetected={} docxTablesNormalized={} " +
+                            "docxTablesUsingRawTableModel={} docxTablesUsingMarkdownBridge={} " +
+                            "docxTableRowsNormalized={}",
+                    document.getFileName(),
+                    tableMetrics.getDocxTablesDetected(),
+                    tableMetrics.getDocxTablesNormalized(),
+                    tableMetrics.getDocxTablesUsingRawTableModel(),
+                    tableMetrics.getDocxTablesUsingMarkdownBridge(),
+                    tableMetrics.getDocxTableRowsNormalized()
+            );
+        }
 
         UUID widgetId = document.getWidgetConfig().getId();
 
@@ -162,9 +244,12 @@ public class DocumentService {
                 widgetId
         );
 
+        tableMetrics.setQdrantPoints(savedChunks.size());
+
         document.setStatus(DocumentStatus.COMPLETED);
         document.setChunkCount(savedChunks.size());
         documentRepository.save(document);
+        keywordIndexCache.invalidate(widgetId, "document_indexed");
 
         log.info(
                 "Xử lý xong document={}, sections={}, tables={}, chunks={}",
@@ -352,6 +437,7 @@ public class DocumentService {
         documentChunkRepository.hardDeleteByDocumentId(documentId);
         documentTableRepository.hardDeleteByDocumentId(documentId);
         documentSectionRepository.hardDeleteByDocumentId(documentId);
+        keywordIndexCache.invalidate(widgetId, "document_retry_hard_delete");
 
         BytesMultipartFile mf = BytesMultipartFile.fromPath(
                 "file",
@@ -389,6 +475,7 @@ public class DocumentService {
         documentChunkRepository.softDeleteByDocumentId(id, ts);
         d.setDeletedAt(ts);
         documentRepository.save(d);
+        keywordIndexCache.invalidate(widgetId, "document_soft_deleted");
     }
 
     private UUID resolveWidgetIdForPurge(Document d) {
@@ -418,9 +505,20 @@ public class DocumentService {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
         }
         String lower = original.toLowerCase();
-        if (!lower.endsWith(".pdf") && !lower.endsWith(".txt")) {
+        boolean isPdf  = lower.endsWith(".pdf");
+        boolean isTxt  = lower.endsWith(".txt");
+        boolean isDocx = lower.endsWith(".docx");
+
+        // Reject dangerous Office macro-enabled formats explicitly
+        if (lower.endsWith(".doc") || lower.endsWith(".docm") || lower.endsWith(".dotm")) {
+            throw new IllegalArgumentException(
+                    "Định dạng .doc/.docm/.dotm không được hỗ trợ. Vui lòng chuyển sang .docx.");
+        }
+
+        if (!isPdf && !isTxt && !isDocx) {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
         }
+
         String mime = file.getContentType();
         if (mime == null || mime.isBlank()) {
             return;
@@ -428,10 +526,28 @@ public class DocumentService {
         String m = mime.toLowerCase().trim();
         boolean ok = m.equals("application/pdf")
                 || m.startsWith("text/plain")
+                || m.equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 || m.equals("application/octet-stream")
                 || m.equals("binary/octet-stream");
         if (!ok) {
             throw new IllegalArgumentException(UNSUPPORTED_UPLOAD_FILE_MSG);
+        }
+
+        // DOCX OOXML signature check: a valid DOCX is a ZIP (PK signature 0x504B0304).
+        if (isDocx) {
+            try {
+                byte[] header = file.getBytes();
+                if (header.length < 4
+                        || (header[0] & 0xFF) != 0x50
+                        || (header[1] & 0xFF) != 0x4B
+                        || (header[2] & 0xFF) != 0x03
+                        || (header[3] & 0xFF) != 0x04) {
+                    throw new IllegalArgumentException(
+                            "File .docx không hợp lệ: không phải OOXML/ZIP. Vui lòng kiểm tra lại file.");
+                }
+            } catch (java.io.IOException e) {
+                throw new IllegalArgumentException("Không thể đọc file để kiểm tra định dạng DOCX.", e);
+            }
         }
     }
 
@@ -616,13 +732,17 @@ public class DocumentService {
 
             DocumentSection sectionEntity = sectionMap.get(chunk.sectionId());
 
+            String tableTitle = chunk.tableName() != null && !chunk.tableName().isBlank()
+                    ? chunk.tableName()
+                    : safeText(chunk.header(), "Table");
+
             DocumentTable tableEntity = DocumentTable.builder()
                     .document(document)
                     .widgetConfig(widgetConfig)
                     .section(sectionEntity)
                     .tableKey(chunk.tableId())
                     .sectionKey(chunk.sectionId())
-                    .title(safeText(chunk.header(), "Table"))
+                    .title(tableTitle)
                     .pageStart(chunk.startPage())
                     .pageEnd(chunk.endPage())
                     .orderIndex(chunk.orderIndex())
@@ -678,6 +798,11 @@ public class DocumentService {
                             .childSectionIds(chunk.childSectionIds())
                             .sourceFile(document.getFileName())
                             .build();
+
+            chunkEntity.setTableName(chunk.tableName());
+            chunkEntity.setRowIndex(chunk.rowIndex());
+            chunkEntity.setCellsJson(chunk.cellsJson());
+            chunkEntity.setGroupContext(chunk.groupContext());
 
             entities.add(chunkEntity);
         }

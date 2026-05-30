@@ -25,18 +25,37 @@ flowchart LR
 
 ## Các module backend chính
 
+Package layout (tasks 25B + 25C):
+
+| Package | Class chính | Vai trò |
+|---|---|---|
+| `ingest.parser` | `DocumentParserService`, `RawTableModel` | Parse PDF/DOCX/TXT → sections + raw tables |
+| `ingest.normalize` | `NormalizedTableService` | Raw → `normalized_table_row`, `cells_json` |
+| `ingest.chunking` | `ChunkingService2` | Section → pipeline `DocumentChunk` |
+| `index.embedding` | `EmbeddingService` | Nomic embed + **Qdrant REST** upsert/search |
+| `index.qdrant` | `QdrantConfig`, `QdrantPurgeService` | Collection bootstrap + purge REST |
+| `rag.retrieve` | `RagRetrievalService`, `KeywordSearchService` | 7-bước retrieval + hybrid keyword |
+| `rag.prompt` | `PromptBuilderService` | Dựng prompt từ context + history |
+| `rag.analysis` | `QueryAnalyzerService`, `QuerySignalExtractor` | Query type + hybrid keyword signals |
+| `rag.rerank` | `RerankService` | Optional Cohere cross-encoder rerank |
+| `rag.budget` | `PromptBudgetResolver` | Context char budget theo query type |
+| `rag.runtime` | `ChatService`, `PlaygroundService` | Chat/playground orchestration (sync, SSE, sources) |
+| `audit.metrics` | `RagTokenAudit`, `RagLatencyTrace` | Token/latency structured logs |
+| `llm` | `LlmFallbackService`, `LlmGenerationOptions` | Groq sync/stream adapters + fallback + generation params |
+| `service` | `DocumentService`, `WidgetService`, admin services | Application lifecycle + widget/admin |
+
 | Module | Class | Vai trò |
 |---|---|---|
-| Document ingestion | `DocumentService` | Orchestrate upload → parse → chunk → embed → lưu trạng thái |
-| Document parsing | `DocumentParserService` | Parse PDF (PDFBox + Tabula) / TXT, phát hiện bảng |
-| Chunking nâng cao | `ChunkingService2` | Chia chunk theo section hierarchy, tạo summary chunks, phát hiện pseudo-table |
-| Embedding | `EmbeddingService` | Tạo embedding (Nomic), upsert/search Qdrant theo `widgetId` |
-| Chat orchestration | `ChatService` | Điều phối chat sync/stream, lưu hội thoại |
-| RAG retrieval | `RagRetrievalService` | 7-bước: intent → heading lock → vector search → expansion → rerank → dedup/sort/budget |
-| Intent detection | `QueryAnalyzerService` | Phân loại query type, tìm heading match, rewrite query |
-| Prompt building | `PromptBuilderService` | Dựng prompt từ context + history + câu hỏi |
-| LLM fallback | `LlmFallbackService` | Xây model sync/stream theo tên, hỗ trợ fallback models |
-| Rerank | `RerankService` | Chấm điểm lại candidates bằng Cohere Cross-Encoder (optional) |
+| Document ingestion | `DocumentService` (`service`) | Orchestrate upload → parse → chunk → embed → lưu trạng thái |
+| Document parsing | `DocumentParserService` (`ingest.parser`) | Parse PDF (PDFBox + Tabula) / DOCX / TXT |
+| Chunking nâng cao | `ChunkingService2` (`ingest.chunking`) | Chia chunk theo section hierarchy, normalized rows |
+| Embedding | `EmbeddingService` (`index.embedding`) | Tạo embedding (Nomic), upsert/search Qdrant REST theo `widgetId` |
+| Chat orchestration | `ChatService` (`rag.runtime`) | Điều phối chat sync/stream, lưu hội thoại |
+| RAG retrieval | `RagRetrievalService` (`rag.retrieve`) | 7-bước: intent → heading lock → vector search → expansion → rerank → dedup/sort/budget |
+| Intent detection | `QueryAnalyzerService` (`rag.analysis`) | Phân loại query type, tìm heading match, rewrite query |
+| Prompt building | `PromptBuilderService` (`rag.prompt`) | Dựng prompt từ context + history + câu hỏi |
+| LLM fallback | `LlmFallbackService` (`llm`) | Xây model sync/stream theo tên, hỗ trợ fallback models |
+| Rerank | `RerankService` (`rag.rerank`) | Chấm điểm lại candidates bằng Cohere Cross-Encoder (optional) |
 | Widget auth | `WidgetAuthFilter` | Xác thực `X-Widget-Key` header cho tất cả `/api/chat/**` |
 | Widget management | `WidgetService` | Tạo widget config, sinh API key |
 
@@ -69,11 +88,12 @@ Soft delete qua cột `deleted_at` với `@SQLRestriction("deleted_at IS NULL")`
 - Collection: `documents`
 - Vector size: `768` (Nomic `nomic-embed-text-v1.5`)
 - Distance: `Cosine`
-- Port: gRPC `6334`, HTTP `6333`
-- Payload metadata mỗi chunk:
+- Port: HTTP `6333` (REST upsert/search qua `EmbeddingService`); gRPC `6334` không dùng cho write path backend
+- Payload metadata mỗi chunk (REST, UTF-8):
   - `widgetId`, `documentId`, `fileName`
   - `chunk_id`, `section_id`, `section_title`, `heading_path`
-  - `chunk_type` (text / section_summary / table_summary / table_row_group / parent_section_summary / text_table_like)
+  - `chunk_type` (text / section_summary / table_summary / **normalized_table_row** / parent_section_summary)
+  - `cells_json`, `group_context`, `table_name`, `row_index` (normalized rows)
   - `child_section_ids` (nếu chunk_type = parent_section_summary)
   - `table_id` (nếu chunk là table)
   - `page_start`, `page_end`, `order_index`, `section_order`
@@ -119,9 +139,10 @@ STEP 7: Log kết quả cuối
 | `text` | Đoạn văn bản thông thường (max 2200 ký tự, overlap 250) |
 | `section_summary` | Tóm tắt section dài (> 4400 ký tự text) — đặt đầu section |
 | `parent_section_summary` | Tóm tắt section cha + danh sách section con — dùng cho heading match |
-| `table_summary` | Mô tả bảng (cột + preview 5 dòng đầu) |
-| `table_row_group` | Nhóm 10 hàng bảng liên tiếp |
-| `text_table_like` | Text có cấu trúc dạng bảng nhưng không convert được sang Markdown |
+| `table_summary` | Mô tả bảng (cột + preview) |
+| `normalized_table_row` | **Primary** — một hàng bảng đã normalize; payload `cells_json` + `group_context` |
+| `table_row_group` | **Legacy** — chỉ còn trên tài liệu ingest cũ; ingest mới không tạo |
+| `text_table_like` | **Legacy** — prompt/retrieval vẫn nhận diện chunk cũ nếu còn trong DB |
 
 ## Module preprocess/ (standalone)
 

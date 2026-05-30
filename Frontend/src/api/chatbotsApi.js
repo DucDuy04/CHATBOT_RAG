@@ -49,7 +49,7 @@ export const chatbotsApi = {
         updatedAt: new Date().toISOString(),
         initials: name.slice(0, 2).toUpperCase(),
         systemPrompt: "",
-        modelConfig: { model: "llama-3.1-70b-versatile", temperature: 0.7, maxTokens: 1024 },
+        modelConfig: { model: "llama-3.1-70b-versatile", temperature: 0.7, topK: 5, maxTokens: 1024 },
         apiKey: mockWidgetKey,
       };
       chatbots.push(newBot);

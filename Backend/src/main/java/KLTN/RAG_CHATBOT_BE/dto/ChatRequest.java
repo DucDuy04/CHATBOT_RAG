@@ -12,4 +12,9 @@ public class ChatRequest {
     private Double temperature;
     /** Optional LLM max output tokens. Null → modelConfig → backend default. */
     private Integer maxTokens;
+    /**
+     * Playground-only: when true, response source presentation follows effective retrieval top-K
+     * instead of the production cap (5). Must only be set by {@code /api/playground/chat}.
+     */
+    private Boolean playgroundDebugSources;
 }

@@ -7,10 +7,10 @@ import KLTN.RAG_CHATBOT_BE.dto.PlaygroundChatRequest;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundExportResponse;
 import KLTN.RAG_CHATBOT_BE.dto.PlaygroundSessionResponse;
 import KLTN.RAG_CHATBOT_BE.dto.SimpleSuccessResponse;
-import KLTN.RAG_CHATBOT_BE.service.ChatService;
-import KLTN.RAG_CHATBOT_BE.service.PlaygroundService;
-import KLTN.RAG_CHATBOT_BE.service.LlmGenerationOptions;
-import KLTN.RAG_CHATBOT_BE.service.RagRetrievalService;
+import KLTN.RAG_CHATBOT_BE.rag.runtime.ChatService;
+import KLTN.RAG_CHATBOT_BE.rag.runtime.PlaygroundService;
+import KLTN.RAG_CHATBOT_BE.llm.LlmGenerationOptions;
+import KLTN.RAG_CHATBOT_BE.rag.retrieve.RagRetrievalService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -75,6 +75,7 @@ public class PlaygroundController {
             maxTokens = LlmGenerationOptions.parseMaxTokensOverride(request.getOverrideParams());
         }
         chatRequest.setMaxTokens(maxTokens);
+        chatRequest.setPlaygroundDebugSources(true);
 
         return chatService.chatStream(chatRequest, widgetId);
     }

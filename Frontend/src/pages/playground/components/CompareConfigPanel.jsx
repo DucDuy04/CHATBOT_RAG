@@ -22,7 +22,8 @@ export default function CompareConfigPanel({ label, config, onChange }) {
       <p className="text-xs font-semibold text-gray-600">{label}</p>
 
       <p className="text-[11px] text-gray-500 leading-snug">
-        Temperature: độ ngẫu nhiên — thấp ổn định hơn, cao đa dạng hơn. Top-K: số chunk retrieval tối đa đưa vào
+        Temperature: độ ngẫu nhiên — thấp ổn định hơn, cao đa dạng hơn. Context Top-N: số đoạn context sau rerank
+        tối đa đưa vào
         context (cột Sources trong compare chỉ liệt kê tối đa K dòng để khớp cấu hình). Max tokens: giới hạn độ dài câu
         trả lời.
       </p>
@@ -48,7 +49,7 @@ export default function CompareConfigPanel({ label, config, onChange }) {
       </div>
 
       <div>
-        <label className="text-xs text-gray-600 block mb-1">Top-K</label>
+        <label className="text-xs text-gray-600 block mb-1">Context Top-N</label>
         <input
           type="number"
           min="1"

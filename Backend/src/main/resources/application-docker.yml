@@ -13,17 +13,15 @@ spring:
 
 qdrant:
   host: qdrant
-  port: 6334
   http-port: 6333
-  url: http://qdrant:6333
   collection-name: documents
   vector-size: 768
 
 groq:
   api-key: ${GROQ_API_KEY}
-  chat-model: llama-3.3-70b-versatile
+  chat-model: meta-llama/llama-4-scout-17b-16e-instruct
   base-url: https://api.groq.com/openai/v1
-  fallback-models: "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
+  fallback-models: "llama-3.3-70b-versatile,openai/gpt-oss-20b"
 
 nomic:
   api-key: ${NOMIC_API_KEY}
@@ -44,6 +42,6 @@ server:
 logging:
   level:
     # Bật debug để thấy log parse/chunk trong docker logs
-    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG

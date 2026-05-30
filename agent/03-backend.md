@@ -3,7 +3,7 @@
 ## Tech stack
 - Java 21, Spring Boot 3.4.4
 - Spring Web, Spring Data JPA, Spring Security
-- LangChain4j BOM 1.0.0-beta1 (`langchain4j`, `langchain4j-open-ai`, `langchain4j-nomic`, `langchain4j-qdrant`)
+- LangChain4j BOM 1.0.0-beta1 (`langchain4j`, `langchain4j-open-ai`, `langchain4j-nomic` — không còn `langchain4j-qdrant`; Qdrant I/O qua REST trong `EmbeddingService`)
 - Apache PDFBox 3.0.2 + Tabula 1.0.5 (parse PDF + extract table)
 - Lombok, Hibernate (MySQL dialect)
 
@@ -54,8 +54,8 @@
 
 ### Profiles
 - `application.yml`: profile mặc định `dev`, multipart max `50MB`, app.upload-dir `./uploads`, cleaner config.
-- `application-dev.yml`: MySQL localhost:3306, Qdrant localhost:6334 (gRPC), Groq + Nomic + Cohere config.
-- `application-docker.yml`: MySQL `ragchatbot-mysql:3306`, Qdrant `ragchatbot-qdrant:6334`.
+- `application-dev.yml`: MySQL localhost:3306, Qdrant REST `http-port: 6333`, Groq + Nomic + Cohere config.
+- `application-docker.yml`: MySQL `ragchatbot-mysql:3306`, Qdrant host `ragchatbot-qdrant`, REST port `6333`.
 
 ### GroqConfig
 - Chat model chính: `llama-3.3-70b-versatile`
@@ -63,10 +63,11 @@
 - Fallback models: `llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b`
 - Tạo `OpenAiChatModel` và `NomicEmbeddingModel` làm Spring beans.
 
-### QdrantConfig
+### QdrantConfig (`index.qdrant`)
 - Collection `documents`, vector size `768`, distance Cosine.
-- Port gRPC `6334` (LangChain4j dùng gRPC), HTTP `6333` (REST API quản trị).
-- Tạo `QdrantEmbeddingStore` bean.
+- HTTP `6333`: bootstrap collection qua REST (`ApplicationRunner` trong `QdrantConfig`).
+- **Qdrant write path**: REST upsert/search qua `EmbeddingService` (`index.embedding`) — không dùng LangChain4j `QdrantEmbeddingStore` / gRPC write.
+- Port gRPC `6334` có thể còn trong compose cho tooling; backend không ghi vector qua gRPC.
 
 ### SecurityConfig
 - CSRF disabled.
@@ -94,53 +95,74 @@ Logic:
 1. `POST /api/documents/upload/{widgetId}` — nhận MultipartFile.
 2. Validate file type (PDF/TXT), kiểm tra checksum tránh upload trùng.
 3. Lưu file vào `./uploads`, tạo bản ghi `Document` trạng thái `PENDING`.
-4. `DocumentParserService.parse()`:
-   - PDF: PDFBox extract text + Tabula extract tables (chuyển sang Markdown).
+4. `ingest.parser.DocumentParserService.parse()`:
+   - PDF: PDFBox + Tabula → `RawTableModel` (structured grid, không Markdown bridge làm primary).
+   - DOCX: Apache POI logical grid → `RawTableModel` (`physicalColIndex` cho slot mapping).
    - TXT: đọc thẳng.
-   - Áp dụng cleaner (noise removal, line-unbreak, whitespace normalization) theo `app.preprocessing.cleaner.*`.
-   - Phát hiện section hierarchy theo heading patterns → trả về `List<Section>`.
-5. `ChunkingService2.processSections2()` → `List<DocumentChunk>` (record):
-   - parent_section_summary → section_summary → text/table_summary/table_row_group.
-   - Pseudo-table detection: 3+ dòng liên tiếp với 3+ cột → chuyển Markdown table.
+   - Cleaner theo `app.preprocessing.cleaner.*`; section hierarchy → `List<Section>`.
+5. `ingest.normalize.NormalizedTableService` → `normalized_table_row` (+ `cells_json`, `group_context`).
+6. `ingest.chunking.ChunkingService2.processSections2()` → `List<DocumentChunk>`:
+   - `parent_section_summary` → `section_summary` → `text` / `table_summary` / `normalized_table_row`.
    - Chunk size: `MAX_CHARS_PER_TEXT_CHUNK=2200`, `OVERLAP_CHARS=250`.
-   - Table: `TABLE_ROWS_PER_GROUP=10`.
-6. `EmbeddingService.upsert()`:
+7. `index.embedding.EmbeddingService.upsert()` (Qdrant REST, UTF-8 safe):
    - Lưu `DocumentSection` vào MySQL.
    - Lưu `DocumentChunk` entity vào MySQL.
    - Embed từng chunk bằng Nomic, upsert vào Qdrant kèm payload đầy đủ (widgetId, section metadata, chunkType...).
-7. Cập nhật `Document.status = COMPLETED` (hoặc `FAILED` nếu có lỗi), ghi `chunkCount`.
+8. Cập nhật `Document.status = COMPLETED` (hoặc `FAILED` nếu có lỗi), ghi `chunkCount`.
 
-## Query/Chat pipeline (ChatService + RagRetrievalService)
+## Query/Chat pipeline (`rag.runtime.ChatService` + `rag.retrieve.RagRetrievalService`)
 
 1. Nhận `ChatRequest { sessionId, message }` + `widgetId` từ `@RequestAttribute`.
 2. Resolve/tạo `ChatSession` trong MySQL (lookup by `(widgetId, sessionKey)`).
 3. Lưu user message vào `chat_messages`.
-4. `RagRetrievalService.retrieve(question, widgetId)` → 7 bước (xem `02-architecture.md`).
+4. `RagRetrievalService.retrieve(question, widgetId)` → 7 bước (xem `02-architecture.md`); `QueryAnalyzerService` + `PromptBudgetResolver` trong retrieval path.
 5. `ChatMessageRepository.findTop10BySessionIdOrderByCreatedAtDesc()` → lịch sử gần nhất.
 6. `PromptBuilderService.build()` → system prompt + context + history + câu hỏi.
-7. Gọi Groq LLM:
+7. Gọi Groq LLM qua `LlmFallbackService` (`llm`):
    - Sync: `OpenAiChatModel.generate()` → trả `ChatResponse { answer, sources }`.
    - Stream: `SseEmitter`, `LlmFallbackService.buildStreamingModel(modelName)`, emit `event: token`, kết thúc `event: done` kèm sources.
 8. Lưu assistant message vào `chat_messages`.
+9. `RagTokenAudit` / `RagLatencyTrace` (`audit.metrics`) ghi structured logs, không log full prompt.
 
-## LlmFallbackService
+## LlmFallbackService (`llm`)
 
 - Tạo `OpenAiChatModel` hoặc `OpenAiStreamingChatModel` theo model name.
 - Khi Groq rate-limit model chính → thử lần lượt các model trong `fallback-models`.
 - Fallback order hiện tại: `llama-3.3-70b-versatile` → `llama-3.1-8b-instant` → `meta-llama/llama-4-scout-17b-16e-instruct` → `qwen/qwen3-32b`.
 
-## RerankService (optional)
+## RerankService (`rag.rerank`, optional)
 
 - Gọi Cohere Rerank API (`rerank-multilingual-v3.0`) để chấm điểm lại từng cặp (query, chunk).
 - Chỉ kích hoạt khi `COHERE_RERANK_ENABLED=true` và có `COHERE_API_KEY`.
 - `LOW_CONFIDENCE_THRESHOLD`: log warning khi max score < ngưỡng này.
 - Khi disabled: trả về danh sách gốc không đổi thứ tự.
 
+## Backend package map (25D)
+
+| Concern | Package |
+|---|---|
+| Parse / raw tables | `ingest.parser` |
+| Table normalization | `ingest.normalize` |
+| Chunking | `ingest.chunking` |
+| Embed + Qdrant REST I/O | `index.embedding` |
+| Qdrant bootstrap / purge | `index.qdrant` |
+| Retrieval | `rag.retrieve` |
+| Prompt | `rag.prompt` |
+| Query analysis | `rag.analysis` |
+| Rerank | `rag.rerank` |
+| Context budget | `rag.budget` |
+| Chat runtime | `rag.runtime` |
+| Audit metrics | `audit.metrics` |
+| LLM provider + fallback | `llm` |
+| Upload lifecycle + admin services | `service` |
+
+`DocumentService` giữ trong `service` vì phối hợp API upload, DB, parse, chunk, embed, Qdrant purge và document status.
+
 ## Logging cấu hình
 ```yaml
 logging:
   level:
-    KLTN.RAG_CHATBOT_BE.service.RerankService: DEBUG     # dev profile
-    KLTN.RAG_CHATBOT_BE.service.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.service.ChunkingService2: DEBUG
+    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG     # dev profile
+    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
+    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
 ```

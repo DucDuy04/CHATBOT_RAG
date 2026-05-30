@@ -26,5 +26,5 @@
 - Widget nhúng qua bundle IIFE đã hoạt động.
 - Bảo mật chat đã được triển khai qua `WidgetAuthFilter` (header `X-Widget-Key`).
 - Retrieval nâng cao: intent detection, heading lock, multi-stage expansion, Cohere rerank (tùy chọn).
-- Chunking nâng cao: phân loại theo section hierarchy (`text`, `section_summary`, `table_summary`, `table_row_group`, `parent_section_summary`, `text_table_like`).
+- Chunking nâng cao: section hierarchy + bảng structured (`normalized_table_row`, `table_summary`, `text`, `section_summary`, `parent_section_summary`). Legacy `table_row_group` / `text_table_like` chỉ trên dữ liệu cũ.
 - Chưa hoàn thiện: monitoring/tracing, test coverage đầy đủ, pagination API lịch sử chat.

@@ -13,10 +13,10 @@ public class ChatResponse {
     @Data
     @Builder
     public static class SourceDto {
-    private String fileName;
-    private String sectionTitle;
-    private String pages;
-    private String chunkType;
-    private String chunkText;
-}
+        private String fileName;
+        private String sectionTitle;
+        private String pages;
+        private String chunkType;
+        private String chunkText;
+    }
 }

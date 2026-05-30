@@ -31,7 +31,7 @@
 		 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 		<!-- <spring-ai.version>2.0.0-M2</spring-ai.version> -->
-		
+		<poi.version>5.3.0</poi.version>
 	</properties>
 	<repositories>
 		<repository>
@@ -84,18 +84,18 @@
 			<!-- <version>0.32.0</version> -->
 		</dependency>
 
-		<!-- LangChain4j — kết nối Qdrant -->
-		<dependency>
-			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-qdrant</artifactId>
-			 <!-- <version>0.36.2</version> -->
-		</dependency>
-
 		<!-- Apache PDFBox — đọc file PDF -->
 		<dependency>
 			<groupId>org.apache.pdfbox</groupId>
 			<artifactId>pdfbox</artifactId>
 			<version>3.0.2</version>
+		</dependency>
+
+		<!-- Apache POI — đọc file DOCX -->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>${poi.version}</version>
 		</dependency>
 
 		<!-- Spring Security -->
@@ -143,6 +143,13 @@
 							<version>1.18.40</version>
 						</path>
 					</annotationProcessorPaths>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<excludedGroups>integration</excludedGroups>
 				</configuration>
 			</plugin>
 			<plugin>
