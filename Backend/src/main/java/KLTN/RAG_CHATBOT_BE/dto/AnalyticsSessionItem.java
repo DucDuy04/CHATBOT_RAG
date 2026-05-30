@@ -10,6 +10,5 @@ public class AnalyticsSessionItem {
     String chatbotId;
     String chatbotName;
     Long messageCount;
-    Integer rating;
     String createdAt;
 }

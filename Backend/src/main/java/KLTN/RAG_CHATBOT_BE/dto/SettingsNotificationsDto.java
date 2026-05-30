@@ -12,5 +12,4 @@ import lombok.NoArgsConstructor;
 public class SettingsNotificationsDto {
     private Boolean embeddingFailed;
     private Boolean dailySummary;
-    private Boolean newFeedback;
 }

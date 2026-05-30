@@ -90,9 +90,6 @@ public class SettingsService {
             if (n.getDailySummary() != null) {
                 p.setNotifyDailySummary(n.getDailySummary());
             }
-            if (n.getNewFeedback() != null) {
-                p.setNotifyNewFeedback(n.getNewFeedback());
-            }
         }
 
         p = profileRepository.save(p);
@@ -158,7 +155,6 @@ public class SettingsService {
                 .language("vi")
                 .notifyEmbeddingFailed(false)
                 .notifyDailySummary(false)
-                .notifyNewFeedback(false)
                 .build();
         return profileRepository.save(created);
     }
@@ -171,7 +167,6 @@ public class SettingsService {
                 .notifications(SettingsNotificationsDto.builder()
                         .embeddingFailed(p.isNotifyEmbeddingFailed())
                         .dailySummary(p.isNotifyDailySummary())
-                        .newFeedback(p.isNotifyNewFeedback())
                         .build())
                 .build();
     }

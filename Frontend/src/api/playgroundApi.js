@@ -1,11 +1,6 @@
 import axiosInstance from "./axiosInstance";
-import { USE_MOCK_API, mockDelay } from "./apiMode";
-import { sessions, messagesBySession, mockStreamTokens, MOCK_SOURCES } from "../mocks/playgroundMock";
 
 const API_BASE = (import.meta.env.VITE_API_URL || "").trim();
-
-let _nextSessionId = 4;
-let _nextMsgId = 20;
 
 export const playgroundApi = {
   /**
@@ -14,35 +9,6 @@ export const playgroundApi = {
    * Returns an abort controller so caller can cancel.
    */
   chat: ({ chatbotId, message, sessionId, overrideParams = {}, onToken, onDone, onError }) => {
-    if (USE_MOCK_API) {
-      const controller = { abort: () => {} };
-
-      (async () => {
-        try {
-          await mockDelay(500);
-          let answer = "";
-          for (const token of mockStreamTokens) {
-            await mockDelay(80);
-            answer += token;
-            onToken(token);
-          }
-          onDone({
-            messageId: `msg-mock-${_nextMsgId++}`,
-            answer: answer.trim(),
-            sources: MOCK_SOURCES,
-            retrieval: { topK: 5, rerankEnabled: false },
-            latency: 1350,
-            sessionId: sessionId || `sess-mock-${_nextSessionId}`,
-          });
-        } catch (err) {
-          onError(err);
-        }
-      })();
-
-      return controller;
-    }
-
-    // Real SSE streaming
     const abortController = new AbortController();
     const token = localStorage.getItem("auth_token");
 
@@ -144,15 +110,6 @@ export const playgroundApi = {
 
   /** POST /api/playground/compare — returns { configA: result, configB: result } */
   compare: async ({ chatbotId, message, configA = {}, configB = {} }) => {
-    if (USE_MOCK_API) {
-      await mockDelay(1200);
-      const mockResult = (label) => ({
-        answer: `[${label}] Đây là câu trả lời mock với config ${label}. Nội dung phản hồi phụ thuộc vào temperature và model được chọn trong cấu hình.`,
-        sources: MOCK_SOURCES,
-        latency: 900 + Math.floor(Math.random() * 600),
-      });
-      return { configA: mockResult("A"), configB: mockResult("B") };
-    }
     const res = await axiosInstance.post("/api/playground/compare", {
       chatbotId, message, configA, configB,
     });
@@ -161,11 +118,6 @@ export const playgroundApi = {
 
   /** GET /api/playground/sessions?chatbotId= */
   getSessions: async (chatbotId) => {
-    if (USE_MOCK_API) {
-      await mockDelay(300);
-      if (chatbotId) return sessions.filter((s) => s.chatbotId === chatbotId);
-      return [...sessions];
-    }
     const res = await axiosInstance.get("/api/playground/sessions", {
       params: chatbotId ? { chatbotId } : {},
     });
@@ -174,27 +126,12 @@ export const playgroundApi = {
 
   /** DELETE /api/playground/sessions/:id */
   deleteSession: async (id) => {
-    if (USE_MOCK_API) {
-      await mockDelay(250);
-      const idx = sessions.findIndex((s) => s.id === id);
-      if (idx >= 0) sessions.splice(idx, 1);
-      return { success: true };
-    }
     const res = await axiosInstance.delete(`/api/playground/sessions/${id}`);
     return res.data;
   },
 
   /** GET /api/playground/export/:sessionId — returns exportable data */
   exportSession: async (sessionId, { asBlob = false } = {}) => {
-    if (USE_MOCK_API) {
-      await mockDelay(400);
-      const msgs = messagesBySession[sessionId] || [];
-      return {
-        sessionId,
-        exportedAt: new Date().toISOString(),
-        messages: msgs,
-      };
-    }
     const res = await axiosInstance.get(`/api/playground/export/${sessionId}`, {
       responseType: asBlob ? "blob" : "json",
     });

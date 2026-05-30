@@ -10,8 +10,6 @@ public class DashboardSummaryResponse {
     Double activeChatbotsDelta;
     Long messages7d;
     Double messages7dDelta;
-    Double avgSatisfaction;
-    Double avgSatisfactionDelta;
     Long documentCount;
     Double documentCountDelta;
 }

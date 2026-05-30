@@ -92,7 +92,6 @@ public class AnalyticsController {
             @RequestParam(value = "from", required = false) String fromRaw,
             @RequestParam(value = "to", required = false) String toRaw,
             @RequestParam(value = "chatbotId", required = false) String chatbotIdRaw,
-            @RequestParam(value = "rating", required = false) String rating,
             @RequestParam(value = "page", required = false) String pageRaw,
             @RequestParam(value = "size", required = false) String sizeRaw
     ) {
@@ -114,7 +113,6 @@ public class AnalyticsController {
                 validation.from,
                 validation.to,
                 validation.chatbotId,
-                rating,
                 page,
                 size
         );

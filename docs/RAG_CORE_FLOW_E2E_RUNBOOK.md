@@ -61,7 +61,6 @@ USE ragchatbot;
 
 -- Tùy schema thực tế: có thể cần xóa chat trước document.
 SET FOREIGN_KEY_CHECKS = 0;
-TRUNCATE TABLE chat_feedbacks;
 TRUNCATE TABLE chat_messages;
 TRUNCATE TABLE chat_sessions;
 TRUNCATE TABLE document_chunks;
@@ -71,7 +70,7 @@ TRUNCATE TABLE documents;
 SET FOREIGN_KEY_CHECKS = 1;
 ```
 
-Nếu `TRUNCATE` báo lỗi FK, hãy xóa theo thứ tự `chat_feedbacks` → `chat_messages` → `chat_sessions` → `document_chunks` → `document_tables` → `document_sections` → `documents` (hoặc dùng `DELETE` có điều kiện). **Không** chạy trên DB production.
+Nếu `TRUNCATE` báo lỗi FK, hãy xóa theo thứ tự `chat_messages` → `chat_sessions` → `document_chunks` → `document_tables` → `document_sections` → `documents` (hoặc dùng `DELETE` có điều kiện). **Không** chạy trên DB production.
 
 ### 4.2 Qdrant (xóa collection hoặc toàn bộ points)
 

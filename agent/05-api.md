@@ -48,7 +48,7 @@ Backend/src/main/java/KLTN/RAG_CHATBOT_BE/dto/
 | `DashboardController` | `/api/dashboard` | None (admin — open) |
 | `SettingsController` | `/api/settings` | None (admin — open) |
 
-There is **no** separate `ChatFeedbackController` — feedback is `POST /api/chat/feedback` in `ChatController` (no widget auth filter).
+Retired chat-quality endpoint from task 28A is no longer part of the API contract.
 
 ---
 
@@ -85,7 +85,6 @@ DELETE /api/documents/{id}                ← Qdrant purge + soft-delete
 ```text
 POST   /api/chat                          ← X-Widget-Key required
 POST   /api/chat/stream                   ← X-Widget-Key required (SSE)
-POST   /api/chat/feedback                 ← no widget auth
 POST   /api/public/chat                   ← x-api-key or X-Widget-Key
 ```
 
@@ -139,7 +138,6 @@ DELETE /api/settings/api-keys/{id}
 | `DocumentResponse` | canonical upload, list, retry |
 | `DocumentStatusResponse` | status polling |
 | `PlaygroundChatRequest` | playground chat |
-| `ChatFeedbackRequest` | feedback (`messageId`, `rating` 1 or -1) |
 | `SimpleSuccessResponse` | delete success `{ "success": true }` |
 
 ### SourceDto fields (in ChatResponse)

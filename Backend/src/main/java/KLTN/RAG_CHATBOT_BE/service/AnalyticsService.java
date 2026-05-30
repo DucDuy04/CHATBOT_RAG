@@ -2,7 +2,6 @@ package KLTN.RAG_CHATBOT_BE.service;
 
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
-import KLTN.RAG_CHATBOT_BE.domain.chat.ChatFeedbackRepository;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatSession;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatSessionRepository;
 import KLTN.RAG_CHATBOT_BE.dto.AnalyticsByChatbotItem;
@@ -51,7 +50,6 @@ public class AnalyticsService {
 
     private final ChatMessageRepository chatMessageRepository;
     private final ChatSessionRepository chatSessionRepository;
-    private final ChatFeedbackRepository chatFeedbackRepository;
 
     @Transactional(readOnly = true)
     public AnalyticsSummaryResponse getSummary(LocalDate fromDate, LocalDate toDate, UUID chatbotId) {
@@ -68,19 +66,12 @@ public class AnalyticsService {
         long previousTotalMessages = previousMessages.size();
         long uniqueSessions = distinctSessionCount(currentMessages);
         long previousUniqueSessions = distinctSessionCount(previousMessages);
-        SatisfactionStats currentSatisfaction = getSatisfactionStats(current, chatbotId);
-        SatisfactionStats previousSatisfaction = getSatisfactionStats(previous, chatbotId);
 
         return AnalyticsSummaryResponse.builder()
                 .totalMessages(totalMessages)
                 .totalMessagesDelta(calculateDelta(totalMessages, previousTotalMessages))
                 .uniqueSessions(uniqueSessions)
                 .uniqueSessionsDelta(calculateDelta(uniqueSessions, previousUniqueSessions))
-                .avgSatisfaction(currentSatisfaction.avgSatisfaction)
-                .avgSatisfactionDelta(calculatePointDelta(
-                        currentSatisfaction.avgSatisfaction,
-                        previousSatisfaction.avgSatisfaction
-                ))
                 .fallbackRate(0.0d)
                 .fallbackRateDelta(0.0d)
                 .build();
@@ -205,24 +196,13 @@ public class AnalyticsService {
             LocalDate fromDate,
             LocalDate toDate,
             UUID chatbotId,
-            String rating,
             int page,
             int size
     ) {
-        String normalizedRating = rating == null ? "" : rating.trim().toLowerCase(Locale.ROOT);
         TimeWindow window = toWindow(fromDate, toDate);
-        boolean needsInMemoryRatingFilter = "positive".equals(normalizedRating)
-                || "negative".equals(normalizedRating)
-                || "unrated".equals(normalizedRating);
-        if (needsInMemoryRatingFilter) {
-            List<ChatSession> allSessions = chatSessionRepository.findAllForAnalyticsRange(window.from, window.to, chatbotId);
-            return buildFilteredSessionPage(allSessions, normalizedRating, page, size);
-        }
-
-        // "all", empty, unsupported rating values -> same as all sessions.
         Pageable pageable = PageRequest.of(page, size);
         Page<ChatSession> sessionsPage = chatSessionRepository.findForAnalyticsRange(window.from, window.to, chatbotId, pageable);
-        return buildUnfilteredSessionPage(sessionsPage);
+        return buildSessionPage(sessionsPage);
     }
 
     @Transactional(readOnly = true)
@@ -260,19 +240,6 @@ public class AnalyticsService {
             return current > 0 ? 100.0d : 0.0d;
         }
         return roundOneDecimal(((current - previous) * 100.0d) / previous);
-    }
-
-    private double calculatePointDelta(Double current, Double previous) {
-        if (current == null && previous == null) {
-            return 0.0d;
-        }
-        if (current == null) {
-            return roundOneDecimal(-previous);
-        }
-        if (previous == null) {
-            return roundOneDecimal(current);
-        }
-        return roundOneDecimal(current - previous);
     }
 
     private double roundOneDecimal(double value) {
@@ -364,8 +331,8 @@ public class AnalyticsService {
         }
     }
 
-    private AnalyticsSessionPageResponse buildUnfilteredSessionPage(Page<ChatSession> sessionsPage) {
-        List<AnalyticsSessionItem> items = toSessionItems(sessionsPage.getContent(), buildSessionRatingMap(sessionsPage.getContent()));
+    private AnalyticsSessionPageResponse buildSessionPage(Page<ChatSession> sessionsPage) {
+        List<AnalyticsSessionItem> items = toSessionItems(sessionsPage.getContent());
         return AnalyticsSessionPageResponse.builder()
                 .items(items)
                 .page(sessionsPage.getNumber())
@@ -375,84 +342,16 @@ public class AnalyticsService {
                 .build();
     }
 
-    private AnalyticsSessionPageResponse buildFilteredSessionPage(
-            List<ChatSession> allSessions,
-            String normalizedRating,
-            int page,
-            int size
-    ) {
-        Map<UUID, Integer> sessionRatingMap = buildSessionRatingMap(allSessions);
-        List<ChatSession> filtered = allSessions.stream()
-                .filter(session -> matchesRatingFilter(sessionRatingMap.get(session.getId()), normalizedRating))
-                .toList();
-
-        int fromIndex = Math.min(page * size, filtered.size());
-        int toIndex = Math.min(fromIndex + size, filtered.size());
-        List<ChatSession> pageItems = filtered.subList(fromIndex, toIndex);
-        int totalPages = filtered.isEmpty() ? 0 : (int) Math.ceil((double) filtered.size() / size);
-
-        return AnalyticsSessionPageResponse.builder()
-                .items(toSessionItems(pageItems, sessionRatingMap))
-                .page(page)
-                .size(size)
-                .total((long) filtered.size())
-                .totalPages(totalPages)
-                .build();
-    }
-
-    private List<AnalyticsSessionItem> toSessionItems(List<ChatSession> sessions, Map<UUID, Integer> sessionRatingMap) {
+    private List<AnalyticsSessionItem> toSessionItems(List<ChatSession> sessions) {
         return sessions.stream()
                 .map(session -> AnalyticsSessionItem.builder()
                         .id(session.getSessionKey().toString())
                         .chatbotId(session.getWidgetConfig().getId().toString())
                         .chatbotName(session.getWidgetConfig().getName())
                         .messageCount(chatMessageRepository.countBySessionId(session.getId()))
-                        .rating(sessionRatingMap.get(session.getId()))
                         .createdAt(session.getCreatedAt() == null ? null : session.getCreatedAt().toString())
                         .build())
                 .toList();
-    }
-
-    private Map<UUID, Integer> buildSessionRatingMap(List<ChatSession> sessions) {
-        if (sessions.isEmpty()) {
-            return Map.of();
-        }
-        List<UUID> sessionIds = sessions.stream()
-                .map(ChatSession::getId)
-                .toList();
-        Map<UUID, Integer> map = new HashMap<>();
-        for (Object[] row : chatFeedbackRepository.aggregateBySessionIds(sessionIds)) {
-            UUID sessionId = (UUID) row[0];
-            long positive = row[1] == null ? 0L : ((Number) row[1]).longValue();
-            long negative = row[2] == null ? 0L : ((Number) row[2]).longValue();
-            if (positive > negative) {
-                map.put(sessionId, 1);
-            } else if (negative > positive) {
-                map.put(sessionId, -1);
-            } else {
-                map.put(sessionId, null);
-            }
-        }
-        return map;
-    }
-
-    private boolean matchesRatingFilter(Integer rating, String normalizedRating) {
-        return switch (normalizedRating) {
-            case "positive" -> Integer.valueOf(1).equals(rating);
-            case "negative" -> Integer.valueOf(-1).equals(rating);
-            case "unrated" -> rating == null;
-            default -> true;
-        };
-    }
-
-    private SatisfactionStats getSatisfactionStats(TimeWindow window, UUID chatbotId) {
-        long totalFeedback = chatFeedbackRepository.countInRange(window.from, window.to, chatbotId);
-        if (totalFeedback <= 0) {
-            return new SatisfactionStats(0L, 0L, null);
-        }
-        long positiveFeedback = chatFeedbackRepository.countByRatingInRange(window.from, window.to, chatbotId, 1);
-        double avg = roundOneDecimal((positiveFeedback * 100.0d) / totalFeedback);
-        return new SatisfactionStats(totalFeedback, positiveFeedback, avg);
     }
 
     @Value
@@ -472,8 +371,5 @@ public class AnalyticsService {
             this.chatbotName = chatbotName;
             this.count = count;
         }
-    }
-
-    private record SatisfactionStats(long total, long positive, Double avgSatisfaction) {
     }
 }

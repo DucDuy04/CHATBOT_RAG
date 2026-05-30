@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 /**
- * Model options — bao gồm cả GPT models (spec) lẫn Groq/Llama (mock data).
+ * Model options — bao gồm cả GPT models (spec) lẫn Groq/Llama.
  * Nếu modelConfig.model từ API không nằm trong list này, vẫn hiển thị được.
  */
 const MODEL_OPTIONS = [

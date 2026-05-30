@@ -51,10 +51,6 @@ public class SettingsProfile {
     @Builder.Default
     private boolean notifyDailySummary = false;
 
-    @Column(name = "notify_new_feedback", nullable = false)
-    @Builder.Default
-    private boolean notifyNewFeedback = false;
-
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
