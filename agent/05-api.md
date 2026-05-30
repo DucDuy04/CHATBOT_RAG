@@ -1,150 +1,200 @@
-# API tham chiếu nhanh
+# API Guide for AI/Cursor
 
-## Xác thực
-
-### Chat endpoints (`/api/chat/**`)
-**Bắt buộc** gửi header:
-```
-X-Widget-Key: <widgetApiKey>  (UUID string)
-```
-Backend xác thực qua `WidgetAuthFilter`. Thiếu hoặc sai key → `HTTP 401`.
-
-### Document và Widget endpoints
-Hiện không yêu cầu auth (permitAll). Dùng cho admin tạo widget và upload tài liệu.
+Short entry point for API documentation. **Do not invent endpoints** — always verify against controllers first.
 
 ---
 
-## Widget
+## Read first
 
-### `POST /api/widgets`
-- Mục đích: tạo `WidgetConfig` mới.
-- Request:
-```json
-{
-  "name": "Widget tuyển sinh",
-  "allowedOrigin": ["https://abc.edu.vn"],
-  "uiConfig": {
-    "themeColor": "#2563eb"
-  }
-}
+1. [`docs/api/API_REFERENCE_20260530.md`](../docs/api/API_REFERENCE_20260530.md) — full endpoint reference
+2. [`docs/api/API_QUICKSTART_20260530.md`](../docs/api/API_QUICKSTART_20260530.md) — practical quickstart
+3. [`docs/api/API_SMOKE_TESTS_20260530.md`](../docs/api/API_SMOKE_TESTS_20260530.md) — operator smoke tests
+4. [`03-backend.md`](03-backend.md) — backend flows and troubleshooting
+
+**Source code (before changing docs):**
+
+```text
+Backend/src/main/java/KLTN/RAG_CHATBOT_BE/api/
+Backend/src/main/java/KLTN/RAG_CHATBOT_BE/config/SecurityConfig.java
+Backend/src/main/java/KLTN/RAG_CHATBOT_BE/config/WidgetAuthFilter.java
+Backend/src/main/java/KLTN/RAG_CHATBOT_BE/dto/
 ```
-- Response (`WidgetCreateResponse`):
-```json
-{
-  "id": "uuid-widget-config-id",
-  "name": "Widget tuyển sinh",
-  "apiKey": "uuid-api-key",
-  "allowedOrigin": ["https://abc.edu.vn"],
-  "uiConfig": { "themeColor": "#2563eb" },
-  "isActive": true
-}
-```
-- **Lưu ý**: `apiKey` là UUID dùng làm `X-Widget-Key`. Cần lưu lại ngay khi tạo.
-- **Không có** endpoint `GET /api/widgets/{apiKey}` hay `GET /api/widgets/{id}` trong codebase hiện tại.
 
 ---
 
-## Documents
+## Rules for AI/Cursor
 
-### `POST /api/documents/upload/{widgetId}`
-- Mục đích: upload và xử lý file tài liệu gắn với widget.
-- Path param: `widgetId` (UUID của `WidgetConfig.id`).
-- Input: `multipart/form-data`, field `file` (PDF hoặc TXT, max 50MB).
-- Response (`DocumentUploadResponse`):
-```json
-{
-  "id": "uuid-document-id",
-  "fileName": "quy_che_tuyen_sinh.pdf",
-  "status": "COMPLETED",
-  "message": "Upload và xử lý thành công! Đã tạo 42 chunks."
-}
-```
-- Response khi lỗi:
-```json
-{
-  "status": "FAILED",
-  "message": "Lỗi hệ thống: ..."
-}
-```
-
-### `GET /api/documents`
-- Mục đích: lấy danh sách tất cả tài liệu (tất cả widgets).
-- Response: array `DocumentListItemResponse`:
-```json
-[
-  {
-    "id": "uuid",
-    "fileName": "...",
-    "fileSize": 102400,
-    "fileType": "PDF",
-    "status": "COMPLETED",
-    "chunkCount": 42,
-    "widgetConfigId": "uuid-widget-config-id"
-  }
-]
-```
-- **Lưu ý**: endpoint này trả tất cả documents, không filter theo widget. Cần filter bằng `widgetConfigId` phía FE nếu cần.
+- **Do not invent endpoints** — grep controllers first.
+- **Do not guess DTO fields** — read DTO classes.
+- **Keep widget keys secret** — never log `X-Widget-Key`, `x-api-key`, or `apiKey` in reports/commits.
+- **Document delete truth:** document delete purges Qdrant by `document_id`; chatbot delete cascades documents first.
+- **Admin endpoints are dev-oriented** — `permitAll` unless auth is implemented; do not claim production security.
+- **Qdrant:** REST `:6333` only in application path — do not document gRPC as write path.
+- **No `INDEXED` status** — use `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`.
 
 ---
 
-## Chat
+## Controller map
 
-### `POST /api/chat`
-- Mục đích: chat đồng bộ.
-- Header: `X-Widget-Key: <apiKey>` (bắt buộc).
-- Request:
-```json
-{
-  "sessionId": "uuid-string",
-  "message": "Điều kiện tuyển sinh ngành CNTT là gì?"
-}
-```
-- Response:
-```json
-{
-  "answer": "Điều kiện tuyển sinh...",
-  "sources": [
-    {
-      "fileName": "quy_che_tuyen_sinh.pdf",
-      "sectionTitle": "3.2 Điều kiện xét tuyển",
-      "chunkType": "text",
-      "pageStart": 5,
-      "pageEnd": 6
-    }
-  ]
-}
-```
-- Validation: `sessionId` và `message` không được blank → `400 Bad Request`.
+| Controller | Base path | Auth |
+|------------|-----------|------|
+| `ChatbotController` | `/api/chatbots` | None (admin — open) |
+| `WidgetController` | `/api/widgets` | None (legacy create) |
+| `DocumentController` | `/api/documents` | None (admin — open) |
+| `ChatController` | `/api/chat` | `X-Widget-Key` on `/api/chat` and `/api/chat/stream` only |
+| `PublicChatController` | `/api/public` | `x-api-key` or `X-Widget-Key` on `/api/public/chat` |
+| `PlaygroundController` | `/api/playground` | None (dev/eval) |
+| `AnalyticsController` | `/api/analytics` | None (admin — open) |
+| `DashboardController` | `/api/dashboard` | None (admin — open) |
+| `SettingsController` | `/api/settings` | None (admin — open) |
 
-### `POST /api/chat/stream`
-- Mục đích: chat dạng streaming SSE.
-- Header: `X-Widget-Key: <apiKey>` (bắt buộc).
-- Request: tương tự endpoint sync.
-- Response (`text/event-stream`):
-
-```
-event: token
-data: {"token": " nội"}
-
-event: token
-data: {"token": " dung"}
-
-event: done
-data: [{"fileName":"...","sectionTitle":"...","chunkType":"...","pageStart":5,"pageEnd":6}]
-```
-
-**Lưu ý quan trọng**:
-- `event: token` trả JSON `{"token": "..."}` để giữ nguyên whitespace.
-- `event: done` trả JSON array của sources.
-- Client phải parse JSON `data` payload trước khi dùng.
-- Validation: tương tự sync endpoint, throw `400` nếu blank.
+There is **no** separate `ChatFeedbackController` — feedback is `POST /api/chat/feedback` in `ChatController` (no widget auth filter).
 
 ---
 
-## Các endpoint chưa implement
+## Endpoint groups
 
-| Endpoint | Trạng thái | Ghi chú |
-|---|---|---|
-| `GET /api/chat/history` | Chưa implement | Lấy lịch sử chat theo sessionId |
-| `DELETE /api/documents/{id}` | Chưa implement | Xóa tài liệu (soft delete) |
-| `GET /api/widgets/{id}` | Chưa implement | Lấy thông tin widget theo ID |
+### Chatbot / Widget
+
+```text
+GET    /api/chatbots
+POST   /api/chatbots
+GET    /api/chatbots/{id}
+PUT    /api/chatbots/{id}
+DELETE /api/chatbots/{id}              ← cascade delete documents + Qdrant purge
+GET    /api/chatbots/{id}/embed-config
+PUT    /api/chatbots/{id}/embed-config
+POST   /api/widgets                    ← legacy
+```
+
+### Documents
+
+```text
+POST   /api/documents/upload/{widgetId}   ← legacy single file
+POST   /api/documents/upload              ← canonical (files + chatbotId)
+GET    /api/documents
+GET    /api/documents/{id}/status
+GET    /api/documents/{id}/chunks
+POST   /api/documents/{id}/retry
+POST   /api/documents/{id}/assign         ← NOT SUPPORTED (always 400)
+DELETE /api/documents/{id}                ← Qdrant purge + soft-delete
+```
+
+### Chat
+
+```text
+POST   /api/chat                          ← X-Widget-Key required
+POST   /api/chat/stream                   ← X-Widget-Key required (SSE)
+POST   /api/chat/feedback                 ← no widget auth
+POST   /api/public/chat                   ← x-api-key or X-Widget-Key
+```
+
+### Playground
+
+```text
+POST   /api/playground/chat               ← SSE, chatbotId in body
+GET    /api/playground/sessions?chatbotId=
+DELETE /api/playground/sessions/{id}
+POST   /api/playground/compare
+GET    /api/playground/export/{sessionId}
+```
+
+### Analytics / Dashboard / Settings
+
+```text
+GET    /api/analytics/summary|daily|by-chatbot|unanswered|sessions
+GET    /api/analytics/sessions/{id}/messages
+GET    /api/dashboard/summary|message-volume|top-chatbots|activity
+GET    /api/settings/profile
+PUT    /api/settings/profile
+GET    /api/settings/api-keys
+POST   /api/settings/api-keys
+DELETE /api/settings/api-keys/{id}
+```
+
+---
+
+## Auth quick reference
+
+| Path pattern | Filter | Header |
+|--------------|--------|--------|
+| `/api/chat`, `/api/chat/stream` | `WidgetAuthFilter` | `X-Widget-Key` |
+| `/api/public/chat` | `WidgetAuthFilter` | `x-api-key` (preferred) or `X-Widget-Key` |
+| Everything else | None in filter | — (SecurityConfig `permitAll`) |
+
+401 response shape: `{"error": "Missing API key header."}` or `"Invalid or inactive Widget Key."`
+
+---
+
+## Key DTOs
+
+| DTO | Used by |
+|-----|---------|
+| `ChatbotCreateRequest` | POST /api/chatbots |
+| `ChatbotResponse` | chatbot CRUD (`apiKey` only on create) |
+| `ChatRequest` | chat endpoints (`sessionId`, `message`, optional `topK`, `temperature`, `maxTokens`) |
+| `ChatResponse` | sync chat (`answer`, `sources[]`) |
+| `PublicChatResponse` | public chat (+ `sessionId`) |
+| `DocumentUploadResponse` | legacy upload |
+| `DocumentResponse` | canonical upload, list, retry |
+| `DocumentStatusResponse` | status polling |
+| `PlaygroundChatRequest` | playground chat |
+| `ChatFeedbackRequest` | feedback (`messageId`, `rating` 1 or -1) |
+| `SimpleSuccessResponse` | delete success `{ "success": true }` |
+
+### SourceDto fields (in ChatResponse)
+
+`fileName`, `sectionTitle`, `pages` (string, e.g. `"5"` or `"5-6"`), `chunkType`, `chunkText`
+
+---
+
+## Delete behavior (must document correctly)
+
+**Document:**
+
+```text
+DELETE /api/documents/{id}
+  → QdrantPurgeService (REST, filter document_id)
+  → soft-delete DB children + document
+  → 502 if Qdrant purge fails
+```
+
+**Chatbot:**
+
+```text
+DELETE /api/chatbots/{id}
+  → WidgetService.softDeleteChatbot
+  → foreach active doc: DocumentService.softDeleteDocument
+  → soft-delete WidgetConfig
+```
+
+---
+
+## Common mistakes in old docs (do not repeat)
+
+| Stale claim | Current truth |
+|-------------|---------------|
+| `DELETE /api/documents/{id}` not implemented | **Implemented** |
+| `GET /api/chatbots/{id}` not implemented | **Implemented** |
+| Sources have `pageStart`/`pageEnd` | Use `pages` string in `SourceDto` |
+| All `/api/chat/**` need widget key | **Only** `/api/chat` and `/api/chat/stream` |
+| Settings API keys = widget keys | **Different** — settings keys vs `WidgetConfig.apiKey` |
+
+---
+
+## Eval file for manual tests
+
+```text
+docs/eval/manual/SoTayHocVu_HocKy1_2025-2026_RAG_CONTEXT_HOC_KY.docx
+```
+
+Smoke question (S4): Pháp luật Việt Nam đại cương Nhóm 1 — expect Nguyễn Thị Vân Anh, thứ 2, tiết 1-2, E301.
+
+---
+
+## Related
+
+- [`../README.md`](../README.md) — project entry
+- [`../agent.md`](../agent.md) — AI session entry
+- [`04-runbook.md`](04-runbook.md) — operational commands
+- [`06-operations.md`](06-operations.md) — data lifecycle
