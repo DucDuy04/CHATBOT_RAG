@@ -8,6 +8,7 @@ import KLTN.RAG_CHATBOT_BE.dto.RetrievedContext;
 import KLTN.RAG_CHATBOT_BE.index.embedding.EmbeddingService;
 import KLTN.RAG_CHATBOT_BE.ingest.normalize.NormalizedTableService;
 import KLTN.RAG_CHATBOT_BE.rag.budget.PromptBudgetResolver;
+import KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalysisResult;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QuerySignalExtractor;
 import KLTN.RAG_CHATBOT_BE.audit.metrics.RagLatencyTrace;
@@ -141,7 +142,15 @@ public class RagRetrievalService {
      * @param lockedScopeLabel Nhãn mô tả scope đã lock (null nếu không lock).
      *                         Ví dụ: "'6.2 Kiến trúc' [sec_6.2]"
      */
-    public record RetrievalResult(List<RetrievedContext> contexts, String lockedScopeLabel) {}
+    public record RetrievalResult(
+            List<RetrievedContext> contexts,
+            String lockedScopeLabel,
+            QueryAnalysisResult analysis
+    ) {
+        public RetrievalResult(List<RetrievedContext> contexts, String lockedScopeLabel) {
+            this(contexts, lockedScopeLabel, null);
+        }
+    }
 
     // ================================================================
     // PUBLIC ENTRY POINT
@@ -168,19 +177,30 @@ public class RagRetrievalService {
 
         // ── STEP 0: Intent detection ───────────────────────────────────
         long analyzeStart = RagLatencyTrace.now();
-        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
+        QueryAnalysisResult analysis = queryAnalyzerService.analyzeDetailed(question, widgetId);
+        QueryAnalyzerService.QueryType queryType = analysis.queryType();
         RagLatencyTrace trace = RagLatencyTrace.current();
         if (trace != null) {
             trace.addQueryAnalyzeMs(RagLatencyTrace.elapsedMs(analyzeStart));
+            trace.recordQueryAnalysis(
+                    queryType.name(),
+                    analysis.source().name(),
+                    analysis.confidence(),
+                    analysis.fallbackReason());
         }
-        int requestedFinalContextTopN = normalizeFinalContextTopN(finalContextTopNOverride);
+        log.info("[RAG][analysis] type={} source={} confidence={} calls=1 fallbackReason={}",
+                queryType,
+                analysis.source(),
+                String.format(Locale.ROOT, "%.2f", analysis.confidence()),
+                analysis.fallbackReason() != null ? analysis.fallbackReason() : "none");
+        int requestedFinalContextTopN = resolveFinalContextTopN(finalContextTopNOverride, queryType);
         int finalContextTopN = resolveAdaptiveFinalContextTopN(question, finalContextTopNOverride, queryType);
         if (trace != null) {
             trace.setTopN(requestedFinalContextTopN, finalContextTopN);
         }
         String topNSource = finalContextTopNOverride != null ? "REQUEST|MODEL_CONFIG" : "DEFAULT";
-        log.info("[RAG][topN] requestedTopN={} effectiveTopN={} reason={} source={}",
-                requestedFinalContextTopN, finalContextTopN,
+        log.info("[RAG][topN] override={} requested={} effective={} adaptiveReason={} source={}",
+                finalContextTopNOverride, requestedFinalContextTopN, finalContextTopN,
                 adaptiveTopNReason(question, queryType), topNSource);
         boolean isExpandedQuery = isExpanded(queryType);
         log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
@@ -380,7 +400,7 @@ public class RagRetrievalService {
 
         if (expanded.isEmpty() && vectorDocumentIds.isEmpty() && anchorChunkIds.isEmpty()) {
             log.warn("[RAG] Qdrant returned 0 anchors and locked scope empty for widgetId={}", widgetId);
-            return new RetrievalResult(List.of(), null);
+            return new RetrievalResult(List.of(), null, analysis);
         }
 
         if (expanded.isEmpty()) {
@@ -548,7 +568,7 @@ public class RagRetrievalService {
                             .toList());
         }
 
-        return new RetrievalResult(result, lockedSectionLabel);
+        return new RetrievalResult(result, lockedSectionLabel, analysis);
     }
 
     private List<DocumentChunk> boundCandidatesBeforeScoring(
@@ -588,8 +608,14 @@ public class RagRetrievalService {
             QueryAnalyzerService.QueryType queryType
     ) {
         int requested = resolveFinalContextTopN(override, queryType);
+
+        // Explicit request/model-config top-N must not be reduced by adaptive caps.
+        if (override != null) {
+            return requested;
+        }
+
         int adaptive = switch (adaptiveTopNReason(question, queryType)) {
-            case "list_like" -> 15;
+            case "list_like" -> 25;
             case "multi_attribute_lookup" -> requested;
             case "compare_like" -> 10;
             case "fact_like" -> 7;

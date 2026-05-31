@@ -28,3 +28,6 @@ docs/*
 reports/*
 !reports/refactor/
 !reports/refactor/CURSOR_REPORT_21A_RAG_GOLDEN_EVALUATION_BASELINE.md
+
+test/*
+

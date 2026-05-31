@@ -80,6 +80,21 @@ rag:
       table-context-char-budget: 14000
       list-context-char-budget: 16000
       hard-max-context-char-budget: 18000
+  analysis:
+    llm-classifier:
+      # Master switch — false disables classifier entirely
+      enabled: true
+      # Active mode (30C): LLM result used when local confidence is below threshold
+      # Roll back to shadow-mode=true if retrieval quality regresses
+      shadow-mode: false
+      # Invoke LLM only when local structural confidence is below this threshold
+      only-when-local-confidence-below: 0.70
+      # Reject LLM result if returned confidence is below this threshold
+      min-accepted-confidence: 0.65
+      # Max ms to wait for LLM classifier before falling back to local result
+      timeout-ms: 2000
+      # Truncate question to this length before sending to LLM (cost control)
+      max-input-chars: 1000
 
 app:
   upload-dir: ./uploads
@@ -98,3 +113,6 @@ logging:
   level:
     KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
     KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
+    # Shadow classifier logs — INFO shows shadow=true comparison lines; DEBUG adds query text
+    KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService: INFO
+    KLTN.RAG_CHATBOT_BE.rag.analysis.LlmQueryClassifier: INFO

@@ -16,6 +16,7 @@ import KLTN.RAG_CHATBOT_BE.audit.metrics.RagTokenAudit;
 import KLTN.RAG_CHATBOT_BE.rag.prompt.PromptBuilderService;
 import KLTN.RAG_CHATBOT_BE.rag.retrieve.CellAwareTableRowScorer;
 import KLTN.RAG_CHATBOT_BE.rag.retrieve.RagRetrievalService;
+import KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalysisResult;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService;
 import KLTN.RAG_CHATBOT_BE.rag.analysis.QuerySignalExtractor;
 import KLTN.RAG_CHATBOT_BE.llm.LlmFallbackService;
@@ -153,10 +154,10 @@ public class ChatService {
 
         saveChatMessage(session, MessageRole.USER, question, null);
 
-        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, widgetId);
         TopKResolution topKResolution = resolveRetrievalTopK(widgetId, request.getTopK());
         RagRetrievalService.RetrievalResult retrievalResult =
                 ragRetrievalService.retrieveWithMetadata(question, widgetId, topKResolution.candidate());
+        QueryAnalyzerService.QueryType queryType = queryTypeFromRetrievalResult(retrievalResult);
         List<RetrievedContext> contexts = retrievalResult.contexts();
         String lockedScopeLabel = retrievalResult.lockedScopeLabel();
 
@@ -264,10 +265,10 @@ public class ChatService {
 
                 saveChatMessage(session, MessageRole.USER, question, null);
 
-                QueryAnalyzerService.QueryType streamQueryType = queryAnalyzerService.analyze(question, widgetId);
                 TopKResolution streamTopK = resolveRetrievalTopK(widgetId, request.getTopK());
                 RagRetrievalService.RetrievalResult streamResult =
                         ragRetrievalService.retrieveWithMetadata(question, widgetId, streamTopK.candidate());
+                QueryAnalyzerService.QueryType streamQueryType = queryTypeFromRetrievalResult(streamResult);
                 List<RetrievedContext> contexts = streamResult.contexts();
                 String streamLockedScope = streamResult.lockedScopeLabel();
 
@@ -720,6 +721,13 @@ public class ChatService {
             default -> 512;
         };
         return Math.max(LlmGenerationOptions.MIN_MAX_TOKENS, Math.min(upperBound, cap));
+    }
+
+    static QueryAnalyzerService.QueryType queryTypeFromRetrievalResult(RagRetrievalService.RetrievalResult result) {
+        QueryAnalysisResult analysis = result != null ? result.analysis() : null;
+        return analysis != null && analysis.queryType() != null
+                ? analysis.queryType()
+                : QueryAnalyzerService.QueryType.NORMAL_FACT;
     }
 
     static String adaptiveMaxTokensReason(String question, QueryAnalyzerService.QueryType queryType) {

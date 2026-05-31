@@ -36,6 +36,12 @@ public final class RagLatencyTrace implements AutoCloseable {
     private long sourceMs;
     private long sseTotalMs;
 
+    private int queryAnalyzeCallCount;
+    private String queryAnalysisType = "UNKNOWN";
+    private String queryAnalysisSource = "UNKNOWN";
+    private double queryAnalysisConfidence;
+    private String queryAnalysisFallbackReason = "none";
+
     private int candidatesBefore;
     private int candidatesScored;
     private int vectorCandidates;
@@ -102,6 +108,16 @@ public final class RagLatencyTrace implements AutoCloseable {
 
     public void addQueryAnalyzeMs(long ms) {
         queryAnalyzeMs += Math.max(0, ms);
+    }
+
+    public void recordQueryAnalysis(String queryType, String source, double confidence, String fallbackReason) {
+        queryAnalyzeCallCount++;
+        queryAnalysisType = queryType != null ? queryType : "UNKNOWN";
+        queryAnalysisSource = source != null ? source : "UNKNOWN";
+        queryAnalysisConfidence = Math.max(0.0, Math.min(1.0, confidence));
+        queryAnalysisFallbackReason = fallbackReason != null && !fallbackReason.isBlank()
+                ? fallbackReason
+                : "none";
     }
 
     public void addQueryEmbedMs(long ms) {
@@ -258,7 +274,9 @@ public final class RagLatencyTrace implements AutoCloseable {
     public void finish() {
         long retrievalMs = queryAnalyzeMs + queryEmbedMs + vectorMs + dbMs + keywordMs
                 + keywordIndexBuildMs + mergeMs + scoringMs + sourceDiversityMs + contextSelectMs;
-        log.info("[RAG][latency] trace={} totalMs={} retrievalMs={} queryAnalyzeMs={} queryEmbedMs={} "
+        log.info("[RAG][latency] trace={} totalMs={} retrievalMs={} queryAnalyzeMs={} queryAnalyzeCallCount={} "
+                        + "queryAnalysisType={} queryAnalysisSource={} queryAnalysisConfidence={} "
+                        + "queryAnalysisFallbackReason={} queryEmbedMs={} "
                         + "vectorMs={} dbMs={} keywordMs={} keywordIndexHit={} keywordIndexBuildMs={} "
                         + "keywordPostingLookupMs={} keywordCandidatesFromPostings={} "
                         + "keywordCandidatesScored={} keywordFallbackScan={} "
@@ -279,6 +297,11 @@ public final class RagLatencyTrace implements AutoCloseable {
                 elapsedMs(startNanos),
                 retrievalMs,
                 queryAnalyzeMs,
+                queryAnalyzeCallCount,
+                queryAnalysisType,
+                queryAnalysisSource,
+                String.format(Locale.ROOT, "%.2f", queryAnalysisConfidence),
+                queryAnalysisFallbackReason,
                 queryEmbedMs,
                 vectorMs,
                 dbMs,
