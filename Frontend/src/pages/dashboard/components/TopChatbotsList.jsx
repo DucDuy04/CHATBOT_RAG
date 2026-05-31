@@ -5,7 +5,7 @@ import EmptyState from "../../../components/common/EmptyState";
  * TopChatbotsList — hiển thị top N chatbots theo messageCount.
  *
  * Props:
- *   data     — array of { id, name, messageCount, satisfaction, domain? }
+ *   data     — array of { id, name, messageCount, domain? }
  *   loading  — hiện skeleton khi true
  *   error    — string lỗi nếu có
  *   onRetry  — callback khi click Retry
@@ -80,11 +80,6 @@ export default function TopChatbotsList({ data, loading = false, error = null, o
                       ? bot.messageCount.toLocaleString()
                       : "—"}
                   </p>
-                  {bot.satisfaction != null && (
-                    <p className="text-xs text-green-600">
-                      {bot.satisfaction}%
-                    </p>
-                  )}
                 </div>
               </li>
             ))}

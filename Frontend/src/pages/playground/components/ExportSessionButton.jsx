@@ -2,7 +2,7 @@ import { playgroundApi } from "../../../api";
 
 /**
  * ExportSessionButton — download playground session via playgroundApi.exportSession.
- * Handles Blob (real) and plain object (mock).
+ * Handles Blob downloads and JSON object fallbacks.
  *
  * Props:
  *   sessionId — string | null

@@ -122,10 +122,10 @@ public class PlaygroundService {
         RagTokenAudit.begin(auditMode, chatbotId, null);
 
         try {
-        QueryAnalyzerService.QueryType queryType = queryAnalyzerService.analyze(question, chatbotId);
         Integer topKOverride = RagRetrievalService.parseTopKOverride(config);
         RagRetrievalService.RetrievalResult retrievalResult =
                 ragRetrievalService.retrieveWithMetadata(question, chatbotId, topKOverride);
+        QueryAnalyzerService.QueryType queryType = ChatService.queryTypeFromRetrievalResult(retrievalResult);
         List<RetrievedContext> contexts = retrievalResult.contexts();
         List<ChatResponse.SourceDto> sources = buildSourceDtos(contexts);
 

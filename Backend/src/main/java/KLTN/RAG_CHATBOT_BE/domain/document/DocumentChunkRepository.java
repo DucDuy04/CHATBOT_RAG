@@ -64,6 +64,13 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UU
     );
 
     /**
+     * Lightweight active-chunk check for startup prewarm — respects
+     * {@code @SQLRestriction("deleted_at IS NULL")} on {@link DocumentChunk}.
+     * Returns {@code true} only when at least one non-deleted chunk exists for the widget.
+     */
+    boolean existsByWidgetConfigId(UUID widgetConfigId);
+
+    /**
      * Soft-delete all chunks for a document (same {@code deleted_at} as parent document).
      * Keeps rows for audit; {@code @SQLRestriction} on {@link DocumentChunk} then hides them from retrieval.
      */

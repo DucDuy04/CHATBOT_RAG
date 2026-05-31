@@ -1,5 +1,6 @@
 package KLTN.RAG_CHATBOT_BE.rag.rerank;
 
+import KLTN.RAG_CHATBOT_BE.audit.metrics.RagLatencyTrace;
 import KLTN.RAG_CHATBOT_BE.audit.metrics.RagTokenAudit;
 import KLTN.RAG_CHATBOT_BE.domain.document.DocumentChunk;
 import lombok.extern.slf4j.Slf4j;
@@ -120,13 +121,7 @@ public class RerankService {
         requestBody.put("return_documents", false);
 
         try {
-            Map<?, ?> response = restClient.post()
-                    .uri(COHERE_RERANK_URL)
-                    .header("Authorization", "Bearer " + cohereApiKey)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody)
-                    .retrieve()
-                    .body(Map.class);
+            Map<?, ?> response = postRerankRequest(requestBody);
 
             if (response == null || !response.containsKey("results")) {
                 log.warn("[Rerank] Response rỗng hoặc thiếu 'results', fallback về list gốc.");
@@ -217,13 +212,7 @@ public class RerankService {
         requestBody.put("return_documents", false);
 
         try {
-            Map<?, ?> response = restClient.post()
-                    .uri(COHERE_RERANK_URL)
-                    .header("Authorization", "Bearer " + cohereApiKey)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody)
-                    .retrieve()
-                    .body(Map.class);
+            Map<?, ?> response = postRerankRequest(requestBody);
 
             if (response == null || !response.containsKey("results")) {
                 log.warn("[Rerank] scoreCandidates: response rỗng, không có score.");
@@ -245,6 +234,24 @@ public class RerankService {
         } catch (Exception e) {
             log.error("[Rerank] scoreCandidates API lỗi: {}", e.getMessage());
             return List.of();
+        }
+    }
+
+    private Map<?, ?> postRerankRequest(Map<String, Object> requestBody) {
+        long rerankStart = RagLatencyTrace.now();
+        try {
+            return restClient.post()
+                    .uri(COHERE_RERANK_URL)
+                    .header("Authorization", "Bearer " + cohereApiKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(Map.class);
+        } finally {
+            RagLatencyTrace trace = RagLatencyTrace.current();
+            if (trace != null) {
+                trace.addRerankMs(RagLatencyTrace.elapsedMs(rerankStart));
+            }
         }
     }
 }

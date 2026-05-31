@@ -15,7 +15,7 @@
 
 Hệ thống hiện tại là **modular monolith thực tế** (một JVM Spring Boot) với pipeline RAG end-to-end: upload PDF/TXT → parse (PDFBox + Tabula) → chunk (`ChunkingService2`) → embed (Nomic) → upsert Qdrant → chat với truy hồi đa bước (`RagRetrievalService`) + prompt cứng (`PromptBuilderService`) + LLM Groq. Multi-tenant gốc là `WidgetConfig` (API key = `X-Widget-Key` / `x-api-key` cho public); admin UI dùng thêm chatbots, analytics, dashboard, settings.
 
-**Đích thiết kế (PROPOSE):** Giữ **một** deployable backend + FE tĩnh, **không** nhân đôi service infra; tách **ranh giới package/module** rõ (ingestion, retrieval, chat, widget-auth, analytics, ops) để giảm coupling; bổ sung **hybrid search** theo lớp (MySQL lexical hiện có → FULLTEXT → search engine sau này); **table-aware** theo hướng có thể thêm bảng hàng (`document_table_rows`) khi dữ liệu lớn; **evaluation** dựa trên log message + feedback + golden set nhẹ trên máy yếu.
+**Đích thiết kế (PROPOSE):** Giữ **một** deployable backend + FE tĩnh, **không** nhân đôi service infra; tách **ranh giới package/module** rõ (ingestion, retrieval, chat, widget-auth, analytics, ops) để giảm coupling; bổ sung **hybrid search** theo lớp (MySQL lexical hiện có → FULLTEXT → search engine sau này); **table-aware** theo hướng có thể thêm bảng hàng (`document_table_rows`) khi dữ liệu lớn; **evaluation** dựa trên log message + golden set nhẹ trên máy yếu.
 
 ---
 
@@ -63,7 +63,6 @@ Hệ thống hiện tại là **modular monolith thực tế** (một JVM Spring
 | Rerank | `RerankService` | Cohere v2 rerank; cap 50 docs |
 | Prompt / LLM | `PromptBuilderService`, `ChatService`, `LlmFallbackService` | System prompt dài; sync + SSE |
 | Chat persistence | `ChatSession`, `ChatMessage`, repos | History top 10; `sources` JSON |
-| Feedback | `ChatFeedback`, `ChatFeedbackService`, `ChatController` `/feedback` | Rating ±1 |
 | Analytics | `AnalyticsService`, `AnalyticsController` | Summary, daily, unanswered heuristics |
 | Dashboard | `DashboardService`, `DashboardController` | Volume, top chatbots, activity |
 | Playground | `PlaygroundService`, `PlaygroundController` | So sánh config, export session |
@@ -95,7 +94,6 @@ Hệ thống hiện tại là **modular monolith thực tế** (một JVM Spring
 | `document_tables` | `markdown_content` LONGTEXT, `json_content` JSON |
 | `chat_sessions` | `(widget_config_id, session_key)` unique |
 | `chat_messages` | `role`, `content`, `sources` JSON, `token_usage`, `latency_ms`, `model_name` |
-| `chat_feedbacks` | `message_id` unique, `rating`, `comment` |
 | `settings_profiles` | Singleton id cố định (xem `SettingsProfile.SINGLETON_ID`) |
 | `settings_api_keys` | Metadata key đã hash, masked |
 
@@ -204,7 +202,7 @@ flowchart TB
     RR[rerank]
     PR[prompt-llm]
     CH[chat-session]
-    AN[analytics-feedback]
+    AN[analytics]
     EV[evaluation]
     OP[ops-health]
   end
@@ -233,7 +231,7 @@ flowchart TB
 | Rerank | `...module.rerank` | Cohere client, thresholds | `RerankService` |
 | Prompt/LLM | `...module.llm` | Prompt templates, fallback | `PromptBuilderService`, `LlmFallbackService`, `GroqConfig` |
 | Chat/Session | `...module.chat` | Session, stream, persistence | `ChatService`, `PublicChatController` |
-| Analytics/Feedback | `...module.analytics` | Aggregates, unanswered | `AnalyticsService`, `ChatFeedbackService` |
+| Analytics | `...module.analytics` | Aggregates, unanswered | `AnalyticsService` |
 | Evaluation | `...module.eval` | Golden questions, offline scoring (**mới**) | Chưa có module riêng |
 | Operations/Health | `...module.ops` | `/actuator`, metrics, readiness (**mở rộng**) | Hiện hạn chế |
 
@@ -357,8 +355,7 @@ Giữ luồng SOURCE; cải tiến theo phase:
 **SOURCE hiện có:**
 
 - `ChatMessage.sources`, `latency_ms`, `model_name`.
-- `ChatFeedback` rating.
-- `AnalyticsService`: `UNANSWERED_HINTS` trên nội dung assistant; summary satisfaction từ feedback.
+- `AnalyticsService`: `UNANSWERED_HINTS` trên nội dung assistant.
 
 **PROPOSE thêm nhẹ (máy yếu):**
 
@@ -367,7 +364,6 @@ Giữ luồng SOURCE; cải tiến theo phase:
 | Golden file YAML trong repo | 20–50 câu; chạy script integration tối thiểu (`@Tag("slow")`) |
 | `retrieval_logs` (DB) hoặc log JSON line | Precision/recall proxy: có đúng `document_id` trong top-k |
 | Manual rubric | Faithfulness: so khớp số với bảng gốc |
-| Feedback loop | Đã có feedback — nối vào export analytics |
 
 **Không** bắt buộc Langfuse/Self-hosted ELK trên 1.5GB RAM.
 
@@ -424,7 +420,7 @@ Giữ luồng SOURCE; cải tiến theo phase:
 | `QueryAnalyzerService` | Retrieval (intent) |
 | `RerankService` | Rerank |
 | `PromptBuilderService` + `ChatService` | Prompt/LLM + Chat |
-| `AnalyticsService` + feedback | Analytics + Evaluation (partial) |
+| `AnalyticsService` | Analytics + Evaluation (partial) |
 | `DashboardService` | Analytics (UI-facing) |
 | `PlaygroundService` | Evaluation (manual compare) |
 

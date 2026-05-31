@@ -187,8 +187,7 @@ export default function ChatbotEmbedPage() {
         welcomeMessage: form.welcomeMessage,
         position:       form.position,
         allowedOrigins: originsPayload,
-        // launcherIcon included for mock/dev; may be ignored by backend if contract
-        // does not include it. Report 06 documents this gap.
+        // launcherIcon may be ignored by backend if the contract does not include it.
         launcherIcon: form.launcherIcon,
       };
       const updated = await chatbotsApi.updateEmbedConfig(id, payload);

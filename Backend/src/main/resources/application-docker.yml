@@ -45,3 +45,6 @@ logging:
     KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
     KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
     KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG
+    # Shadow classifier logs — INFO shows shadow=true comparison lines
+    KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService: INFO
+    KLTN.RAG_CHATBOT_BE.rag.analysis.LlmQueryClassifier: INFO

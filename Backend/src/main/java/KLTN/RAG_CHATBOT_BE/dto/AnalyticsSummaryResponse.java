@@ -10,8 +10,6 @@ public class AnalyticsSummaryResponse {
     Double totalMessagesDelta;
     Long uniqueSessions;
     Double uniqueSessionsDelta;
-    Double avgSatisfaction;
-    Double avgSatisfactionDelta;
     Double fallbackRate;
     Double fallbackRateDelta;
 }

@@ -1,0 +1,62 @@
+﻿[
+    {
+        "expected":  "Nguyá»…n Thá»‹ VÃ¢n Anh, thá»© 2, tiáº¿t 1 - 2, phÃ²ng E301",
+        "id":  "L1",
+        "runs":  [
+
+                 ],
+        "p50TotalMs":  0,
+        "p95TotalMs":  0,
+        "topK":  null,
+        "verdict":  "PARTIAL",
+        "label":  "exact schedule lookup"
+    },
+    {
+        "expected":  "Nguyá»…n Thá»‹ Thanh NhÃ n, thá»© 6, tiáº¿t 5 - 7, phÃ²ng B301",
+        "id":  "L2",
+        "runs":  [
+
+                 ],
+        "p50TotalMs":  0,
+        "p95TotalMs":  0,
+        "topK":  5,
+        "verdict":  "PARTIAL",
+        "label":  "exact schedule lookup n=5"
+    },
+    {
+        "expected":  "Only Kiáº¿n trÃºc K46 HK2 courses",
+        "id":  "L3",
+        "runs":  [
+
+                 ],
+        "p50TotalMs":  0,
+        "p95TotalMs":  0,
+        "topK":  20,
+        "verdict":  "PARTIAL",
+        "label":  "curriculum list query n=20"
+    },
+    {
+        "expected":  "Only CÃ´ng nghá»‡ sinh há»c K46 HK2 courses",
+        "id":  "L4",
+        "runs":  [
+
+                 ],
+        "p50TotalMs":  0,
+        "p95TotalMs":  0,
+        "topK":  null,
+        "verdict":  "PARTIAL",
+        "label":  "curriculum list query"
+    },
+    {
+        "expected":  "Refuse / document does not provide live exchange rate",
+        "id":  "L5",
+        "runs":  [
+
+                 ],
+        "p50TotalMs":  0,
+        "p95TotalMs":  0,
+        "topK":  null,
+        "verdict":  "FAIL",
+        "label":  "out-of-scope"
+    }
+]

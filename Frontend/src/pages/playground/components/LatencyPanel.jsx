@@ -4,8 +4,7 @@
  * Props:
  *   latency — number (total ms) | { total, retrieval, llm } | null
  *
- * The mock API returns a single number; the real API may return a breakdown object.
- * Both shapes are handled gracefully.
+ * The API may return a single number or a breakdown object; both shapes are handled gracefully.
  */
 export default function LatencyPanel({ latency = null }) {
   const fmt = (ms) => (ms != null ? `${ms} ms` : "—");

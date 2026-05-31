@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { analyticsApi } from "../../api/analyticsApi";
 import { chatbotsApi } from "../../api/chatbotsApi";
 import { useToast } from "../../components/common";
@@ -49,7 +49,6 @@ function escapeCsvField(value) {
 
 export default function AnalyticsPage() {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const { setRightSlot, clearRightSlot } = useLayout();
   const toastRef = useRef(toast);
@@ -73,22 +72,7 @@ export default function AnalyticsPage() {
   const [byChatbotState, setByChatbotState] = useState({ data: [], loading: true, error: null });
   const [unansweredState, setUnansweredState] = useState({ data: [], loading: true, error: null });
 
-  /** Feedback tab removed — old links `?activeTab=feedback` should not crash. */
-  useEffect(() => {
-    const raw = searchParams.get("activeTab") || searchParams.get("tab");
-    if (raw !== "feedback") return;
-    const next = new URLSearchParams(searchParams);
-    next.delete("activeTab");
-    next.delete("tab");
-    setSearchParams(next, { replace: true });
-    setActiveTab("usage");
-  }, [searchParams, setSearchParams]);
-
   const handleAnalyticsTab = useCallback((key) => {
-    if (key === "feedback") {
-      setActiveTab("usage");
-      return;
-    }
     setActiveTab(key);
   }, []);
 
@@ -163,7 +147,6 @@ export default function AnalyticsPage() {
       lines.push("Metric,Value,Delta");
       lines.push(`Total Messages,${summaryState.data?.totalMessages ?? ""},${summaryState.data?.totalMessagesDelta ?? ""}`);
       lines.push(`Unique Sessions,${summaryState.data?.uniqueSessions ?? ""},${summaryState.data?.uniqueSessionsDelta ?? ""}`);
-      lines.push(`Satisfaction (%),${summaryState.data?.avgSatisfaction ?? ""},${summaryState.data?.avgSatisfactionDelta ?? ""}`);
       lines.push(`Fallback Rate (%),${summaryState.data?.fallbackRate ?? ""},${summaryState.data?.fallbackRateDelta ?? ""}`);
       lines.push("");
 
@@ -315,7 +298,7 @@ export default function AnalyticsPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <AnalyticsMetricCard
               title="Total messages"
               value={summaryState.data?.totalMessages}
@@ -327,14 +310,6 @@ export default function AnalyticsPage() {
               title="Unique sessions"
               value={summaryState.data?.uniqueSessions}
               delta={summaryState.data?.uniqueSessionsDelta}
-              loading={summaryState.loading}
-              error={summaryState.error}
-            />
-            <AnalyticsMetricCard
-              title="Satisfaction"
-              value={summaryState.data?.avgSatisfaction}
-              valueSuffix="%"
-              delta={summaryState.data?.avgSatisfactionDelta}
               loading={summaryState.loading}
               error={summaryState.error}
             />

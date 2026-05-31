@@ -1,6 +1,5 @@
 package KLTN.RAG_CHATBOT_BE.service;
 
-import KLTN.RAG_CHATBOT_BE.domain.chat.ChatFeedbackRepository;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessage;
 import KLTN.RAG_CHATBOT_BE.domain.chat.ChatMessageRepository;
 import KLTN.RAG_CHATBOT_BE.domain.document.Document;
@@ -30,12 +29,9 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class DashboardService {
 
-    private static final LocalDateTime FEEDBACK_STATS_FROM = LocalDateTime.of(2000, 1, 1, 0, 0);
-
     private final WidgetConfigRepository widgetConfigRepository;
     private final DocumentRepository documentRepository;
     private final ChatMessageRepository chatMessageRepository;
-    private final ChatFeedbackRepository chatFeedbackRepository;
 
     @Transactional(readOnly = true)
     public DashboardSummaryResponse getSummary() {
@@ -50,24 +46,11 @@ public class DashboardService {
         long previousMessages7d = chatMessageRepository.countByCreatedAtBetween(previousFrom, previousTo);
         long documentCount = documentRepository.count();
 
-        LocalDateTime feedbackTo = today.plusDays(1).atStartOfDay();
-        long positiveFeedback = chatFeedbackRepository.countByRatingInRange(
-                FEEDBACK_STATS_FROM, feedbackTo, null, 1);
-        long negativeFeedback = chatFeedbackRepository.countByRatingInRange(
-                FEEDBACK_STATS_FROM, feedbackTo, null, -1);
-        long ratedFeedback = positiveFeedback + negativeFeedback;
-        Double avgSatisfaction = null;
-        if (ratedFeedback > 0) {
-            avgSatisfaction = Math.round(1000.0d * positiveFeedback / ratedFeedback) / 10.0d;
-        }
-
         return DashboardSummaryResponse.builder()
                 .activeChatbots(activeChatbots)
                 .activeChatbotsDelta(0.0d)
                 .messages7d(messages7d)
                 .messages7dDelta(calculateDelta(messages7d, previousMessages7d))
-                .avgSatisfaction(avgSatisfaction)
-                .avgSatisfactionDelta(0.0d)
                 .documentCount(documentCount)
                 .documentCountDelta(0.0d)
                 .build();
@@ -118,7 +101,6 @@ public class DashboardService {
                     .id(id.toString())
                     .name(name)
                     .messageCount(messageCount)
-                    .satisfaction(null)
                     .domain(readDomain(widget))
                     .status(widget != null && widget.isActive() ? "ACTIVE" : "INACTIVE")
                     .build());

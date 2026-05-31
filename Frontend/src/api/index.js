@@ -12,5 +12,3 @@ export { playgroundApi } from "./playgroundApi";
 export { analyticsApi }  from "./analyticsApi";
 export { settingsApi }   from "./settingsApi";
 export { publicChatApi } from "./publicChatApi";
-
-export { USE_MOCK_API, mockDelay, createPaginatedResponse } from "./apiMode";

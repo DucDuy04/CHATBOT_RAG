@@ -59,21 +59,5 @@ public interface ChatSessionRepository extends JpaRepository<ChatSession, UUID> 
             Pageable pageable
     );
 
-    @Query("""
-            SELECT s
-            FROM ChatSession s
-            JOIN FETCH s.widgetConfig w
-            WHERE s.deletedAt IS NULL
-              AND w.deletedAt IS NULL
-              AND s.createdAt >= :from
-              AND s.createdAt < :to
-              AND (:widgetId IS NULL OR w.id = :widgetId)
-            ORDER BY s.createdAt DESC
-            """)
-    List<ChatSession> findAllForAnalyticsRange(
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to,
-            @Param("widgetId") UUID widgetId
-    );
 }
 

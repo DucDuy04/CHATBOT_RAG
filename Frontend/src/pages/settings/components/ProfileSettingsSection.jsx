@@ -23,7 +23,6 @@ export default function ProfileSettingsSection() {
     notifications: {
       embeddingFailed: true,
       dailySummary: true,
-      newFeedback: true,
     },
   });
 
@@ -39,7 +38,6 @@ export default function ProfileSettingsSection() {
         notifications: {
           embeddingFailed: data?.notifications?.embeddingFailed ?? true,
           dailySummary: data?.notifications?.dailySummary ?? true,
-          newFeedback: data?.notifications?.newFeedback ?? true,
         },
       });
     } catch {
@@ -83,7 +81,6 @@ export default function ProfileSettingsSection() {
         notifications: {
           embeddingFailed: !!form.notifications.embeddingFailed,
           dailySummary: !!form.notifications.dailySummary,
-          newFeedback: !!form.notifications.newFeedback,
         },
       };
       await settingsApi.updateProfile(payload);
@@ -181,14 +178,6 @@ export default function ProfileSettingsSection() {
             type="checkbox"
             checked={!!form.notifications.dailySummary}
             onChange={() => handleToggle("dailySummary")}
-          />
-        </label>
-        <label className="flex items-center justify-between rounded-lg border border-gray-200 p-3 text-sm">
-          <span>New feedback</span>
-          <input
-            type="checkbox"
-            checked={!!form.notifications.newFeedback}
-            onChange={() => handleToggle("newFeedback")}
           />
         </label>
       </div>

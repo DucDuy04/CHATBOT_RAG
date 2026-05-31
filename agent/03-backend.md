@@ -1,168 +1,238 @@
 # Backend (Spring Boot)
 
+Backend-specific guide. Package truth: [`02-architecture.md`](02-architecture.md). Full reference: [`docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md`](../docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md).
+
+---
+
 ## Tech stack
-- Java 21, Spring Boot 3.4.4
-- Spring Web, Spring Data JPA, Spring Security
-- LangChain4j BOM 1.0.0-beta1 (`langchain4j`, `langchain4j-open-ai`, `langchain4j-nomic` — không còn `langchain4j-qdrant`; Qdrant I/O qua REST trong `EmbeddingService`)
-- Apache PDFBox 3.0.2 + Tabula 1.0.5 (parse PDF + extract table)
-- Lombok, Hibernate (MySQL dialect)
 
-## Domain và dữ liệu
+- Java 21, Spring Boot 3.4.4, Maven (`Backend/mvnw.cmd` included)
+- Spring Web, Data JPA, Security
+- LangChain4j 1.0.0-beta1: `langchain4j`, `langchain4j-open-ai`, `langchain4j-nomic` — **LLM/embedding adapters only**
+- **No** `langchain4j-qdrant` / `QdrantEmbeddingStore` in application code
+- Apache POI 5.3 (DOCX), PDFBox 3.0.2 + Tabula 1.0.5 (PDF)
+- MySQL 8.0, Qdrant REST
 
-**Tất cả entity dùng UUID PK** (`GenerationType.UUID`), soft delete qua `deleted_at` + `@SQLRestriction`.
+---
 
-### WidgetConfig (`widget_configs`)
-- Là **multi-tenant root**.
-- Trường chính: `id` (UUID), `name`, `apiKey` (UUID, unique), `allowedOrigin` (JSON list), `uiConfig` (JSON map), `isActive`.
-- `apiKey` được dùng làm `X-Widget-Key` để xác thực.
+## Profiles
 
-### Document (`documents`)
-- FK `widget_config_id` → `WidgetConfig`.
-- Trường chính: `id` (UUID), `fileName`, `filePath`, `fileType`, `mimeType`, `fileSize`, `checksum` (unique, dùng dedup), `status` (PENDING/PROCESSING/COMPLETED/FAILED), `chunkCount`.
-- Soft delete qua `deletedAt`.
+| Profile | File | Usage |
+|---------|------|-------|
+| `dev` (default) | `application-dev.yml` | Local: MySQL localhost:3306, Qdrant localhost:6333 |
+| `docker` | `application-docker.yml` | Container: host `mysql`, `qdrant` |
 
-### DocumentSection (`document_sections`)
-- Lưu hierarchy section của tài liệu sau parse.
-- Trường chính: `sectionKey` (ví dụ: `"sec_6.2"`), `title`, `headingPathText`, `orderIndex`.
-- FK `widget_config_id`.
+Common settings in `application.yml`: multipart 50MB, upload dir `./uploads`, hybrid retrieval config, cleaner config.
 
-### DocumentChunk (`document_chunks`)
-- Nội dung chunk thực tế, được index vào Qdrant.
-- Trường chính: `id` (UUID), `content`, `chunkType`, `sectionId`, `sectionTitle`, `headingPathText`, `orderIndex`, `sectionOrder`, `headingLevel`, `sourceFile`, `pageStart`, `pageEnd`, `tableId`, `childSectionIds`.
-- FK `widget_config_id`, `document_id`.
+### Runtime optimizations (config paths)
 
-### DocumentTable (`document_tables`)
-- Metadata bảng trong tài liệu.
-
-### ChatSession (`chat_sessions`)
-- Phiên chat per widget per browser.
-- Trường chính: `id` (UUID), `sessionKey` (UUID, gửi từ browser), `widgetOrigin`, `title`.
-- Unique constraint: `(widget_config_id, session_key)`.
-- FK `widget_config_id`.
-
-### ChatMessage (`chat_messages`)
-- Tin nhắn trong phiên.
-- Trường chính: `id`, `role` (USER/ASSISTANT), `content`, `sources` (JSON).
-- FK `chat_session_id`.
-
-### Repositories
-- `WidgetConfigRepository`: `findByApiKey(UUID)`
-- `DocumentRepository`, `DocumentChunkRepository`, `DocumentSectionRepository`, `DocumentTableRepository`
-- `ChatSessionRepository`, `ChatMessageRepository`
-
-## Cấu hình quan trọng
-
-### Profiles
-- `application.yml`: profile mặc định `dev`, multipart max `50MB`, app.upload-dir `./uploads`, cleaner config.
-- `application-dev.yml`: MySQL localhost:3306, Qdrant REST `http-port: 6333`, Groq + Nomic + Cohere config.
-- `application-docker.yml`: MySQL `ragchatbot-mysql:3306`, Qdrant host `ragchatbot-qdrant`, REST port `6333`.
-
-### GroqConfig
-- Chat model chính: `llama-3.3-70b-versatile`
-- Base URL: `https://api.groq.com/openai/v1`
-- Fallback models: `llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b`
-- Tạo `OpenAiChatModel` và `NomicEmbeddingModel` làm Spring beans.
-
-### QdrantConfig (`index.qdrant`)
-- Collection `documents`, vector size `768`, distance Cosine.
-- HTTP `6333`: bootstrap collection qua REST (`ApplicationRunner` trong `QdrantConfig`).
-- **Qdrant write path**: REST upsert/search qua `EmbeddingService` (`index.embedding`) — không dùng LangChain4j `QdrantEmbeddingStore` / gRPC write.
-- Port gRPC `6334` có thể còn trong compose cho tooling; backend không ghi vector qua gRPC.
-
-### SecurityConfig
-- CSRF disabled.
-- CORS cho `http://localhost:5173` và `http://localhost:3000` trên `/api/**`.
-- `WidgetAuthFilter` được đăng ký trước `UsernamePasswordAuthenticationFilter`.
-- Tất cả request hiện `permitAll()` trong Security chain — auth thực sự do filter xử lý.
-
-## Bảo mật: WidgetAuthFilter
-
-```
-Scope: CHỈ áp dụng cho /api/chat/**
-Logic:
-  1. Lấy header "X-Widget-Key" (UUID string)
-  2. Nếu thiếu → HTTP 401 {"error": "Missing X-Widget-Key header."}
-  3. Parse UUID → tra DB: widgetConfigRepository.findByApiKey(apiKey)
-  4. Nếu không tìm thấy hoặc isActive=false → HTTP 401 {"error": "Invalid or inactive Widget Key."}
-  5. Đính kèm widgetConfig.getId() vào request attribute "Widget-Id"
-  6. Controller đọc @RequestAttribute("Widget-Id") UUID widgetId
-```
-
-**Lưu ý**: `/api/documents/**` và `/api/widgets/**` hiện không bị filter này chặn — admin tạo widget và upload tài liệu tự do.
-
-## Ingestion pipeline (DocumentService)
-
-1. `POST /api/documents/upload/{widgetId}` — nhận MultipartFile.
-2. Validate file type (PDF/TXT), kiểm tra checksum tránh upload trùng.
-3. Lưu file vào `./uploads`, tạo bản ghi `Document` trạng thái `PENDING`.
-4. `ingest.parser.DocumentParserService.parse()`:
-   - PDF: PDFBox + Tabula → `RawTableModel` (structured grid, không Markdown bridge làm primary).
-   - DOCX: Apache POI logical grid → `RawTableModel` (`physicalColIndex` cho slot mapping).
-   - TXT: đọc thẳng.
-   - Cleaner theo `app.preprocessing.cleaner.*`; section hierarchy → `List<Section>`.
-5. `ingest.normalize.NormalizedTableService` → `normalized_table_row` (+ `cells_json`, `group_context`).
-6. `ingest.chunking.ChunkingService2.processSections2()` → `List<DocumentChunk>`:
-   - `parent_section_summary` → `section_summary` → `text` / `table_summary` / `normalized_table_row`.
-   - Chunk size: `MAX_CHARS_PER_TEXT_CHUNK=2200`, `OVERLAP_CHARS=250`.
-7. `index.embedding.EmbeddingService.upsert()` (Qdrant REST, UTF-8 safe):
-   - Lưu `DocumentSection` vào MySQL.
-   - Lưu `DocumentChunk` entity vào MySQL.
-   - Embed từng chunk bằng Nomic, upsert vào Qdrant kèm payload đầy đủ (widgetId, section metadata, chunkType...).
-8. Cập nhật `Document.status = COMPLETED` (hoặc `FAILED` nếu có lỗi), ghi `chunkCount`.
-
-## Query/Chat pipeline (`rag.runtime.ChatService` + `rag.retrieve.RagRetrievalService`)
-
-1. Nhận `ChatRequest { sessionId, message }` + `widgetId` từ `@RequestAttribute`.
-2. Resolve/tạo `ChatSession` trong MySQL (lookup by `(widgetId, sessionKey)`).
-3. Lưu user message vào `chat_messages`.
-4. `RagRetrievalService.retrieve(question, widgetId)` → 7 bước (xem `02-architecture.md`); `QueryAnalyzerService` + `PromptBudgetResolver` trong retrieval path.
-5. `ChatMessageRepository.findTop10BySessionIdOrderByCreatedAtDesc()` → lịch sử gần nhất.
-6. `PromptBuilderService.build()` → system prompt + context + history + câu hỏi.
-7. Gọi Groq LLM qua `LlmFallbackService` (`llm`):
-   - Sync: `OpenAiChatModel.generate()` → trả `ChatResponse { answer, sources }`.
-   - Stream: `SseEmitter`, `LlmFallbackService.buildStreamingModel(modelName)`, emit `event: token`, kết thúc `event: done` kèm sources.
-8. Lưu assistant message vào `chat_messages`.
-9. `RagTokenAudit` / `RagLatencyTrace` (`audit.metrics`) ghi structured logs, không log full prompt.
-
-## LlmFallbackService (`llm`)
-
-- Tạo `OpenAiChatModel` hoặc `OpenAiStreamingChatModel` theo model name.
-- Khi Groq rate-limit model chính → thử lần lượt các model trong `fallback-models`.
-- Fallback order hiện tại: `llama-3.3-70b-versatile` → `llama-3.1-8b-instant` → `meta-llama/llama-4-scout-17b-16e-instruct` → `qwen/qwen3-32b`.
-
-## RerankService (`rag.rerank`, optional)
-
-- Gọi Cohere Rerank API (`rerank-multilingual-v3.0`) để chấm điểm lại từng cặp (query, chunk).
-- Chỉ kích hoạt khi `COHERE_RERANK_ENABLED=true` và có `COHERE_API_KEY`.
-- `LOW_CONFIDENCE_THRESHOLD`: log warning khi max score < ngưỡng này.
-- Khi disabled: trả về danh sách gốc không đổi thứ tự.
-
-## Backend package map (25D)
-
-| Concern | Package |
-|---|---|
-| Parse / raw tables | `ingest.parser` |
-| Table normalization | `ingest.normalize` |
-| Chunking | `ingest.chunking` |
-| Embed + Qdrant REST I/O | `index.embedding` |
-| Qdrant bootstrap / purge | `index.qdrant` |
-| Retrieval | `rag.retrieve` |
-| Prompt | `rag.prompt` |
-| Query analysis | `rag.analysis` |
-| Rerank | `rag.rerank` |
-| Context budget | `rag.budget` |
-| Chat runtime | `rag.runtime` |
-| Audit metrics | `audit.metrics` |
-| LLM provider + fallback | `llm` |
-| Upload lifecycle + admin services | `service` |
-
-`DocumentService` giữ trong `service` vì phối hợp API upload, DB, parse, chunk, embed, Qdrant purge và document status.
-
-## Logging cấu hình
 ```yaml
-logging:
-  level:
-    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG     # dev profile
-    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
+rag:
+  runtime:
+    async-persist:
+      enabled: true
+      pool-size: 2
+  retrieval:
+    keyword-index:
+      prewarm-on-startup: true
+    rerank-guard:
+      enabled: true
+    query-variant-dedupe:
+      enabled: true
 ```
+
+**Wrong path (do not document):** `rag.retrieval.async-persist` — async persist is under `rag.runtime.async-persist`.
+
+---
+
+## Important packages and classes
+
+| Concern | Location |
+|---------|----------|
+| Upload orchestration | `service.DocumentService` |
+| Chatbot cascade delete | `service.WidgetService.softDeleteChatbot` |
+| Parse | `ingest.parser.DocumentParserService` |
+| Table normalize | `ingest.normalize.NormalizedTableService` |
+| Chunk | `ingest.chunking.ChunkingService2` |
+| Embed + Qdrant I/O | `index.embedding.EmbeddingService` |
+| Qdrant bootstrap/purge | `index.qdrant.QdrantConfig`, `QdrantPurgeService` |
+| Retrieval | `rag.retrieve.RagRetrievalService` |
+| Chat runtime | `rag.runtime.ChatService` |
+| LLM | `llm.LlmFallbackService` |
+| Widget auth | `config.WidgetAuthFilter` |
+| Audit metrics | `audit.metrics.RagTokenAudit`, `RagLatencyTrace` |
+| Domain / repos | `domain.*`, JPA repositories |
+
+Package layers: `api` → `service` (lifecycle only) → `ingest` / `index` / `rag` / `llm` → `domain`.
+
+---
+
+## Document upload flow
+
+1. `POST /api/documents/upload/{widgetId}` → `DocumentController` → `DocumentService`
+2. Validate type (PDF/DOCX/TXT), checksum dedup, save to `./uploads`
+3. Status: `PENDING` → `PROCESSING`
+4. `DocumentParserService.parse()`:
+   - **DOCX:** POI logical grid → `RawTableModel` with `physicalColIndex`
+   - **PDF:** PDFBox + Tabula → `RawTableModel` with coordinate overlap
+   - **TXT:** direct read
+5. `NormalizedTableService` → rows with `cells_json` (UTF-8 Vietnamese)
+6. `ChunkingService2.processSections2()` → chunk list
+7. `EmbeddingService.upsert()` — REST to Qdrant :6333, save MySQL sections/chunks
+8. Status: `COMPLETED` or `FAILED`
+
+Delete: `DELETE /api/documents/{id}` → `softDeleteDocument` → Qdrant purge by `document_id`.
+
+---
+
+## Retrieval flow
+
+1. `POST /api/chat` or `/api/chat/stream` + `X-Widget-Key`
+2. `WidgetAuthFilter` → `Widget-Id` attribute
+3. `ChatService` → save user message
+4. `RagRetrievalService.retrieve(question, widgetId)` — 7 steps (see `02-architecture.md`)
+5. `PromptBuilderService.build()` → Groq via `LlmFallbackService`
+6. Response + sources; optional SSE stream
+
+Hybrid: vector search + `KeywordSearchService` + cell-aware scoring for `normalized_table_row`.
+
+---
+
+## Qdrant integration
+
+- **Write/search:** `index.embedding.EmbeddingService` — Spring `RestClient` + Jackson UTF-8 JSON
+- **Bootstrap:** `index.qdrant.QdrantConfig` — creates `documents` collection on startup (768, Cosine)
+- **Purge:** `index.qdrant.QdrantPurgeService` — delete points filter `document_id`
+- **Port:** HTTP 6333 only for application I/O; gRPC 6334 not used for writes
+
+Invariant: for `COMPLETED` documents, DB chunk count = Qdrant point count (per document).
+
+---
+
+## Chatbot delete flow
+
+```text
+DELETE /api/chatbots/{id}
+  → ChatbotController
+  → WidgetService.softDeleteChatbot(id)
+  → list active documents for widget
+  → for each: DocumentService.softDeleteDocument(docId)
+  → soft-delete WidgetConfig
+```
+
+Test: `WidgetServiceSoftDeleteChatbotTest`.
+
+---
+
+## Security notes
+
+- `WidgetAuthFilter`: `/api/chat/**` requires valid `X-Widget-Key`
+- Admin routes (`/api/documents/**`, `/api/chatbots/**`): currently `permitAll` — **not production-grade auth**
+- CORS: localhost origins in `SecurityConfig`
+
+---
+
+## Run backend tests
+
+```powershell
+cd Backend
+$env:JAVA_HOME='C:\Program Files\Java\jdk-21'
+.\mvnw.cmd clean test
+```
+
+Expected: **120 tests**, 0 failures. See [`05-testing.md`](05-testing.md).
+
+---
+
+## Common troubleshooting
+
+### PowerShell env scope (Process / User / Machine)
+
+**Symptom:** Key works in one terminal but not another; Docker container has different key.
+
+```powershell
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "Process")
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "User")
+[Environment]::GetEnvironmentVariable("NOMIC_API_KEY", "Machine")
+```
+
+Process env mất khi đóng terminal. Docker dùng `.env` tại repo root — restart backend sau khi sửa.
+
+### NOMIC key mismatch (Process / User / .env / Docker)
+
+**Symptom:** Embedding fails, 401 from Nomic, or wrong key used.
+
+**Check:**
+
+```powershell
+# Local
+$env:NOMIC_API_KEY.Substring(0,8)
+
+# Docker container
+docker compose exec backend sh -lc 'echo ${NOMIC_API_KEY:0:8}'
+```
+
+Ensure same key in `.env` (compose), PowerShell session, and not overridden by stale User env var.
+
+### Qdrant points mismatch
+
+**Symptom:** `chunkCount` on document ≠ Qdrant points for `document_id`.
+
+**Check:**
+
+- Document status must be `COMPLETED`
+- Query Qdrant: `POST /collections/documents/points/scroll` with filter `document_id`
+- Re-upload if document was partially failed
+- Never recreate collection without re-embed plan
+
+### cells_json mojibake
+
+**Symptom:** Vietnamese characters corrupted in retrieval / Qdrant payload.
+
+**Cause (historical):** gRPC `QdrantEmbeddingStore` path — **removed**.
+
+**Verify:** run `QdrantPayloadUnicodeTest`; confirm writes go through `EmbeddingService` REST only.
+
+### Stale documents / orphan data
+
+**Symptom:** Soft-deleted docs still have Qdrant points, or chunks without parent document.
+
+**Fix:**
+
+- Use `DELETE /api/documents/{id}` (not manual DB delete)
+- Chatbot delete cascades via `WidgetService`
+- Audit scripts in `docs/eval/results/RESIDUAL_DATA_CLEANUP_25J_20260529.md`
+
+### Upload stuck in PROCESSING
+
+- Check backend logs: parse/chunk/embed exceptions
+- File size ≤ 50MB
+- Groq/Nomic API availability
+
+### Widget key / auth failures
+
+**Symptom:** 401 on `/api/chat` or `/api/chat/stream`.
+
+- Header: `X-Widget-Key` (widget iframe / admin chat)
+- Public chat: `x-api-key` or `X-Widget-Key` on `/api/public/chat`
+- Key = `WidgetConfig.apiKey` UUID from embed config — not settings API keys
+
+### Removed feedback DB artifacts
+
+**Symptom:** Old branch fails on missing `chat_feedbacks` or `notify_new_feedback`.
+
+- Current codebase (28A+) does not map these — use current branch.
+- Optional cleanup after backup: `DROP TABLE chat_feedbacks`; `ALTER TABLE settings_profiles DROP COLUMN notify_new_feedback`
+
+---
+
+## Logging (dev)
+
+```yaml
+logging.level:
+  KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
+  KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
+  KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG
+```
+
+Do not log full prompts, API keys, or long document content.

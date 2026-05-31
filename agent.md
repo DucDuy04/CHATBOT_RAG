@@ -1,189 +1,139 @@
-# AGENT DOCS - CHATBOT_RAG
+# Agent Entry Point — CHATBOT_RAG
 
-Tài liệu agent được tách nhỏ để dễ bảo trì. Đây là trang điều hướng chính.
-
-## Mục lục
-- `agent/01-overview.md`: mục tiêu, phạm vi, trạng thái dự án.
-- `agent/02-architecture.md`: kiến trúc tổng thể, schema DB thực tế, Qdrant payload, retrieval pipeline 7 bước.
-- `agent/03-backend.md`: chi tiết backend Spring Boot, WidgetAuthFilter, RAG pipeline, chunking types.
-- `agent/04-frontend.md`: luồng frontend, widget key, streaming SSE, sources.
-- `agent/05-api.md`: tài liệu API tham chiếu nhanh (đã cập nhật đúng paths).
-- `agent/06-operations.md`: vận hành, env vars đầy đủ, rủi ro kỹ thuật, roadmap.
-
-## Snapshot nhanh
-- Dự án gồm `Backend` (Spring Boot 3.4.4 / Java 21) và `Frontend` (React 19 + Vite 7).
-- RAG pipeline end-to-end: upload → parse/chunk/embed → multi-stage retrieve → chat.
-- **Multi-tenant theo widget**: `WidgetConfig` là root entity; documents, chunks, sessions scoped theo `widgetConfigId`.
-- Vector store: Qdrant (collection `documents`, vector 768, Cosine). Transactional store: MySQL (`ragchatbot`).
-- LLM: Groq (`llama-3.3-70b-versatile`) với fallback models. Embedding: Nomic (`nomic-embed-text-v1.5`).
-- Cohere Rerank: optional (`COHERE_RERANK_ENABLED=false` mặc định).
-- Widget nhúng bằng bundle IIFE, xác thực qua `X-Widget-Key` header.
-
-## Cách sử dụng tài liệu này
-- Nếu cần hiểu tổng thể: đọc từ `01-overview` → `02-architecture`.
-- Nếu triển khai API/logic: đọc `03-backend` + `05-api`.
-- Nếu tích hợp UI/widget: đọc `04-frontend`.
-- Nếu chuẩn bị production: đọc `06-operations`.
+Concise entry point cho AI/Cursor sessions. Human onboarding: [`README.md`](README.md).
 
 ---
 
-# 🧠 PROJECT OVERVIEW
-- Tên dự án: `CHATBOT_RAG` (Backend artifact: `RAG_CHATBOT_BE`, Frontend package: `rag-chatbot-fe`).
-- Mục tiêu: Chatbot RAG hỏi đáp dựa trên tài liệu nội bộ (PDF/TXT), giao diện web quản trị + widget nhúng.
-- Mô hình: multi-tenant theo `WidgetConfig` — mỗi widget có documents, sessions và Qdrant search context riêng.
+## Current verified baseline (28C / 29A, 2026-05-30)
 
-# 🏗️ SYSTEM ARCHITECTURE
-- Kiến trúc: Client-Server + RAG pipeline, tách FE/BE.
-- `WidgetConfig` là **multi-tenant root**: tất cả entities chính đều có FK `widget_config_id`.
-- FE gọi BE qua REST / SSE (`/api/documents`, `/api/chat`, `/api/chat/stream`, `/api/widgets`).
-- BE ghi metadata/history vào MySQL, vector vào Qdrant, gọi Groq/Nomic qua API.
-- Chat endpoint `/api/chat/**` bảo vệ bởi `WidgetAuthFilter` (header `X-Widget-Key`).
+| Check | Result |
+|-------|--------|
+| Backend tests (`mvn clean test`) | **120 PASS**, 0 failures |
+| Frontend build | **PASS** |
+| Frontend lint | **PASS** |
+| Widget build (`npm run build:widget`) | **PASS** |
+| Docker compose config | **PASS** |
+| Widget E2E | **PASS** |
+| DB/Qdrant parity (active COMPLETED docs) | **PASS** — chunk count = point count per document |
 
-Luồng xử lý chính:
-1. Admin tạo widget: `POST /api/widgets` → nhận `widgetConfigId` + `apiKey`.
-2. Admin upload file: `POST /api/documents/upload/{widgetId}`.
-3. BE parse PDF/TXT, chunk theo section hierarchy, embed, lưu vào Qdrant + MySQL.
-4. User widget gửi câu hỏi kèm `X-Widget-Key` header.
-5. BE xác thực key, phân tích intent, truy hồi context multi-stage (heading lock + vector + expansion + rerank).
-6. BE dựng prompt + gọi Groq → stream token SSE hoặc trả JSON sync.
-7. FE render câu trả lời + sources.
+Default unit tests **không** cần live MySQL/Qdrant/API keys.
 
-# ⚙️ TECH STACK
-- Backend: Java 21, Spring Boot 3.4.4, Spring Web/JPA/Security, LangChain4j 1.0.0-beta1, PDFBox 3.0.2, Tabula 1.0.5.
-- Frontend: React 19, Vite 7, React Router 7, Axios, TailwindCSS 4, react-markdown, uuid.
-- Database: MySQL 8.0, Qdrant (latest).
-- AI providers: Groq (LLM), Nomic (embedding), Cohere Rerank (optional).
-- Infra: Docker Compose (frontend, backend, mysql, qdrant).
+**Removed (không còn active):** feedback endpoint, satisfaction/rating metrics, `newFeedback` notification, frontend mock mode, `USE_MOCK_API`. Frontend clients gọi backend thật only.
 
-# 🗄️ DATABASE DESIGN
-Polyglot persistence: MySQL (transactional metadata) + Qdrant (semantic vectors).
+---
 
-**Tất cả entities dùng UUID PK, soft delete qua `deleted_at`.**
+## Read first
 
-MySQL (`ragchatbot`):
-- `widget_configs`: multi-tenant root (id UUID, name, apiKey UUID unique, allowedOrigin JSON, uiConfig JSON, isActive).
-- `documents`: metadata tài liệu (id UUID, widget_config_id FK, fileName, fileType, mimeType, fileSize, checksum, status, chunkCount, deleted_at).
-- `document_sections`: section hierarchy (sectionKey, title, headingPathText, orderIndex, widget_config_id FK).
-- `document_chunks`: nội dung chunk thực (id UUID, content, chunkType, sectionId, sectionTitle, headingPathText, orderIndex, sectionOrder, widget_config_id FK, document_id FK).
-- `document_tables`: metadata bảng.
-- `chat_sessions`: phiên chat (id UUID, widget_config_id FK, sessionKey UUID, widgetOrigin, title; unique: widget_config_id + session_key).
-- `chat_messages`: tin nhắn (role USER/ASSISTANT, content TEXT, sources JSON, chat_session_id FK).
-- Schema tạo tự động qua `ddl-auto=update` (chưa có Flyway/Liquibase).
+1. [`README.md`](README.md) — clone-and-run handoff
+2. [`docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md`](docs/architecture/FINAL_BACKEND_RAG_ARCHITECTURE_20260529.md)
+3. [`docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md`](docs/architecture/FINAL_RAG_PIPELINE_OVERVIEW_20260529.md)
+4. [`docs/api/API_REFERENCE_20260530.md`](docs/api/API_REFERENCE_20260530.md)
+5. [`agent/04-runbook.md`](agent/04-runbook.md)
+6. [`agent/05-api.md`](agent/05-api.md)
+7. [`agent/06-operations.md`](agent/06-operations.md)
 
-Qdrant:
-- Collection: `documents`, vector size `768`, distance Cosine.
-- Write/search path: HTTP REST `6333` qua `index.embedding.EmbeddingService` (UTF-8 JSON; không dùng LangChain4j `QdrantEmbeddingStore` / gRPC write).
-- Port `6334` (gRPC) có thể expose trong Docker cho tooling; backend không ghi vector qua gRPC.
-- Payload: `widgetId`, `documentId`, `fileName`, `chunk_id`, `section_id`, `section_title`, `heading_path`, `chunk_type`, `cells_json`, `group_context`, `child_section_ids`, `table_id`, `page_start`, `page_end`, `order_index`, `section_order`.
-- Tất cả search đều filter theo `widgetId`.
+Cursor rules: `.cursor/rules/00-core-working-rule.mdc`, `10-backend-rag-rule.mdc`, `40-db-vector-rule.mdc`.
 
-# 📂 PROJECT STRUCTURE
-- `Backend/`: Spring Boot API.
-  - `api/`: ChatController, DocumentController, WidgetController, PlaygroundController.
-  - `ingest.parser` / `ingest.normalize` / `ingest.chunking`: parse PDF/DOCX/TXT, `RawTableModel`, normalized rows, chunking.
-  - `index.embedding` / `index.qdrant`: Nomic embed + Qdrant REST upsert/search; collection bootstrap/purge.
-  - `rag.retrieve` / `rag.prompt` / `rag.analysis` / `rag.rerank` / `rag.budget` / `rag.runtime`: retrieval, prompt, query signals, rerank, budget, ChatService/PlaygroundService.
-  - `llm/`: LlmFallbackService, LlmGenerationOptions.
-  - `audit.metrics/`: RagTokenAudit, RagLatencyTrace.
-  - `service/`: DocumentService, WidgetService (upload lifecycle + admin only).
-  - `domain/`: chat/, document/, widget/, enums/.
-  - `config/`: GroqConfig, SecurityConfig, WidgetAuthFilter, AppConfig (QdrantConfig ở `index.qdrant`).
-  - `resources/`: application.yml, application-dev.yml, application-docker.yml.
-- `Frontend/`: React app + widget.
-  - `src/pages/`: ChatPage, DocumentPage, WidgetChatPage.
-  - `src/api/`: axiosInstance, documentApi, widgetApi.
-  - `widget/widget.js`: IIFE embed script.
-  - `vite.widget.config.js`: build widget bundle.
-- `docker-compose.yml`: full stack local.
-- `preprocess/`: standalone Java module (không phụ thuộc Backend runtime).
+---
 
-# 🔌 CORE MODULES
-- Document Ingestion: `DocumentService` → `DocumentParserService` → `NormalizedTableService` → `ChunkingService2` → `EmbeddingService`.
-  - DOCX/PDF tables: `RawTableModel` (logical grid; DOCX dùng `physicalColIndex`) → `normalized_table_row` + `table_summary`.
-  - ChunkingService2 còn tạo: `text`, `section_summary`, `parent_section_summary`. Không tạo `table_row_group` / `text_table_like` trên ingest mới.
-  - Chunk size: max 2200 chars, overlap 250 chars.
-- Chat/RAG: `rag.runtime.ChatService` → `rag.retrieve.RagRetrievalService` (7 bước) → `rag.prompt.PromptBuilderService` → `llm.LlmFallbackService` → Groq LLM.
-  - Retrieval: ANCHOR_TOP_K=30; final limit 10/20/60 tùy intent + locked scope.
-  - Rerank: Cohere Cross-Encoder, optional.
-  - LLM fallback: llama-3.3-70b → llama-3.1-8b-instant → llama-4-scout → qwen3-32b.
-- Widget auth: `WidgetAuthFilter` xác thực `X-Widget-Key` cho `/api/chat/**`.
+## Agent doc index
 
-# 🔄 DATA FLOW
+| File | Nội dung |
+|------|----------|
+| [`agent/01-overview.md`](agent/01-overview.md) | Tổng quan, milestone, baseline |
+| [`agent/02-architecture.md`](agent/02-architecture.md) | Kiến trúc truth — package map, pipelines |
+| [`agent/03-backend.md`](agent/03-backend.md) | Backend chi tiết, troubleshooting |
+| [`agent/04-runbook.md`](agent/04-runbook.md) | Lệnh vận hành |
+| [`agent/05-api.md`](agent/05-api.md) | API reference nhanh |
+| [`agent/05-testing.md`](agent/05-testing.md) | Test suite, baseline |
+| [`agent/06-operations.md`](agent/06-operations.md) | Data lifecycle, delete, Qdrant parity |
+| [`agent/04-frontend.md`](agent/04-frontend.md) | Frontend + widget (legacy index) |
 
-Ingestion flow:
-1. `POST /api/documents/upload/{widgetId}` — multipart file.
-2. Validate type, checksum dedup, lưu file vào `./uploads`.
-3. Tạo Document record `PENDING` → `PROCESSING`.
-4. Parse (PDFBox/TXT) + cleaner → `List<Section>`.
-5. ChunkingService2 → chunk theo section hierarchy, pseudo-table detection.
-6. Embed (Nomic) → upsert Qdrant + lưu DocumentChunk/DocumentSection vào MySQL.
-7. Document `COMPLETED` hoặc `FAILED`.
+---
 
-Query flow:
-1. `POST /api/chat/stream` + header `X-Widget-Key`.
-2. WidgetAuthFilter → xác thực → đính kèm `Widget-Id` attribute.
-3. ChatService: resolve ChatSession (lookup by widgetId + sessionKey).
-4. Lưu user message.
-5. RagRetrievalService.retrieve(question, widgetId) — 7 bước multi-stage.
-6. Lấy top-10 history từ MySQL.
-7. PromptBuilderService → gọi Groq (sync hoặc stream SSE).
-8. Lưu assistant message + sources.
+## Non-negotiable invariants
 
-# 🌐 API DESIGN
-**Đúng theo code hiện tại:**
-- `POST /api/widgets` — tạo WidgetConfig, nhận apiKey.
-- `POST /api/documents/upload/{widgetId}` — upload tài liệu (widgetId là path param bắt buộc).
-- `GET /api/documents` — danh sách tất cả tài liệu (không filter widget).
-- `POST /api/chat` — chat đồng bộ (cần `X-Widget-Key` header).
-- `POST /api/chat/stream` — chat streaming SSE (cần `X-Widget-Key` header).
+| Invariant | Chi tiết |
+|-----------|----------|
+| No Qdrant gRPC write/search path | Upsert/search chỉ REST `:6333` qua `EmbeddingService` |
+| No LangChain4j QdrantEmbeddingStore | Không dùng cho write/search |
+| No frontend mock mode / USE_MOCK_API | Development bắt buộc backend thật |
+| No feedback/satisfaction/rating/newFeedback | Endpoint và metrics đã gỡ (28A/28B) |
+| No DOCX Markdown bridge as primary | Structured tables → `RawTableModel`; DOCX `physicalColIndex`, PDF x-overlap |
+| No `table_row_group` / `text_table_like` on new ingest | Legacy read-compatible only |
+| `cells_json` UTF-8 | Vietnamese Unicode phải readable sau Qdrant upsert |
+| DB chunks = Qdrant points | Cho documents `COMPLETED` |
+| Chatbot delete cascades documents | Purge Qdrant by `document_id`, soft-delete DB rows |
+| No adaptive context-N | Budget cố định theo query type — chưa implement dynamic topK |
+| Do not cache final answers | Mỗi request retrieval + LLM fresh (trừ embedding/query cache nội bộ) |
 
-**Chưa implement:**
-- `GET /api/chat/history`
-- `DELETE /api/documents/{id}`
-- `GET /api/widgets/{id}`
+---
 
-# 🧪 CURRENT STATUS
-Đã hoàn thành:
-- Pipeline RAG multi-tenant end-to-end.
-- WidgetAuthFilter bảo vệ chat endpoints.
-- Chunking theo section hierarchy với nhiều chunk types.
-- Retrieval nâng cao: intent detection, heading lock, multi-stage expansion, optional Cohere rerank.
-- LLM fallback mechanism.
-- Widget embed IIFE + SSE streaming.
-- Docker Compose full stack.
+## Current architecture summary
 
-Còn thiếu:
-- Auth cho `/api/documents/**` và `/api/widgets/**`.
-- CORS cho production origins.
-- API lịch sử chat + pagination.
-- Monitoring (metrics/tracing/log correlation).
-- Test tự động đầy đủ.
-- DB migration tool (Flyway/Liquibase).
-
-# 📊 PROGRESS SNAPSHOT (cập nhật 2026-05-05)
-| Hạng mục | Trạng thái | Ghi chú |
-|---|---|---|
-| Ingestion tài liệu (upload/parse/chunk/embed) | Hoàn thành | Multi-tenant theo widgetId, section hierarchy chunking |
-| Chat sync (`POST /api/chat`) | Hoàn thành | Widget auth, widgetId-scoped retrieval |
-| Chat streaming (`POST /api/chat/stream`) | Hoàn thành | SSE token/done events, sources |
-| Widget nhúng (bubble + iframe + IIFE) | Hoàn thành | X-Widget-Key qua URL param hoặc localStorage |
-| Retrieval nâng cao | Hoàn thành | Intent + heading lock + expansion + optional rerank |
-| Bảo mật chat | Hoàn thành | WidgetAuthFilter, X-Widget-Key header |
-| Bảo mật document/widget endpoints | Chưa làm | Hiện permitAll |
-| Quan sát hệ thống/monitoring | Chưa làm | Chưa có metrics/tracing |
-| Test tự động | Chưa đủ | Chưa cover luồng chính |
-
-# 🗺️ VISUAL DELIVERY MAP
-```mermaid
-flowchart LR
-  Admin[Admin] -->|POST /api/widgets| BE[Spring Boot API]
-  Admin -->|POST /api/documents/upload/{widgetId}| BE
-  BE --> MySQL[(MySQL)]
-  BE --> Qdrant[(Qdrant)]
-  BE --> Nomic[Nomic Embed]
-  User[User / Widget] -->|POST /api/chat/stream + X-Widget-Key| WAF[WidgetAuthFilter]
-  WAF --> BE
-  BE --> Groq[Groq LLM]
-  Groq --> SSE[SSE token/done]
-  SSE --> FE[WidgetChatPage]
+```text
+Frontend / Admin / Widget
+        ↓ REST / SSE
+   Spring Boot API (api, service)
+   ├── ingest.parser / normalize / chunking
+   ├── index.embedding (Qdrant REST) / index.qdrant (bootstrap/purge)
+   ├── rag.retrieve / prompt / analysis / rerank / budget / runtime
+   ├── llm (Groq adapter)
+   └── audit.metrics
+        ↓                    ↓
+     MySQL              Qdrant (:6333 REST)
+        ↓
+   Nomic + Groq (+ Cohere optional)
 ```
+
+RAG core **không** nằm trong `service.*` (moved 25B–25D). Current chunk types: `text`, `section_summary`, `parent_section_summary`, `table_summary`, `normalized_table_row`.
+
+---
+
+## Current optimization status
+
+| Optimization | Status | Config path |
+|--------------|--------|-------------|
+| Startup keyword index prewarm | **PASS** (27B verified) | `rag.retrieval.keyword-index.prewarm-*` |
+| Rerank guard | **PASS** (27C verified) | `rag.retrieval.rerank-guard.*` |
+| Async assistant message persistence | **PASS** (27F verified) | `rag.runtime.async-persist.*` |
+| Query variant dedupe | **PARTIAL** — safe, low impact on current V1–V5 workload | `rag.retrieval.query-variant-dedupe.*` |
+
+---
+
+## Validation commands
+
+```powershell
+cd Backend
+.\mvnw.cmd clean test          # Expected: 120 tests, 0 failures
+
+cd ..\Frontend
+npm run build
+npm run lint
+npm run build:widget
+
+cd ..
+docker compose config -q
+```
+
+Widget E2E evidence: [`docs/eval/results/FULL_PROJECT_WIDGET_E2E_VERIFY_28C_20260530.md`](docs/eval/results/FULL_PROJECT_WIDGET_E2E_VERIFY_28C_20260530.md).
+
+---
+
+## Do not touch casually
+
+- Parser / normalizer logic (`ingest.parser`, `ingest.normalize`)
+- Qdrant payload shape và `cells_json` encoding
+- Retrieval semantics (`rag.retrieve`) without eval baseline
+- Vector size (768) / collection name (`documents`) without re-embed plan
+- Chatbot delete cascade order
+- Docker service names in `application-docker.yml` (`mysql`, `qdrant`)
+
+---
+
+## Important warnings
+
+- **Không** `docker compose down -v` cho cleanup thường.
+- **Không** log full API keys, prompts, hoặc document content dài.
+- **Không** claim production auth — admin endpoints vẫn `permitAll` (trừ widget chat qua `X-Widget-Key` / `x-api-key`).
+- Sau mỗi task sửa code: tạo report theo `.cursor/rules/90-report-verification-rule.mdc`.

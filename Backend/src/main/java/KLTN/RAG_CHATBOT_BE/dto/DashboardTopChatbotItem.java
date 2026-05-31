@@ -9,7 +9,6 @@ public class DashboardTopChatbotItem {
     String id;
     String name;
     Long messageCount;
-    Double satisfaction;
     String domain;
     String status;
 }

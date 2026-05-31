@@ -18,20 +18,29 @@ public final class RagLatencyTrace implements AutoCloseable {
     private long queryAnalyzeMs;
     private long queryEmbedMs;
     private long vectorMs;
+    private long dbMs;
     private long keywordMs;
     private long keywordIndexBuildMs;
     private long keywordPostingLookupMs;
     private long mergeMs;
     private long scoringMs;
     private long cellAwareMs;
+    private long rerankMs;
     private long finalSortMs;
     private long sourceDiversityMs;
     private long contextSelectMs;
     private long promptBuildMs;
     private long llmFirstTokenMs;
     private long llmTotalMs;
+    private long persistMs;
     private long sourceMs;
     private long sseTotalMs;
+
+    private int queryAnalyzeCallCount;
+    private String queryAnalysisType = "UNKNOWN";
+    private String queryAnalysisSource = "UNKNOWN";
+    private double queryAnalysisConfidence;
+    private String queryAnalysisFallbackReason = "none";
 
     private int candidatesBefore;
     private int candidatesScored;
@@ -55,6 +64,20 @@ public final class RagLatencyTrace implements AutoCloseable {
     private int effectiveTopN;
     private int requestedMaxTokens;
     private int effectiveMaxTokens;
+
+    private boolean rerankSkipped;
+    private String rerankSkipReason = "NOT_SKIPPED";
+    private int rerankGuardCandidateCount;
+
+    // Async persist fields (task 27F)
+    private String persistMode = "sync";
+
+    // Query-variant dedupe fields (task 27D)
+    private int queryVariantTotal;
+    private int queryVariantUnique;
+    private int queryVariantSkipped;
+    private String queryVariantDedupeMode = "NONE";
+    private int qdrantSearchCalls;
 
     private RagLatencyTrace(String traceId) {
         this.traceId = traceId;
@@ -87,12 +110,26 @@ public final class RagLatencyTrace implements AutoCloseable {
         queryAnalyzeMs += Math.max(0, ms);
     }
 
+    public void recordQueryAnalysis(String queryType, String source, double confidence, String fallbackReason) {
+        queryAnalyzeCallCount++;
+        queryAnalysisType = queryType != null ? queryType : "UNKNOWN";
+        queryAnalysisSource = source != null ? source : "UNKNOWN";
+        queryAnalysisConfidence = Math.max(0.0, Math.min(1.0, confidence));
+        queryAnalysisFallbackReason = fallbackReason != null && !fallbackReason.isBlank()
+                ? fallbackReason
+                : "none";
+    }
+
     public void addQueryEmbedMs(long ms) {
         queryEmbedMs += Math.max(0, ms);
     }
 
     public void addVectorMs(long ms) {
         vectorMs += Math.max(0, ms);
+    }
+
+    public void addDbMs(long ms) {
+        dbMs += Math.max(0, ms);
     }
 
     public void addKeywordMs(long ms) {
@@ -125,6 +162,10 @@ public final class RagLatencyTrace implements AutoCloseable {
         cellAwareMs += Math.max(0, ms);
     }
 
+    public void addRerankMs(long ms) {
+        rerankMs += Math.max(0, ms);
+    }
+
     public void addFinalSortMs(long ms) {
         finalSortMs += Math.max(0, ms);
     }
@@ -149,6 +190,10 @@ public final class RagLatencyTrace implements AutoCloseable {
 
     public void addLlmTotalMs(long ms) {
         llmTotalMs += Math.max(0, ms);
+    }
+
+    public void addPersistMs(long ms) {
+        persistMs += Math.max(0, ms);
     }
 
     public void addSourceMs(long ms) {
@@ -207,26 +252,59 @@ public final class RagLatencyTrace implements AutoCloseable {
         effectiveMaxTokens = Math.max(0, effective);
     }
 
+    public void setRerankGuardDecision(boolean skipped, String reason, int candidateCount) {
+        rerankSkipped = skipped;
+        rerankSkipReason = reason != null ? reason : "NOT_SKIPPED";
+        rerankGuardCandidateCount = Math.max(0, candidateCount);
+    }
+
+    public void setPersistMode(String mode) {
+        persistMode = mode != null ? mode : "sync";
+    }
+
+    public void setQueryVariantDedupeStats(int total, int unique, int skipped,
+                                           String dedupeMode, int qdrantCalls) {
+        queryVariantTotal  = Math.max(0, total);
+        queryVariantUnique = Math.max(0, unique);
+        queryVariantSkipped = Math.max(0, skipped);
+        queryVariantDedupeMode = dedupeMode != null ? dedupeMode : "NONE";
+        qdrantSearchCalls  = Math.max(0, qdrantCalls);
+    }
+
     public void finish() {
-        log.info("[RAG][latency] trace={} totalMs={} queryAnalyzeMs={} queryEmbedMs={} vectorMs={} "
-                        + "keywordMs={} keywordIndexHit={} keywordIndexBuildMs={} "
+        long retrievalMs = queryAnalyzeMs + queryEmbedMs + vectorMs + dbMs + keywordMs
+                + keywordIndexBuildMs + mergeMs + scoringMs + sourceDiversityMs + contextSelectMs;
+        log.info("[RAG][latency] trace={} totalMs={} retrievalMs={} queryAnalyzeMs={} queryAnalyzeCallCount={} "
+                        + "queryAnalysisType={} queryAnalysisSource={} queryAnalysisConfidence={} "
+                        + "queryAnalysisFallbackReason={} queryEmbedMs={} "
+                        + "vectorMs={} dbMs={} keywordMs={} keywordIndexHit={} keywordIndexBuildMs={} "
                         + "keywordPostingLookupMs={} keywordCandidatesFromPostings={} "
                         + "keywordCandidatesScored={} keywordFallbackScan={} "
                         + "vectorCandidates={} keywordCandidatesFromIndex={} "
                         + "mergedCandidatesBeforeDedupe={} mergedCandidatesAfterDedupe={} "
                         + "cheapPreScoreCandidates={} expensiveCellAwareCandidates={} "
                         + "finalRerankCandidates={} keywordCandidatesDroppedByCheapGate={} "
-                        + "mergeMs={} scoringMs={} cellAwareMs={} finalSortMs={} sourceDiversityMs={} "
+                        + "mergeMs={} scoringMs={} cellAwareMs={} rerankMs={} finalSortMs={} sourceDiversityMs={} "
                         + "contextSelectMs={} promptContextBuildMs={} "
-                        + "llmFirstTokenMs={} llmTotalMs={} sourceMs={} sseTotalMs={} "
+                        + "llmFirstTokenMs={} llmTotalMs={} persistMs={} sourceMs={} sseTotalMs={} "
                         + "selectedContexts={} contextChars={} estimatedPromptTokens={} "
                         + "candidatesBefore={} candidatesScored={} requestedTopN={} effectiveTopN={} "
-                        + "requestedMaxTokens={} effectiveMaxTokens={} outputTokens={}",
+                        + "requestedMaxTokens={} effectiveMaxTokens={} outputTokens={} "
+                        + "rerankSkipped={} rerankSkipReason={} rerankGuardCandidates={} "
+                        + "queryVariantTotal={} queryVariantUnique={} queryVariantSkipped={} "
+                        + "queryVariantDedupeMode={} qdrantSearchCalls={} persistMode={}",
                 traceId,
                 elapsedMs(startNanos),
+                retrievalMs,
                 queryAnalyzeMs,
+                queryAnalyzeCallCount,
+                queryAnalysisType,
+                queryAnalysisSource,
+                String.format(Locale.ROOT, "%.2f", queryAnalysisConfidence),
+                queryAnalysisFallbackReason,
                 queryEmbedMs,
                 vectorMs,
+                dbMs,
                 keywordMs,
                 keywordIndexHit,
                 keywordIndexBuildMs,
@@ -245,12 +323,14 @@ public final class RagLatencyTrace implements AutoCloseable {
                 mergeMs,
                 scoringMs,
                 cellAwareMs,
+                rerankMs,
                 finalSortMs,
                 sourceDiversityMs,
                 contextSelectMs,
                 promptBuildMs,
                 llmFirstTokenMs,
                 llmTotalMs,
+                persistMs,
                 sourceMs,
                 sseTotalMs,
                 selectedContexts,
@@ -262,7 +342,16 @@ public final class RagLatencyTrace implements AutoCloseable {
                 effectiveTopN,
                 requestedMaxTokens,
                 effectiveMaxTokens,
-                outputTokens);
+                outputTokens,
+                rerankSkipped,
+                rerankSkipReason,
+                rerankGuardCandidateCount,
+                queryVariantTotal,
+                queryVariantUnique,
+                queryVariantSkipped,
+                queryVariantDedupeMode,
+                qdrantSearchCalls,
+                persistMode);
     }
 
     @Override

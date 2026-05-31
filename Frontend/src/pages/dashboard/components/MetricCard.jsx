@@ -10,7 +10,7 @@ const defaultFormatter = (v) =>
  *   title       — label của metric
  *   titleHint   — optional native tooltip (giải thích metric)
  *   value       — giá trị hiển thị
- *   valueCaption — optional dòng nhỏ dưới value (vd: "Chưa có feedback")
+ *   valueCaption — optional dòng nhỏ dưới value
  *   delta       — số delta (e.g. +2.1 hoặc -3). null = không hiện.
  *   description — text mô tả thêm (e.g. "vs last 7 days")
  *   loading     — hiện skeleton khi true
