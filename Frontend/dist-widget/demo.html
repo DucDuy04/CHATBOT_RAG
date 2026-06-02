@@ -96,13 +96,18 @@
     <!-- 3 dòng này là tất cả những gì website ngoài cần thêm -->
     <script>
         window.RagChatbotConfig = {
-            apiUrl: "http://localhost:8080",
-            frontendUrl: "http://localhost:5173",
-            title: "Tư vấn tuyển sinh",
+          "widgetKey": "c8b0bd49-a5fd-41c0-a87b-bef7612f01a1",
+          "frontendUrl": "http://localhost:5173",
+          "widgetColor": "#3cbe3e",
+          "welcomeMessage": "Xin chào! Tôi có thể giúp gì cho bạn?",
+          "position": "bottom-right",
+          "launcherIcon": "help",
+          "allowedOrigins": [
+            "http://localhost:5173"
+          ]
         };
-    </script>
-    <link rel="stylesheet" href="/dist-widget/widget.css" />
-    <script src="/dist-widget/chatbot-widget.iife.js"></script>
+      </script>
+      <script async src="http://localhost:5173/dist-widget/chatbot-widget.iife.js"></script>
 
 </body>
 

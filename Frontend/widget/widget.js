@@ -43,6 +43,13 @@ import "./widget.css";
     frame.classList.remove("rag-chatbot-hidden");
   });
 
+  window.addEventListener("message", (event) => {
+    if (event?.data?.type === "RAG_CHATBOT_CLOSE") {
+      frame.classList.add("rag-chatbot-hidden");
+      bubble.classList.remove("rag-chatbot-hidden");
+    }
+  });
+
   function isHexColor(value) {
     return typeof value === "string" && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(value);
   }

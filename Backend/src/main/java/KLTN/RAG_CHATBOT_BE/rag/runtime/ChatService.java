@@ -164,8 +164,9 @@ public class ChatService {
         log.info("[Chat] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
                 contexts.size(), widgetId, lockedScopeLabel != null ? lockedScopeLabel : "none");
 
+        int sourcePresentationCap = resolveSourcePresentationCap(request, topKResolution);
         long sourceStart = RagLatencyTrace.now();
-        List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts);
+        List<ChatResponse.SourceDto> sources = buildSourceDtosForResponse(contexts, sourcePresentationCap);
         latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
 
         boolean hasTableLikeChunk = contexts.stream()
@@ -216,7 +217,8 @@ public class ChatService {
             recordPreLlmMetrics(
                     request, topKResolution, contexts, chatHistory, question, userPrompt, systemPrompt, llmOptions);
             long llmStart = RagLatencyTrace.now();
-            answer = llmFallbackService.generateWithFallback(messages, llmOptions.effective());
+            answer = stripLeadingSourcePreamble(
+                    llmFallbackService.generateWithFallback(messages, llmOptions.effective()));
             latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
             latencyTrace.setOutputTokens(estimateTokens(answer));
             RagTokenAudit.finish(!isOverloadAnswer(answer));
@@ -312,7 +314,9 @@ public class ChatService {
                     emitter.send(
                             SseEmitter.event()
                                     .name("done")
-                                    .data(buildStreamDonePayload(List.of(), emptyUsage, request),
+                                    .data(buildStreamDonePayload(
+                                                    List.of(), emptyUsage, request,
+                                                    RagLatencyTrace.elapsedMs(sseStart)),
                                             playgroundDoneMediaType(request))
                     );
 
@@ -382,21 +386,27 @@ public class ChatService {
                             RagTokenAudit.recordActualFromResponse(response);
                             RagTokenAudit.setResolvedModel(groqChatModel);
                             latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
-                            latencyTrace.setOutputTokens(estimateTokens(fullAnswer.toString()));
+                            String sanitizedAnswer = stripLeadingSourcePreamble(fullAnswer.toString());
+                            fullAnswer.setLength(0);
+                            fullAnswer.append(sanitizedAnswer);
+                            latencyTrace.setOutputTokens(estimateTokens(sanitizedAnswer));
                             TokenUsageDto usage = RagTokenAudit.finish(true);
                             tokenUsageFinished.set(true);
                             long sourceStart = RagLatencyTrace.now();
                             List<ChatResponse.SourceDto> responseSources =
-                                    applyAnswerAwareSourceCap(fullAnswer.toString(), sources, request);
+                                    applyAnswerAwareSourceCap(sanitizedAnswer, sources, request);
                             latencyTrace.addSourceMs(RagLatencyTrace.elapsedMs(sourceStart));
                             emitter.send(
                                     SseEmitter.event()
                                             .name("done")
-                                            .data(buildStreamDonePayload(responseSources, usage, request),
+                                            .data(buildStreamDonePayload(
+                                                    responseSources, usage, request,
+                                                    RagLatencyTrace.elapsedMs(sseStart),
+                                                    sanitizedAnswer),
                                                     playgroundDoneMediaType(request))
                             );
                             emitter.complete();
-                            saveChatMessage(session, MessageRole.ASSISTANT, fullAnswer.toString(), responseSources);
+                            saveChatMessage(session, MessageRole.ASSISTANT, sanitizedAnswer, responseSources);
                             closeLatency.run();
                         } catch (IOException e) {
                             log.error("[Stream] Lỗi khi hoàn tất SSE: {}", e.getMessage(), e);
@@ -419,8 +429,9 @@ public class ChatService {
                         // Rate limit → fallback sang model khác (non-streaming)
                         log.warn("[Stream] Model chính bị rate limit. Chuyển sang fallback non-streaming...");
                         try {
-                            String fallbackAnswer = llmFallbackService.generateFallbackAnswer(
-                                    messages, streamLlmOptions.effective());
+                            String fallbackAnswer = stripLeadingSourcePreamble(
+                                    llmFallbackService.generateFallbackAnswer(
+                                            messages, streamLlmOptions.effective()));
                             latencyTrace.addLlmTotalMs(RagLatencyTrace.elapsedMs(llmStart));
                             latencyTrace.setOutputTokens(estimateTokens(fallbackAnswer));
                             TokenUsageDto usage = RagTokenAudit.finish(!isOverloadAnswer(fallbackAnswer));
@@ -444,7 +455,10 @@ public class ChatService {
                                 emitter.send(
                                         SseEmitter.event()
                                                 .name("done")
-                                                .data(buildStreamDonePayload(responseSources, usage, request),
+                                                .data(buildStreamDonePayload(
+                                                        responseSources, usage, request,
+                                                        RagLatencyTrace.elapsedMs(sseStart),
+                                                        fallbackAnswer),
                                                         playgroundDoneMediaType(request))
                                 );
                                 emitter.complete();
@@ -487,6 +501,26 @@ public class ChatService {
 
     static boolean isOverloadAnswer(String answer) {
         return answer != null && answer.contains("quá tải");
+    }
+
+    /**
+     * Strips a leading "Theo Source N, ..." / "Theo nguồn N, ..." preamble from model answers.
+     * Only affects the start of the string; mid-answer document content is untouched.
+     */
+    private static final Pattern LEADING_SOURCE_PREAMBLE = Pattern.compile(
+            "(?is)^(?:theo\\s+(?:source|nguồn)\\s*\\d*|dựa\\s+(?:trên|vào)\\s+(?:source|nguồn)\\s*\\d*)\\s*[,:\\.\\-–—]\\s*"
+    );
+
+    static String stripLeadingSourcePreamble(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return answer;
+        }
+        String trimmed = answer.stripLeading();
+        Matcher matcher = LEADING_SOURCE_PREAMBLE.matcher(trimmed);
+        if (!matcher.find()) {
+            return answer;
+        }
+        return trimmed.substring(matcher.end()).stripLeading();
     }
 
     private void recordPreLlmMetrics(
@@ -540,16 +574,37 @@ public class ChatService {
     private String buildStreamDonePayload(
             List<ChatResponse.SourceDto> sources,
             TokenUsageDto tokenUsage,
-            ChatRequest request
+            ChatRequest request,
+            Long latencyMs
+    ) {
+        return buildStreamDonePayload(sources, tokenUsage, request, latencyMs, null);
+    }
+
+    private String buildStreamDonePayload(
+            List<ChatResponse.SourceDto> sources,
+            TokenUsageDto tokenUsage,
+            ChatRequest request,
+            Long latencyMs,
+            String sanitizedAnswer
     ) {
         if (isPlaygroundDebugRequest(request)) {
-            return buildStreamDoneData(sources, tokenUsage);
+            return buildStreamDoneData(sources, tokenUsage, latencyMs, sanitizedAnswer);
         }
         return buildSourcesJson(sources);
     }
 
-    private String buildStreamDoneData(List<ChatResponse.SourceDto> sources, TokenUsageDto tokenUsage) {
-        return "{\"sources\":" + buildSourcesJson(sources) + ",\"tokenUsage\":" + tokenUsageToJson(tokenUsage) + "}";
+    private String buildStreamDoneData(
+            List<ChatResponse.SourceDto> sources,
+            TokenUsageDto tokenUsage,
+            Long latencyMs,
+            String sanitizedAnswer
+    ) {
+        String latencyJson = latencyMs != null ? String.valueOf(latencyMs) : "null";
+        String answerJson = sanitizedAnswer != null
+                ? "\"" + escapeJson(sanitizedAnswer) + "\""
+                : "null";
+        return "{\"sources\":" + buildSourcesJson(sources) + ",\"tokenUsage\":" + tokenUsageToJson(tokenUsage)
+                + ",\"latency\":" + latencyJson + ",\"answer\":" + answerJson + "}";
     }
 
     private String tokenUsageToJson(TokenUsageDto u) {
@@ -827,7 +882,7 @@ public class ChatService {
     }
 
     static int resolveSourcePresentationCap(ChatRequest request, TopKResolution topKResolution) {
-        if (Boolean.TRUE.equals(request.getPlaygroundDebugSources()) && topKResolution != null) {
+        if (topKResolution != null) {
             return topKResolution.effective();
         }
         return MAX_RESPONSE_SOURCES;

@@ -39,24 +39,18 @@
     <p>Ví dụ: <code>http://localhost:5173/public-widget-test.html?widgetKey=YOUR_UUID</code></p>
 
     <script>
-      (function () {
-        var qs = new URLSearchParams(window.location.search);
-        var key = qs.get("widgetKey") || qs.get("apiKey") || "";
-        var position = qs.get("position");
-        window.RagChatbotConfig = {
-          widgetKey: key,
-          frontendUrl: window.location.origin,
-          position:
-            position === "bottom-left" || position === "bottom-right"
-              ? position
-              : "bottom-right",
-          widgetColor: "#2563eb",
-          welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn?",
-          launcherIcon: "chat",
-        };
-      })();
+      window.RagChatbotConfig = {
+        "widgetKey": "c8b0bd49-a5fd-41c0-a87b-bef7612f01a1",
+        "frontendUrl": "http://localhost:5173",
+        "widgetColor": "#129787",
+        "welcomeMessage": "Xin chào! Tôi có thể giúp gì cho bạn?",
+        "position": "bottom-left",
+        "launcherIcon": "spark",
+        "allowedOrigins": [
+          "http://localhost:5173"
+        ]
+      };
     </script>
-
-    <script src="/dist-widget/chatbot-widget.iife.js"></script>
+    <script async src="http://localhost:5173/dist-widget/chatbot-widget.iife.js"></script>
   </body>
 </html>

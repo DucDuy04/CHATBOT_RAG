@@ -1,27 +1,43 @@
+import { useState } from "react";
+
 /**
- * TokenUsagePanel — Playground debug: per-request token usage from backend.
- *
- * Props:
- *   tokenUsage — object from SSE done / compare result
+ * TokenUsagePanel — Playground summary: total tokens only (details optional).
  */
 export default function TokenUsagePanel({ tokenUsage = null }) {
-  const fmt = (n) => (n != null && Number.isFinite(Number(n)) ? String(n) : "—");
-  const fmtNull = (n) => (n == null ? "—" : fmt(n));
+  const [showDetails, setShowDetails] = useState(false);
+
+  const fmt = (n) => (n != null && Number.isFinite(Number(n)) ? Number(n).toLocaleString() : null);
+
+  const resolveTotalTokens = () => {
+    if (!tokenUsage) return null;
+    if (tokenUsage.actualTotalTokens != null) return tokenUsage.actualTotalTokens;
+    if (tokenUsage.estimatedTotalRequestTokens != null) {
+      return tokenUsage.estimatedTotalRequestTokens;
+    }
+    const prompt = tokenUsage.actualPromptTokens;
+    const completion = tokenUsage.actualCompletionTokens;
+    if (prompt != null && completion != null) return prompt + completion;
+    return null;
+  };
+
+  const totalTokens = resolveTotalTokens();
+  const totalLabel =
+    totalTokens != null ? fmt(totalTokens) : tokenUsage ? "N/A" : null;
 
   if (!tokenUsage) {
     return (
       <div className="p-3 border-t border-gray-100">
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-          Token usage
+          Tokens
         </p>
         <p className="text-xs text-gray-400 italic">
-          Chưa có dữ liệu. Gửi tin nhắn hoặc chạy Compare để xem token/request.
+          Chưa có dữ liệu. Gửi tin nhắn hoặc chạy Compare để xem token.
         </p>
       </div>
     );
   }
 
-  const rows = [
+  const detailRows = [
     ["Estimated input tokens", tokenUsage.estimatedInputTokens],
     ["Reserved output (maxTokens)", tokenUsage.reservedOutputTokens],
     ["Estimated total request", tokenUsage.estimatedTotalRequestTokens],
@@ -39,23 +55,39 @@ export default function TokenUsagePanel({ tokenUsage = null }) {
 
   return (
     <div className="p-3 border-t border-gray-100">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-        Token usage
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+        Tokens
       </p>
-      <div className="space-y-1.5">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex items-start justify-between gap-2">
-            <span className="text-xs text-gray-500 shrink-0">{label}</span>
-            <span className="text-xs font-mono text-gray-800 text-right break-all">
-              {typeof value === "string" ? value || "—" : fmtNull(value)}
-            </span>
-          </div>
-        ))}
-      </div>
+      <p className="text-sm text-gray-800">
+        <span className="text-gray-500">Tokens: </span>
+        <span className="font-mono font-semibold text-gray-900">{totalLabel}</span>
+      </p>
+
       {tokenUsage.actualTotalTokens == null && tokenUsage.estimatedInputTokens != null && (
-        <p className="text-[10px] text-amber-700 mt-2 leading-snug">
-          Actual usage chưa có từ provider — số estimate có thể thấp hơn TPM thực tế của Groq.
+        <p className="text-[10px] text-amber-700 mt-1 leading-snug">
+          Provider chưa trả actual usage — hiển thị estimate hoặc N/A.
         </p>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setShowDetails((v) => !v)}
+        className="mt-2 text-[10px] text-gray-500 hover:text-gray-700 underline"
+      >
+        {showDetails ? "Ẩn chi tiết" : "Chi tiết"}
+      </button>
+
+      {showDetails && (
+        <div className="mt-1.5 space-y-1 border-t border-gray-100 pt-1.5">
+          {detailRows.map(([label, value]) => (
+            <div key={label} className="flex items-start justify-between gap-2">
+              <span className="text-xs text-gray-500 shrink-0">{label}</span>
+              <span className="text-xs font-mono text-gray-800 text-right break-all">
+                {typeof value === "string" ? value || "—" : value != null ? String(value) : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

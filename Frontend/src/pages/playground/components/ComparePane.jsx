@@ -71,26 +71,6 @@ function AnswerColumn({ title, result, loading, configSummary, topK }) {
         </p>
       )}
 
-      {result.tokenUsage && (
-        <div className="text-[10px] text-gray-600 border-t pt-2 space-y-0.5 font-mono">
-          <p>
-            Est. input: {result.tokenUsage.estimatedInputTokens ?? "—"} · reserved out:{" "}
-            {result.tokenUsage.reservedOutputTokens ?? "—"}
-          </p>
-          <p>
-            Est. total request: {result.tokenUsage.estimatedTotalRequestTokens ?? "—"}
-            {result.tokenUsage.actualTotalTokens != null
-              ? ` · actual total: ${result.tokenUsage.actualTotalTokens}`
-              : ""}
-          </p>
-          {result.tokenUsage.providerRequestedTokens != null && (
-            <p className="text-amber-700">
-              Provider requested: {result.tokenUsage.providerRequestedTokens}
-            </p>
-          )}
-        </div>
-      )}
-
       {sources.length > 0 ? (
         <div className="text-xs border-t pt-2">
           <p className="font-semibold text-gray-600 mb-1">Sources</p>

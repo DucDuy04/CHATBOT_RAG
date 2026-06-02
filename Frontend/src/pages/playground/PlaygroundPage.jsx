@@ -10,7 +10,6 @@ import SessionList from "./components/SessionList";
 import ChatWindow from "./components/ChatWindow";
 import RetrievalPanel from "./components/RetrievalPanel";
 import LatencyPanel from "./components/LatencyPanel";
-import TokenUsagePanel from "./components/TokenUsagePanel";
 import ModelOverridePanel from "./components/ModelOverridePanel";
 import CompareModeToggle from "./components/CompareModeToggle";
 import ComparePane from "./components/ComparePane";
@@ -70,7 +69,6 @@ export default function PlaygroundPage() {
   // ── Right panel ────────────────────────────────────────────────────────────────
   const [lastSources, setLastSources] = useState([]);
   const [lastLatency, setLastLatency] = useState(null);
-  const [lastTokenUsage, setLastTokenUsage] = useState(null);
   const [selectedSource, setSelectedSource] = useState(null);
   const [overrideParams, setOverrideParams] = useState(DEFAULT_OVERRIDE_PARAMS);
 
@@ -96,33 +94,6 @@ export default function PlaygroundPage() {
     if (sp) o.systemPrompt = sp;
     return o;
   }, [overrideParams, sessionPromptOverride]);
-
-  /** Context Top-N from override panel — used to cap how many sources we *show* in playground debug. */
-  const retrievalTopKLimit = useMemo(() => {
-    const n = Number(overrideParams?.topK);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    return Math.min(50, Math.max(1, Math.floor(n)));
-  }, [overrideParams.topK]);
-
-  const compareTopKLimit = useMemo(() => {
-    const a = Number(compareConfigA?.topK);
-    const b = Number(compareConfigB?.topK);
-    const maxSide = Math.max(
-      Number.isFinite(a) && a > 0 ? Math.floor(a) : 0,
-      Number.isFinite(b) && b > 0 ? Math.floor(b) : 0
-    );
-    if (maxSide <= 0) return null;
-    return Math.min(50, maxSide);
-  }, [compareConfigA.topK, compareConfigB.topK]);
-
-  const activeSourceDisplayLimit = compareMode ? compareTopKLimit : retrievalTopKLimit;
-
-  const displaySources = useMemo(() => {
-    if (!Array.isArray(lastSources) || lastSources.length === 0) return [];
-    const cap = activeSourceDisplayLimit;
-    if (cap == null) return lastSources;
-    return lastSources.slice(0, cap);
-  }, [lastSources, activeSourceDisplayLimit]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -337,13 +308,23 @@ export default function PlaygroundPage() {
       onDone: (result) => {
         const sources = result?.sources || [];
         const latencyVal = result?.latency ?? null;
+        const sanitizedAnswer =
+          typeof result?.answer === "string" && result.answer.trim() !== ""
+            ? result.answer
+            : null;
         const returnedSessionId = result?.sessionId || null;
         const sid = returnedSessionId || selectedSessionId;
 
         setMessages((prev) => {
           const updated = prev.map((msg) =>
             msg.id === botMsgId
-              ? { ...msg, streaming: false, sources, latency: latencyVal }
+              ? {
+                  ...msg,
+                  streaming: false,
+                  sources,
+                  latency: latencyVal,
+                  content: sanitizedAnswer ?? msg.content,
+                }
               : msg
           );
           if (sid) {
@@ -360,7 +341,6 @@ export default function PlaygroundPage() {
         });
         setLastSources(sources);
         setLastLatency(latencyVal);
-        setLastTokenUsage(result?.tokenUsage ?? null);
         setIsStreaming(false);
 
         // Capture server-assigned session id if this was a new session
@@ -449,7 +429,6 @@ export default function PlaygroundPage() {
       setLastLatency(
         typeof latA === "number" ? latA : typeof latB === "number" ? latB : null
       );
-      setLastTokenUsage(data?.configA?.tokenUsage ?? data?.configB?.tokenUsage ?? null);
     } catch (e) {
       const msg =
         e?.response?.data?.message ||
@@ -586,9 +565,7 @@ export default function PlaygroundPage() {
         <div className="hidden lg:flex w-72 shrink-0 flex-col border-l bg-white overflow-y-auto">
           <div className="border-b">
             <RetrievalPanel
-              sources={displaySources}
-              totalSourceCount={lastSources.length}
-              topKLimit={activeSourceDisplayLimit}
+              sources={lastSources}
               selectedSource={selectedSource}
               onSourceSelect={handleSourceClick}
               compareMode={compareMode}
@@ -596,9 +573,6 @@ export default function PlaygroundPage() {
           </div>
           <div className="border-b">
             <LatencyPanel latency={lastLatency} />
-          </div>
-          <div className="border-b">
-            <TokenUsagePanel tokenUsage={lastTokenUsage} />
           </div>
           <div>
             <ModelOverridePanel
