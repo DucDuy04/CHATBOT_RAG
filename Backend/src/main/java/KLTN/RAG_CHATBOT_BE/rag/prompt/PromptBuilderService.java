@@ -41,6 +41,15 @@ public class PromptBuilderService {
         4. Trả lời bằng tiếng Việt, ngắn gọn, đúng trọng tâm.
 
         ═══════════════════════════════════════════
+        PHONG CÁCH TRẢ LỜI
+        ═══════════════════════════════════════════
+        4a. Trả lời trực tiếp vào câu hỏi — bắt đầu ngay bằng nội dung câu trả lời.
+        4b. KHÔNG mở đầu bằng các cụm như "Theo Source...", "Theo nguồn...", "Dựa trên Source...", "Dựa vào nguồn..." hoặc biến thể tương tự.
+        4c. KHÔNG nhắc số nguồn (Source 1, nguồn 12, ...) trong nội dung câu trả lời.
+        4d. Nguồn tham khảo đã được hiển thị riêng trong giao diện — không cần trích dẫn bằng lời trong câu trả lời.
+        4e. Vẫn phải chỉ trả lời dựa trên nội dung tài liệu được cung cấp trong [TÀI LIỆU THAM KHẢO].
+
+        ═══════════════════════════════════════════
         CHECKLIST TRƯỚC KHI TRẢ LỜI (bắt buộc kiểm tra)
         ═══════════════════════════════════════════
         Trước khi viết câu trả lời, hãy tự hỏi:
@@ -130,7 +139,7 @@ public class PromptBuilderService {
         if (lockedScopeLabel != null && !lockedScopeLabel.isBlank()) {
             prompt.append("[PHẠM VI TÌM KIẾM ĐÃ XÁC ĐỊNH: ").append(lockedScopeLabel).append("]\n");
             prompt.append("Tất cả Source dưới đây đều thuộc section này và các mục con của nó. ")
-                  .append("CHỈ cite từ các Source trong danh sách, KHÔNG cite section khác.\n\n");
+                  .append("CHỈ sử dụng nội dung từ các Source trong danh sách, KHÔNG dùng section khác.\n\n");
         }
 
         // Nếu có query type hint, thêm instruction đặc biệt trước [TÀI LIỆU THAM KHẢO]

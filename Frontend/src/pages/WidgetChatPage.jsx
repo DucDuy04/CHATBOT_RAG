@@ -188,9 +188,22 @@ export default function WidgetChatPage() {
     // Toàn bộ trang chiếm đúng 100% iframe, không có navbar
     <div className="flex flex-col h-screen bg-white">
 
-      {/* Header nhỏ gọn */}
-      <div className="px-4 py-3 text-sm font-medium text-white border-b" style={{ background: widgetColor }}>
-        Trợ lý AI
+      {/* Header nhỏ gọn + nút đóng */}
+      <div
+        className="flex items-center justify-between gap-2 px-4 py-3 text-sm font-medium text-white border-b shrink-0"
+        style={{ background: widgetColor }}
+      >
+        <span className="truncate">Trợ lý AI</span>
+        <button
+          type="button"
+          aria-label="Đóng chat"
+          onClick={() => {
+            window.parent.postMessage({ type: "RAG_CHATBOT_CLOSE" }, "*");
+          }}
+          className="shrink-0 flex items-center justify-center w-8 h-8 rounded-full text-white/90 hover:text-white hover:bg-white/20 transition-colors text-lg leading-none"
+        >
+          ×
+        </button>
       </div>
 
       {/* Tin nhắn */}
@@ -242,7 +255,7 @@ export default function WidgetChatPage() {
                   <summary className="cursor-pointer">
                     Nguồn ({msg.sources.length})
                   </summary>
-                  <div className="mt-1 space-y-1">
+                  <div className="mt-1 max-h-48 overflow-y-auto space-y-1 pr-0.5">
                     {msg.sources.map((src, i) => (
                       <div key={i} className="p-1 text-xs border rounded bg-gray-50">
                         <p className="font-medium text-gray-600 truncate">

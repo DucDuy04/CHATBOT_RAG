@@ -172,10 +172,10 @@ public class PlaygroundService {
                     question,
                     userPrompt
             );
-            answer = llmFallbackService.generateWithFallback(List.of(
+            answer = ChatService.stripLeadingSourcePreamble(llmFallbackService.generateWithFallback(List.of(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userPrompt)
-            ), llmOptions);
+            ), llmOptions));
             tokenUsage = RagTokenAudit.finish(!ChatService.isOverloadAnswer(answer));
         }
 

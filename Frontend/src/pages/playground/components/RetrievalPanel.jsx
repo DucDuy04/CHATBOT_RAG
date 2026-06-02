@@ -1,3 +1,4 @@
+import { useState } from "react";
 import EmptyState from "../../../components/common/EmptyState";
 
 /**
@@ -12,31 +13,28 @@ import EmptyState from "../../../components/common/EmptyState";
  */
 export default function RetrievalPanel({
   sources = [],
-  totalSourceCount,
-  topKLimit,
   selectedSource,
   onSourceSelect,
   compareMode = false,
 }) {
-  const total = typeof totalSourceCount === "number" ? totalSourceCount : sources.length;
-  const hidden =
-    typeof totalSourceCount === "number" && topKLimit != null
-      ? Math.max(0, totalSourceCount - sources.length)
-      : 0;
+  const [collapsed, setCollapsed] = useState(false);
+
+  const toggleLabel = collapsed ? "Mở rộng danh sách nguồn" : "Thu gọn danh sách nguồn";
 
   return (
     <div className="p-3">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-        Sources ({sources.length}
-        {total !== sources.length ? ` of ${total}` : ""})
-      </p>
-
-      {topKLimit != null && (
-        <p className="text-[10px] text-gray-500 mb-2 leading-snug">
-          Hiển thị tối đa <span className="font-medium">{topKLimit}</span> nguồn theo Context Top-N playground
-          {hidden > 0 ? ` (${hidden} nguồn khác từ retrieval vẫn được dùng cho câu trả lời, chỉ ẩn ở UI).` : "."}
-        </p>
-      )}
+      <button
+        type="button"
+        onClick={() => setCollapsed((v) => !v)}
+        aria-expanded={!collapsed}
+        aria-label={toggleLabel}
+        className="w-full flex items-center gap-1.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide hover:text-gray-700"
+      >
+        <span className="shrink-0 text-[10px] leading-none" aria-hidden="true">
+          {collapsed ? "▶" : "▼"}
+        </span>
+        <span>Nguồn ({sources.length})</span>
+      </button>
 
       {sources.length === 0 ? (
         <EmptyState
@@ -49,8 +47,8 @@ export default function RetrievalPanel({
           }
           className="py-6"
         />
-      ) : (
-        <div className="space-y-2">
+      ) : collapsed ? null : (
+        <div className="mt-2 max-h-[360px] overflow-y-auto space-y-2 pr-0.5">
           {sources.map((src, idx) => {
             const isSelected =
               selectedSource &&
