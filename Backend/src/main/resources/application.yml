@@ -9,6 +9,106 @@ spring:
     multipart:
       max-file-size: 50MB      # Giới hạn file upload
       max-request-size: 50MB
+server:
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
 
-gemini:
-  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
+# gemini:
+#   api-key: GEMINI_API_KEY_PLACEHOLDER
+groq:
+  api-key: ${GROQ_API_KEY}
+rag:
+  runtime:
+    async-persist:
+      # Move assistant message persistence out of the synchronous response path
+      enabled: true
+      # Bounded pool — do not increase beyond 4 on 1-core/1.5GB production
+      pool-size: 2
+      queue-capacity: 100
+      # Max wait for async task before logging TIMEOUT (does not block the request thread)
+      timeout-ms: 3000
+      # Set true only for debugging — logs source JSON byte size on each async persist
+      log-payload-size: false
+  retrieval:
+    vector-anchor-k: 30
+    keyword-index:
+      # TTL and eviction (defaults in KeywordIndexCache: ttl=3600000ms, max-widgets=25)
+      ttl-ms: 3600000
+      max-widgets: 25
+      # Startup prewarm — warms keyword indexes for active widgets after backend restart
+      prewarm-on-startup: true
+      prewarm-async: true
+      prewarm-max-widgets: 20
+      # Should match rag.retrieval.hybrid.max-keyword-scan-chunks (3000)
+      prewarm-corpus-limit: 3000
+      prewarm-delay-ms: 2000
+    rerank-guard:
+      enabled: true
+      # Skip rerank when candidate count is at/below this — rerank adds little value over tiny sets
+      skip-when-candidates-lte: 5
+      # Skip rerank when cheap pre-score gap (rank1 - rank2) >= this — winner already clear
+      skip-when-top-score-gap-gte: 0.35
+      # Skip rerank for TABLE_LOOKUP when top cheap pre-score >= this — exact row already found
+      skip-exact-lookup-when-cell-score-gte: 0.80
+    query-variant-dedupe:
+      # Master switch — false preserves old behavior (all variants → all Qdrant calls)
+      enabled: true
+      # Safe default: exact normalized-text hash dedupe only
+      mode: normalized_text
+      # Cosine-similarity dedupe requires embeddings; deferred to future task (27E+)
+      cosine-enabled: false
+      cosine-threshold: 0.98
+      # Log variant skip events at INFO level (skipped text NOT logged; only counts)
+      log-skipped-variants: false
+    hybrid:
+      enabled: true
+      keyword-top-m: 30
+      max-keyword-scan-chunks: 3000
+      vector-weight: 0.35
+      keyword-weight: 0.35
+      rerank-weight: 0.30
+      exact-match-boost: 2.0
+      phrase-match-boost: 1.5
+      table-row-boost: 1.2
+      table-summary-boost: 0.8
+    prompt-budget:
+      enabled: true
+      fact-context-char-budget: 10000
+      table-context-char-budget: 14000
+      list-context-char-budget: 16000
+      hard-max-context-char-budget: 18000
+  analysis:
+    llm-classifier:
+      # Master switch — false disables classifier entirely
+      enabled: true
+      # Active mode (30C): LLM result used when local confidence is below threshold
+      # Roll back to shadow-mode=true if retrieval quality regresses
+      shadow-mode: false
+      # Invoke LLM only when local structural confidence is below this threshold
+      only-when-local-confidence-below: 0.70
+      # Reject LLM result if returned confidence is below this threshold
+      min-accepted-confidence: 0.65
+      # Max ms to wait for LLM classifier before falling back to local result
+      timeout-ms: 2000
+      # Truncate question to this length before sending to LLM (cost control)
+      max-input-chars: 1000
+
+app:
+  upload-dir: ./uploads
+  preprocessing:
+    cleaner:
+      enable-noise-removal: true
+      enable-line-unbreak: true
+      enable-whitespace-normalization: true
+      line-join-separator: " "
+      noise-regex:
+        - "(?i)^page\\s+\\d+(\\s+of\\s+\\d+)?$"
+        - "(?i)^confidential$"
+        - "(?i)^draft$"
+
+logging:
+  level:
+    root: INFO

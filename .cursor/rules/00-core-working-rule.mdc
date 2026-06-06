@@ -1,0 +1,138 @@
+---
+description: Always apply for CHATBOT_RAG. Core working rules: source-first investigation, minimal diff, low-resource production awareness, and no out-of-scope edits.
+globs:
+alwaysApply: true
+---
+
+# 00 - CHATBOT_RAG Core Working Rule
+
+Bạn đang sửa project `CHATBOT_RAG`.
+
+## Mục tiêu của rule này
+
+Rule này là luật nền cho mọi task sửa code trong project. Luôn ưu tiên:
+
+- đọc source trước khi sửa
+- xác nhận nguyên nhân từ code thật
+- sửa minimal diff
+- không refactor lan rộng
+- không sửa ngoài scope
+- không giấu lỗi kiểm tra
+- luôn nghĩ đến production cấu hình yếu
+
+## Bối cảnh project
+
+Project là Chatbot RAG:
+
+- Backend: Java 21, Spring Boot 3.4.x, Spring Web, Spring Data JPA, Spring Security, LangChain4j, PDFBox, Tabula.
+- Frontend: React 19, Vite, Axios, React Router, TailwindCSS.
+- Infra: MySQL 8.0, Qdrant, Docker Compose.
+- AI Provider: Groq cho LLM, Nomic cho embedding, Cohere rerank là optional.
+
+Các thư mục chính:
+
+- `Backend/`: Spring Boot API.
+- `Frontend/`: React/Vite UI và widget.
+- `preprocess/`: preprocessing/parser/cleaner nếu còn được project dùng.
+- `agent/`: tài liệu kiến trúc/vận hành/API.
+- `docs/`: report sau mỗi lần sửa.
+
+## Bối cảnh production yếu
+
+Luôn giả định production yếu:
+
+- RAM: 1.5GB
+- CPU: 1 core
+- SSD: 15GB
+- Khoảng 20 user tổng
+- Khoảng 5 user thao tác cùng lúc
+
+Khi sửa code, phải cân nhắc:
+
+- query DB chậm, N+1, full scan
+- load dữ liệu lớn vào memory
+- parse PDF/table ăn CPU/RAM
+- chunking tạo quá nhiều chunk
+- embedding nhiều chunk một lần
+- Qdrant top-k/payload quá lớn
+- prompt/context quá dài
+- SSE stream giữ connection lâu
+- log quá nhiều làm đầy disk
+- env/docker/profile sai khiến production fail
+
+Không tối ưu kiểu đại phẫu. Chỉ sửa đúng điểm có căn cứ.
+
+## Trình tự bắt buộc trước khi sửa
+
+Trước khi edit code:
+
+1. Đọc rule trong `.cursor/rules/*`.
+2. Đọc tài liệu project liên quan:
+   - `agent.md`
+   - `agent/01-overview.md`
+   - `agent/02-architecture.md`
+   - file agent theo scope task nếu có
+3. Đọc file source trực tiếp liên quan.
+4. Xác nhận flow hiện tại.
+5. Xác nhận root cause từ source.
+6. Chốt phạm vi sửa nhỏ nhất.
+7. Chỉ sửa khi có căn cứ.
+
+Nếu chưa đủ căn cứ:
+
+- không đoán mò
+- không sửa lan man
+- ghi rõ trong report
+- đề xuất bước kiểm tra tiếp theo
+
+## Nguyên tắc sửa code
+
+Được làm:
+
+- sửa đúng file liên quan trực tiếp task
+- thêm guard/validation nhỏ nếu có căn cứ
+- sửa config/env/docs nếu task yêu cầu hoặc bug nằm ở wiring
+- thêm test nhỏ nếu phù hợp và không kéo scope quá rộng
+
+Không được làm:
+
+- refactor kiến trúc lớn
+- rename hàng loạt
+- đổi convention toàn repo
+- đổi style unrelated
+- sửa file không liên quan chỉ để đẹp hơn
+- thêm dependency mới nếu chưa bắt buộc
+- thay đổi API contract nếu task không yêu cầu
+- đổi schema/database/vector collection nếu task không yêu cầu
+- đổi model/provider nếu task không yêu cầu
+- xóa dữ liệu MySQL/Qdrant
+- recreate Qdrant collection
+- log secret/token/API key
+- đưa secret thật vào repo
+- sửa build artifact như `dist/`, `target/`, `node_modules/` trừ khi task yêu cầu rõ ràng
+
+Nếu thấy bug/rủi ro khác ngoài scope:
+
+- không sửa ké
+- ghi vào `Rủi ro còn lại` hoặc `Đề xuất tiếp theo` trong report
+
+## Khi kết thúc task
+
+Luôn tạo report trong `docs/<TEN_REPORT_FILE>.md` theo rule report.
+
+Message cuối trong chat chỉ tóm tắt ngắn:
+
+- Hiểu task: `<xx>%`
+- Root cause: `<nguyên nhân gốc>`
+- Đã sửa file:
+  - `<file_1>`
+  - `<file_2>`
+- Đã tạo report: `docs/<TEN_REPORT_FILE>.md`
+- Kết quả kiểm tra:
+  - Backend compile: `PASS/FAIL/NOT RUN`
+  - Backend test: `PASS/FAIL/NOT RUN`
+  - Frontend lint: `PASS/FAIL/NOT RUN`
+  - Frontend build: `PASS/FAIL/NOT RUN`
+  - Widget build: `PASS/FAIL/NOT RUN`
+  - Docker compose config: `PASS/FAIL/NOT RUN`
+- Rủi ro còn lại: `<rủi ro hoặc không có rủi ro lớn trong scope>`

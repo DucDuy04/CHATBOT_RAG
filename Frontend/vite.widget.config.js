@@ -10,6 +10,7 @@ export default defineConfig({
     },
     outDir:          "dist-widget",
     emptyOutDir:     true,
+    copyPublicDir: false,
     rollupOptions: {
       output: {
         assetFileNames: "widget.[ext]", // CSS output thành widget.css

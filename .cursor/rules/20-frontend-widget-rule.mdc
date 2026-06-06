@@ -1,0 +1,94 @@
+---
+description: Apply when modifying React/Vite frontend, chat UI, document UI, widget page, embeddable widget script, frontend API client, or frontend build config.
+globs: Frontend/src/**/*,Frontend/widget/**/*,Frontend/*.js,Frontend/*.jsx,Frontend/*.json,Frontend/*.config.js,Frontend/nginx.conf,Frontend/Dockerfile,Frontend/.env*
+alwaysApply: false
+---
+
+# 20 - Frontend / Widget Rule
+
+Áp dụng khi task liên quan React UI, Vite build, API client, chat page, document page, widget page hoặc script nhúng widget.
+
+## File nên đọc theo loại task
+
+### Chat UI
+
+Ưu tiên đọc:
+
+- `Frontend/src/App.jsx`
+- `Frontend/src/pages/ChatPage.jsx`
+- API client liên quan chat
+- CSS/component liên quan nếu bug là UI
+
+### Document UI / upload
+
+Ưu tiên đọc:
+
+- `Frontend/src/pages/DocumentPage.jsx`
+- `Frontend/src/api/documentApi.js`
+- API client/base URL
+- backend endpoint nếu lỗi đi qua API
+
+### Widget page / embeddable widget
+
+Ưu tiên đọc:
+
+- `Frontend/src/pages/WidgetChatPage.jsx`
+- `Frontend/src/api/widgetApi.js`
+- `Frontend/widget/widget.js`
+- `Frontend/widget/widget.css`
+- `Frontend/vite.widget.config.js`
+- `Frontend/nginx.conf`
+- backend `WidgetController`, `WidgetAuthFilter`, `SecurityConfig` nếu lỗi auth/CORS/API
+
+### Frontend build / deploy
+
+Ưu tiên đọc:
+
+- `Frontend/package.json`
+- `Frontend/vite.config.js`
+- `Frontend/vite.widget.config.js`
+- `Frontend/nginx.conf`
+- `Frontend/Dockerfile`
+- `.env` hoặc `.env.example` nếu task liên quan env
+
+## Nguyên tắc frontend
+
+- Không rewrite UI lớn nếu task chỉ là bug nhỏ.
+- Không đổi routing/API contract nếu backend không đổi.
+- Không thêm package mới nếu chưa bắt buộc.
+- Không sửa `dist/` trừ khi task yêu cầu build artifact rõ ràng.
+- Không hardcode production URL nếu project đang dùng env.
+- Không log token/API key/widget key.
+- Không gửi quá nhiều request do loop/useEffect dependency sai.
+- Không để user spam gửi nhiều message gây duplicate request nếu task liên quan chat.
+
+## Checklist frontend/widget
+
+Khi đọc source, kiểm tra trong phạm vi task:
+
+- `VITE_API_URL` hoặc baseURL lấy từ đâu
+- local/docker/production URL có khác nhau không
+- axios/fetch có gửi header cần thiết không
+- widget API key truyền qua đâu
+- iframe/widget route có đúng không
+- SSE stream có parse đúng event `token` và `done` không
+- loading/error state có bị kẹt không
+- useEffect có dependency gây gọi API lặp không
+- build widget có output đúng file không
+
+## Kiểm tra frontend
+
+Ưu tiên chạy:
+
+```bash
+cd Frontend && npm run lint
+cd Frontend && npm run build
+```
+
+Nếu sửa widget:
+
+```bash
+cd Frontend && npm run build:widget
+```
+
+Nếu command fail vì dependency/env, ghi rõ trong report.

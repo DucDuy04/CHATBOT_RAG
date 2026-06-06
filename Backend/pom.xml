@@ -28,8 +28,10 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 		<!-- <spring-ai.version>2.0.0-M2</spring-ai.version> -->
-		
+		<poi.version>5.3.0</poi.version>
 	</properties>
 	<repositories>
 		<repository>
@@ -70,17 +72,16 @@
 			
 		</dependency>
 
-		<!-- Gemini -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-google-ai-gemini</artifactId>
-			
+			<artifactId>langchain4j-open-ai</artifactId>
 		</dependency>
 
-		<!-- LangChain4j — kết nối Qdrant -->
+		<!-- Embedding dùng Nomic (miễn phí, hỗ trợ tiếng Việt tốt) -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-qdrant</artifactId>
+			<artifactId>langchain4j-nomic</artifactId>
+			<!-- <version>0.32.0</version> -->
 		</dependency>
 
 		<!-- Apache PDFBox — đọc file PDF -->
@@ -90,10 +91,24 @@
 			<version>3.0.2</version>
 		</dependency>
 
+		<!-- Apache POI — đọc file DOCX -->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>${poi.version}</version>
+		</dependency>
+
 		<!-- Spring Security -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+
+		<!-- Tabula — trích xuất bảng từ PDF -->
+		<dependency>
+			<groupId>technology.tabula</groupId>
+			<artifactId>tabula</artifactId>
+			<version>1.0.5</version>
 		</dependency>
 
 		<!-- Test -->
@@ -125,14 +140,23 @@
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
+							<version>1.18.40</version>
 						</path>
 					</annotationProcessorPaths>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<excludedGroups>integration</excludedGroups>
 				</configuration>
 			</plugin>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 				<configuration>
+				    <jvmArguments>-Dfile.encoding=UTF-8</jvmArguments>
 					<excludes>
 						<exclude>
 							<groupId>org.projectlombok</groupId>

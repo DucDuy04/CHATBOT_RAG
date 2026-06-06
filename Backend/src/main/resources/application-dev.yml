@@ -1,9 +1,12 @@
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/ragchatbot?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8
     username: root
     password: root
     driver-class-name: com.mysql.cj.jdbc.Driver
+
+    hikari:
+      connection-init-sql: SET NAMES utf8mb4
 
   jpa:
     hibernate:
@@ -16,14 +19,39 @@ spring:
 # Cấu hình Qdrant
 qdrant:
   host: localhost
-  port: 6334                    # Dùng cổng gRPC
+  http-port: 6333               # REST API (EmbeddingService upsert + QdrantConfig init)
   collection-name: documents
+  vector-size: 768             # gemini-embedding-001 = 3072 dimensions
 
 # Cấu hình Gemini
-gemini:
-  api-key: AIzaSyCXz6WHgVii8YEf3UKaDFg_aOe8PXKpHT4
-  embedding-model: text-embedding-004
-  chat-model: gemini-1.5-flash 
+# gemini:
+#   api-key: GEMINI_API_KEY_PLACEHOLDER
+#   embedding-model: gemini-embedding-001
+#   chat-model: gemini-2.0-flash-lite
+
+# Cấu hình Groq
+groq:
+  api-key: ${GROQ_API_KEY}
+  chat-model: meta-llama/llama-4-scout-17b-16e-instruct #llama-3.3-70b-versatile   # Model chính (100k TPD)
+  base-url: https://api.groq.com/openai/v1
+  # Danh sách model fallback khi model chính bị rate limit.
+  # Mỗi model Groq có quota TPD riêng biệt.
+  # Thứ tự: thử lần lượt từ trên xuống.
+  # Dùng comma-separated string thay vì YAML list để @Value inject đúng
+  # gemma2-9b-it đã bị Groq decommission — dùng llama-4-scout và qwen3 thay thế
+  fallback-models: "llama-3.3-70b-versatile,openai/gpt-oss-20b"  #"llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b"
+
+nomic:
+  api-key: ${NOMIC_API_KEY}
+  embedding-model: nomic-embed-text-v1.5
+
+# Cohere Rerank — chấm điểm lại top-K candidates trước khi đưa vào LLM
+# Đăng ký miễn phí tại https://cohere.com (1000 req/tháng free tier)
+cohere:
+  api-key: ${COHERE_API_KEY:}
+  rerank:
+    enabled: ${COHERE_RERANK_ENABLED:false}
+    model: rerank-multilingual-v3.0
 
 # Thư mục lưu file upload
 app:
@@ -31,6 +59,10 @@ app:
 
 server:
   port: 8080
+
+logging:
+  level:
+    root: INFO
 
 
 

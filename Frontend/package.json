@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:widget": "vite build --config vite.widget.config.js",
+    "build:widget": "vite build --config vite.widget.config.js && node scripts/sync-widget-to-public.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -14,8 +14,11 @@
     "axios": "^1.13.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.1",
-    "uuid": "^13.0.0"
+    "remark-gfm": "^4.0.1",
+    "uuid": "^13.0.0",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

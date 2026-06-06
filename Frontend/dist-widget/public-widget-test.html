@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public Widget Test</title>
+    <style>
+      /* Host page only — widget UI uses #rag-chatbot-bubble / #rag-chatbot-frame */
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        padding: 1.25rem 1.5rem 6rem;
+        box-sizing: border-box;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      body > h1,
+      body > p {
+        max-width: 42rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Public Widget Test</h1>
+    <p>
+      Bubble + iframe widget load từ <code>dist-widget/chatbot-widget.iife.js</code>
+      (sau khi chạy <code>npm run build:widget</code> để đồng bộ bundle mới).
+      API key là UUID trả về field <code>apiKey</code> duy nhất lúc
+      <code>POST /api/chatbots</code> (không hiện lại trong list).
+    </p>
+    <p>
+      Mở kèm query để không sửa file:
+      <code>?widgetKey=&lt;apiKey-uuid&gt;</code> hoặc <code>?apiKey=&lt;uuid&gt;</code>
+    </p>
+    <p>Ví dụ: <code>http://localhost:5173/public-widget-test.html?widgetKey=YOUR_UUID</code></p>
+
+    <script>
+      window.RagChatbotConfig = {
+        "widgetKey": "c8b0bd49-a5fd-41c0-a87b-bef7612f01a1",
+        "frontendUrl": "http://localhost:5173",
+        "widgetColor": "#129787",
+        "welcomeMessage": "Xin chào! Tôi có thể giúp gì cho bạn?",
+        "position": "bottom-left",
+        "launcherIcon": "spark",
+        "allowedOrigins": [
+          "http://localhost:5173"
+        ]
+      };
+    </script>
+    <script async src="http://localhost:5173/dist-widget/chatbot-widget.iife.js"></script>
+  </body>
+</html>
