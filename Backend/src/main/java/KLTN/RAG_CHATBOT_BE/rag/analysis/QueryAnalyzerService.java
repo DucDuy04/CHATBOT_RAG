@@ -106,8 +106,6 @@ public class QueryAnalyzerService {
 
         // Step 2: if structural confidence is high enough, return immediately
         if (localResult.confidence() >= triggerThreshold) {
-            log.debug("[QueryAnalysis] local type={} conf={} source=LOCAL_GENERIC",
-                    localResult.queryType(), localResult.confidence());
             return localResult;
         }
 
@@ -118,7 +116,6 @@ public class QueryAnalyzerService {
                 QueryAnalysisResult headingResult = QueryAnalysisResult.ofHeadingMatch(
                         QueryType.SECTION_SUMMARY, 0.85,
                         List.of("query terms overlap with DB section headings"));
-                log.debug("[QueryAnalysis] type=SECTION_SUMMARY conf=0.85 source=HEADING_MATCH");
                 return headingResult;
             }
         }
@@ -126,21 +123,9 @@ public class QueryAnalyzerService {
         // Step 4: LLM classifier (when enabled)
         if (llmEnabled) {
             if (shadowMode) {
-                // Fire-and-forget: compare in background, return local result immediately
-                final QueryAnalysisResult capturedLocal = localResult;
                 CompletableFuture.runAsync(() -> {
                     try {
-                        QueryAnalysisResult llmResult = llmClassifier.classify(question);
-                        boolean isFallback = llmResult.source() == QueryAnalysisSource.FALLBACK_DEFAULT;
-                        String fallbackReason = isFallback
-                                ? (llmResult.fallbackReason() != null ? llmResult.fallbackReason() : "unknown")
-                                : "none";
-                        log.info("[QueryAnalysis] shadow=true localType={} localConf={} "
-                                        + "llmType={} llmConf={} chosen=local "
-                                        + "llmUsed={} fallbackReason={}",
-                                capturedLocal.queryType(), capturedLocal.confidence(),
-                                llmResult.queryType(), llmResult.confidence(),
-                                llmResult.llmUsed(), fallbackReason);
+                        llmClassifier.classify(question);
                     } catch (Exception ex) {
                         log.warn("[QueryAnalysis] shadow=true llmCallFailed={}", ex.getMessage());
                     }
@@ -152,18 +137,7 @@ public class QueryAnalyzerService {
                 try {
                     QueryAnalysisResult llmResult = llmClassifier.classify(question);
                     boolean llmFallback = llmResult.source() == QueryAnalysisSource.FALLBACK_DEFAULT;
-                    QueryAnalysisResult chosen = llmFallback ? localResult : llmResult;
-                    String chosenLabel = llmFallback ? "local" : "llm";
-                    String fallbackReason = llmFallback
-                            ? (llmResult.fallbackReason() != null ? llmResult.fallbackReason() : "unknown")
-                            : "none";
-                    log.info("[QueryAnalysis] active=true localType={} localConf={} "
-                                    + "llmType={} llmConf={} chosen={} chosenType={} source={} "
-                                    + "fallbackReason={}",
-                            localResult.queryType(), localResult.confidence(),
-                            llmResult.queryType(), llmResult.confidence(),
-                            chosenLabel, chosen.queryType(), chosen.source(), fallbackReason);
-                    return chosen;
+                    return llmFallback ? localResult : llmResult;
                 } catch (Exception ex) {
                     log.warn("[QueryAnalysis] active=true llmCallFailed={} — using local result",
                             ex.getMessage());
@@ -232,13 +206,10 @@ public class QueryAnalyzerService {
                 .toList();
 
         if (significantTerms.isEmpty()) {
-            log.debug("[QA] findMatchedSections: no significant terms in query='{}'", question);
             return List.of();
         }
 
         int totalTerms = significantTerms.size();
-        log.debug("[QA] findMatchedSections: query='{}' terms={} scanning {} sections",
-                question, significantTerms, sections.size());
 
         List<HeadingMatch> matches = new ArrayList<>();
 
@@ -277,9 +248,6 @@ public class QueryAnalyzerService {
                     && score > 0;
 
             if (qualifies) {
-                log.debug("[QA] Section '{}' [{}]: titleHits={} pathHits={} missed={} score={}",
-                        sec.getTitle(), sec.getSectionKey(),
-                        titleHits, pathOnlyHits, missedTerms, score);
                 matches.add(new HeadingMatch(
                         sec.getSectionKey(), sec.getTitle(), sec.getHeadingPathText(),
                         titleHits, score));
@@ -298,17 +266,6 @@ public class QueryAnalyzerService {
                 })
                 .limit(5)
                 .toList();
-
-        if (!top.isEmpty()) {
-            log.info("[QA] Heading match candidates (top {}, best-first): {}", top.size(),
-                    top.stream().map(m ->
-                            "'" + m.title() + "' [" + m.sectionKey()
-                            + " titleHits=" + m.titleHits()
-                            + " score=" + m.totalScore() + "]").toList());
-        } else {
-            log.debug("[QA] No heading match candidates (terms={} allSections={})",
-                    significantTerms, sections.size());
-        }
 
         return top;
     }

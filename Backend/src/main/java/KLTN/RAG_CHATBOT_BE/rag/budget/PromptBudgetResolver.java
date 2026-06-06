@@ -52,7 +52,6 @@ public class PromptBudgetResolver {
     }
 
     public void logBudget(int requestedTopN, int selectedContexts, int contextChars, boolean budgetLimited) {
-        log.info("[RAG][budget] requestedTopN={} selectedContexts={} contextChars={} budgetLimited={}",
-                requestedTopN, selectedContexts, contextChars, budgetLimited);
+        // metrics captured in RagLatencyTrace
     }
 }

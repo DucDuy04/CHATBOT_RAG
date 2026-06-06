@@ -152,14 +152,6 @@ public class KeywordSearchService {
             }
         }
 
-        log.info("[RAG][hybrid] keywordSignals identifiers={} dates={} numbers={} labels={} ngrams={} "
-                        + "indexHit={} postingLookupMs={} candidatesFromPostings={} candidatesScored={} "
-                        + "fallbackScan={} corpusScanned={} keywordCandidates={}",
-                signals.identifiers().size(), signals.dates().size(), signals.numbers().size(),
-                signals.structuredLabels().size(), signals.ngrams().size(),
-                lookup.available(), indexLookupMs, lookup.candidateCount(), candidates.size(),
-                fallbackScan, fallbackScan ? corpus.size() : 0, normalizedTop.size());
-
         return new KeywordSearchResult(normalizedTop, scoreMap, signals);
     }
 

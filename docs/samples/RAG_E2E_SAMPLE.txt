@@ -1,5 +1,0 @@
-RAG E2E sample document — CHATBOT_RAG
-
-Câu trả lời cố định cho kiểm thử: Mã xác nhận RAG E2E là RAG-E2E-31415.
-
-Nội dung bổ sung (không trùng câu trên): Đây là file TXT nhỏ dùng để upload và hỏi chatbot. Widget phải trùng với chatbot đã upload tài liệu.

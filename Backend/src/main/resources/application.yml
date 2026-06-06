@@ -62,7 +62,7 @@ rag:
       cosine-enabled: false
       cosine-threshold: 0.98
       # Log variant skip events at INFO level (skipped text NOT logged; only counts)
-      log-skipped-variants: true
+      log-skipped-variants: false
     hybrid:
       enabled: true
       keyword-top-m: 30
@@ -111,8 +111,4 @@ app:
 
 logging:
   level:
-    KLTN.RAG_CHATBOT_BE.ingest.parser.DocumentParserService: DEBUG
-    KLTN.RAG_CHATBOT_BE.ingest.chunking.ChunkingService2: DEBUG
-    # Shadow classifier logs — INFO shows shadow=true comparison lines; DEBUG adds query text
-    KLTN.RAG_CHATBOT_BE.rag.analysis.QueryAnalyzerService: INFO
-    KLTN.RAG_CHATBOT_BE.rag.analysis.LlmQueryClassifier: INFO
+    root: INFO

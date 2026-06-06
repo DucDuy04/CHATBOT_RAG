@@ -136,7 +136,6 @@ export default function DocumentsPage() {
           } catch {
             // Non-fatal: keep polling for this doc
             anyStillProcessing = true;
-            console.warn(`[poll] Failed to get status for ${id}`);
           }
         })
       );

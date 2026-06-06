@@ -134,85 +134,14 @@ public class DocumentService {
 
         TableIngestMetrics tableMetrics = chunkingService2.getLastIngestMetrics();
         log.info(
-                "Parse document={} sections={} chunks={} tableIngest: detected={} normalized={} failed={} " +
-                        "normalizedRows={} suppressedRawChars={} suppressedLines={} droppedLeakyTextChunks={} " +
-                        "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
-                        "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
-                        "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={} " +
-                        "headerSlotsCreated={} headerSlotsFallbackGeneric={} headerSiblingContaminationPrevented={} " +
-                        "headerAmbiguousFallbackCount={} avgHeaderTokenCountBefore={} avgHeaderTokenCountAfter={} " +
-                        "noisyComposedHeaderBeforeCount={} noisyComposedHeaderAfterCount={} " +
-                        "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
-                        "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
-                        "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
-                        "valuesPreservedCount={} valuesDroppedCount={} rawTableModelsCreated={} " +
-                        "rawTableModelsCreatedFromSpreadsheet={} rawTableModelsCreatedFromBasic={} " +
-                        "rawTableCellsWithCoordinates={} rawTableCellsMissingCoordinates={} " +
-                        "structuredTablesNormalized={} markdownTablesNormalizedLegacy={} " +
-                        "pdfTablesUsingMarkdownBridge={} spreadsheetTablesUsingMarkdownBridge={} " +
-                        "basicTablesUsingMarkdownBridge={} pageAttributionPhysicalCount={}",
+                "Parse document={} sections={} chunks={} tablesDetected={} tablesNormalized={} tablesFailed={}",
                 document.getFileName(),
                 sections.size(),
                 chunks.size(),
                 tableMetrics.getDetectedTables(),
                 tableMetrics.getNormalizedTables(),
-                tableMetrics.getFailedTables(),
-                tableMetrics.getNormalizedRows(),
-                tableMetrics.getSuppressedRawTableTextChars(),
-                tableMetrics.getSuppressedLines(),
-                tableMetrics.getDroppedLeakyTextChunks(),
-                tableMetrics.getRowsWithCellsJson(),
-                tableMetrics.getRowsWithOnlyOneNonEmptyCell(),
-                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getRowsWithEmptyCellsRatio()),
-                tableMetrics.getRowsWithGenericColumnKeys(),
-                tableMetrics.getContinuationRowsMerged(),
-                tableMetrics.getMultiRowHeadersMerged(),
-                tableMetrics.getCrossPageHeaderCarryCount(),
-                tableMetrics.getSparseRowsRepaired(),
-                tableMetrics.getDroppedCellFragments(),
-                tableMetrics.getHeaderSlotsCreated(),
-                tableMetrics.getHeaderSlotsFallbackGeneric(),
-                tableMetrics.getHeaderSiblingContaminationPrevented(),
-                tableMetrics.getHeaderAmbiguousFallbackCount(),
-                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountBefore()),
-                String.format(java.util.Locale.ROOT, "%.3f", tableMetrics.getAvgHeaderTokenCountAfter()),
-                tableMetrics.getNoisyComposedHeaderBeforeCount(),
-                tableMetrics.getNoisyComposedHeaderAfterCount(),
-                tableMetrics.getCompactHeaderSuspiciousCount(),
-                tableMetrics.getCompactHeaderFallbackCount(),
-                tableMetrics.getSpanAwareHeaderSelectedCount(),
-                tableMetrics.getMultiColumnHeaderRejectedCount(),
-                tableMetrics.getHeaderFragmentsWithCoordinates(),
-                tableMetrics.getHeaderFragmentsWithoutCoordinates(),
-                tableMetrics.getValuesPreservedCount(),
-                tableMetrics.getValuesDroppedCount(),
-                tableMetrics.getRawTableModelsCreated(),
-                tableMetrics.getRawTableModelsCreatedFromSpreadsheet(),
-                tableMetrics.getRawTableModelsCreatedFromBasic(),
-                tableMetrics.getRawTableCellsWithCoordinates(),
-                tableMetrics.getRawTableCellsMissingCoordinates(),
-                tableMetrics.getStructuredTablesNormalized(),
-                tableMetrics.getMarkdownTablesNormalizedLegacy(),
-                tableMetrics.getPdfTablesUsingMarkdownBridge(),
-                tableMetrics.getSpreadsheetTablesUsingMarkdownBridge(),
-                tableMetrics.getBasicTablesUsingMarkdownBridge(),
-                tableMetrics.getPageAttributionPhysicalCount()
+                tableMetrics.getFailedTables()
         );
-
-        // DOCX-specific metrics log (only printed when docxTablesDetected > 0)
-        if (tableMetrics.getDocxTablesDetected() > 0) {
-            log.info(
-                    "DOCX metrics document={} docxTablesDetected={} docxTablesNormalized={} " +
-                            "docxTablesUsingRawTableModel={} docxTablesUsingMarkdownBridge={} " +
-                            "docxTableRowsNormalized={}",
-                    document.getFileName(),
-                    tableMetrics.getDocxTablesDetected(),
-                    tableMetrics.getDocxTablesNormalized(),
-                    tableMetrics.getDocxTablesUsingRawTableModel(),
-                    tableMetrics.getDocxTablesUsingMarkdownBridge(),
-                    tableMetrics.getDocxTableRowsNormalized()
-            );
-        }
 
         UUID widgetId = document.getWidgetConfig().getId();
 

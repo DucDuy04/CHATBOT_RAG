@@ -62,7 +62,7 @@ server:
 
 logging:
   level:
-    KLTN.RAG_CHATBOT_BE.rag.rerank.RerankService: DEBUG
+    root: INFO
 
 
 
