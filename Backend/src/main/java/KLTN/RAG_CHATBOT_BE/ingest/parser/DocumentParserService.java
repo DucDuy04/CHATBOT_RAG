@@ -142,9 +142,7 @@ public class DocumentParserService {
                             }
                         }
                         if (usableFromSpreadsheet == 0) {
-                            log.info("[Parse] Page {}: SpreadsheetAlgo tìm {} tables nhưng 0 usable " +
-                                     "(có thể là micro-table hoặc corrupted) — thử BasicAlgo fallback",
-                                     pageNum, tabulaTables.size());
+                            // SpreadsheetAlgo found tables but none usable — BasicAlgo fallback below
                         }
                     }
 
@@ -154,8 +152,6 @@ public class DocumentParserService {
                                 new technology.tabula.extractors.BasicExtractionAlgorithm();
                         List<Table> basicTables = bea.extract(page);
                         if (!basicTables.isEmpty()) {
-                            log.debug("[Parse] Page {}: BasicAlgo={} tables (fallback từ SpreadsheetAlgo={} tables, 0 usable)",
-                                    pageNum, basicTables.size(), tabulaTables.size());
                             tabulaTables.clear();
                             for (Table table : basicTables) {
                                 tabulaTables.add(new ExtractedTable(table, RawTableModel.ExtractorType.BASIC));
@@ -163,7 +159,7 @@ public class DocumentParserService {
                         }
                     }
                 } catch (Exception e) {
-                    log.debug("[Parse] Page {}: table extraction skipped — {}", pageNum, e.getMessage());
+                    // table extraction skipped for this page
                 }
 
                 // 3. Extract accepted Tabula tables (markdown) — chưa ghi vào pageBuilder
@@ -183,8 +179,6 @@ public class DocumentParserService {
                     RawTableModel rawTable = convertTabulaTableToRawTableModel(
                             table, pageNum, tableIndexOnPage, extracted.extractorType(), pageText);
                     String acceptedPreview = previewRawTable(rawTable);
-                    log.info("[Parse] Table ACCEPTED page={}: extractor={} rows={} cols={} preview='{}'",
-                            pageNum, extracted.extractorType(), acceptedRows, acceptedCols, acceptedPreview);
                     acceptedRawTablesForPage.add(rawTable);
                     rawTableRegistry.put(rawTable.tableId(), rawTable);
                     tableRefsForPage.add("[RAW_TABLE_REF:" + rawTable.tableId() + "]");
@@ -204,28 +198,11 @@ public class DocumentParserService {
                     NormalizedTableService.SuppressResult suppressResult =
                             normalizedTableService.suppressRawTableText(processedText, pageProfile);
                     processedText = suppressResult.text();
-                    if (suppressResult.suppressedRawChars() > 0) {
-                        log.info("[TableSuppress] page={} tablesOnPage={} cellValues={} rawCharsBefore={} "
-                                        + "rawCharsAfter={} suppressedRawChars={} suppressedLines={} tableLikeLinesDropped={}",
-                                pageNum,
-                                tableRefsForPage.size(),
-                                pageProfile.cellTokens().size(),
-                                rawBefore,
-                                processedText.length(),
-                                suppressResult.suppressedRawChars(),
-                                suppressResult.suppressedLines(),
-                                suppressResult.tableLikeLinesDropped());
-                    }
                 }
                 pageBuilder.append(cleanText(processedText)).append("\n");
 
                 for (String rawTableRef : tableRefsForPage) {
                     pageBuilder.append("\n").append(rawTableRef).append("\n");
-                }
-
-                if (!tabulaTables.isEmpty()) {
-                    log.debug("[Parse] Page {}: {} table(s) extracted (spreadsheet={})",
-                            pageNum, tabulaTables.size(), tabulaSpreadsheetFound);
                 }
 
                 // Lưu nội dung hoàn chỉnh của trang (gồm cả Text + Table) vào Map
@@ -288,12 +265,6 @@ public class DocumentParserService {
                     if (rawTable != null && !rawTable.rows().isEmpty()) {
                         rawTableRegistry.put(rawTable.tableId(), rawTable);
                         pageBuilder.append("\n[RAW_TABLE_REF:").append(rawTable.tableId()).append("]\n");
-                        log.info("[ParseDocx] Table ACCEPTED idx={}: rows={} cols={} id='{}'",
-                                tableIndexInDoc,
-                                rawTable.rows().size(),
-                                rawTable.rows().isEmpty() ? 0
-                                        : rawTable.rows().get(0).cells().size(),
-                                rawTable.tableId());
                     }
                     tableIndexInDoc++;
                 }
@@ -301,8 +272,6 @@ public class DocumentParserService {
 
             // Treat entire DOCX as page 1 (reliable page number unavailable via POI)
             Map<Integer, String> pageContents = Map.of(1, pageBuilder.toString());
-            log.info("[ParseDocx] file='{}' paragraphChars={} tables={}",
-                    file.getOriginalFilename(), pageBuilder.length(), rawTableRegistry.size());
             return parseSections(pageContents, rawTableRegistry);
         }
     }
@@ -408,8 +377,6 @@ public class DocumentParserService {
         if (rawRows.isEmpty()) return null;
 
         String tableId = "docx_t" + tableIndex + "_" + sanitizeForId(fileName);
-        log.debug("[ParseDocx] Table id='{}' rows={} totalCells={} hSpans={} vMergeContinue={}",
-                tableId, rawRows.size(), totalCells, horizontalSpanCells, verticalMergeContinueCells);
 
         return new RawTableModel(
                 tableId,
@@ -504,10 +471,6 @@ public class DocumentParserService {
         java.util.Map<String, Integer> seenSectionNumberCounts = new java.util.HashMap<>();
         String currentSectionNumber = null;
 
-        // --- Counters cho logging ---
-        int totalCandidates = 0;
-        int acceptedHeadings = 0;
-
         for (Map.Entry<Integer, String> entry : sortedPages.entrySet()) {
             int currentPage = entry.getKey();
             String pageText = entry.getValue();
@@ -520,7 +483,6 @@ public class DocumentParserService {
             int lastEndIndex = 0;
 
             while (matcher.find()) {
-                totalCandidates++;
                 String candidateHeader = markdownHeadingMode
                         ? safeTrim(matcher.group(1))
                         : matcher.group(0).trim();
@@ -537,14 +499,10 @@ public class DocumentParserService {
                         markdownHeadingMode);
 
                 if (skipReason != null) {
-                    log.debug("[Parse] SKIP [{}] page={} header='{}'", skipReason, currentPage, candidateHeader);
                     continue;
                 }
 
                 // --- Bước 2: Heading được chấp nhận ---
-                acceptedHeadings++;
-                log.debug("[Parse] ACCEPT heading #{}: page={} header='{}' number='{}'",
-                        acceptedHeadings, currentPage, candidateHeader, candidateNumber);
 
                 // --- Bước 3: Lưu section đang xử lý trước khi mở section mới ---
                 currentContent.append(pageText, lastEndIndex, matcher.start());
@@ -558,8 +516,6 @@ public class DocumentParserService {
                     int prevLevel = computeHeadingLevel(currentSectionNumber);
                     Section saved = new Section(currentHeader, startPage, currentPage, finalizedContent, sectionOrder, prevLevel);
                     sections.add(saved);
-                    log.debug("[Parse] Section saved: order={} header='{}' pages={}-{} contentLen={}",
-                            sectionOrder, currentHeader, startPage, currentPage, finalizedContent.length());
                     sectionOrder++;
                 }
 
@@ -589,14 +545,7 @@ public class DocumentParserService {
                     sortedPages.isEmpty() ? startPage : sortedPages.lastKey(),
                     lastContent, sectionOrder, lastLevel);
             sections.add(last);
-            log.debug("[Parse] Section saved (last): order={} header='{}' pages={}-{} contentLen={}",
-                    sectionOrder, currentHeader, startPage, last.endPage(), lastContent.length());
         }
-
-        // --- Summary log ---
-        log.info("[Parse] Heading mode: markdownAtx={} totalCandidates={} accepted={} skipped={}",
-                markdownHeadingMode, totalCandidates, acceptedHeadings, totalCandidates - acceptedHeadings);
-        log.info("[Parse] Sections created: {} (no merging applied)", sections.size());
 
         if (sections.isEmpty() && !pageContents.isEmpty()) {
             log.warn("[Parse] WARNING: 0 sections created from non-empty document. Check heading detection.");
@@ -1101,34 +1050,11 @@ public class DocumentParserService {
      * Ghi ra: lý do reject, số row/col, preview markdown (tối đa 200 ký tự).
      */
     private void logRejectedTable(Table table, String markdown, int pageNum) {
-        if (table == null) {
-            log.info("[Parser] Table REJECTED page={}: reason=null-table", pageNum);
-            return;
-        }
-        String reason = getTableRejectionReason(table, markdown);
-        int rows = table.getRows() == null ? 0 : table.getRows().size();
-        int cols = table.getRows() == null || table.getRows().isEmpty() ? 0
-                : table.getRows().stream().mapToInt(List::size).max().orElse(0);
-        String preview = (markdown == null || markdown.isBlank()) ? "(empty)"
-                : markdown.length() > 200 ? markdown.substring(0, 200).replace("\n", "↵") + "…"
-                : markdown.replace("\n", "↵");
-        log.info("[Parser] Table REJECTED page={}: reason='{}' rows={} cols={} preview='{}'",
-                pageNum, reason, rows, cols, preview);
+        // rejection reason available via getTableRejectionReason() if needed for future metrics
     }
 
     private void logRejectedTable(Table table, int pageNum) {
-        if (table == null) {
-            log.info("[Parser] Table REJECTED page={}: reason=null-table", pageNum);
-            return;
-        }
-        String reason = getTableRejectionReason(table, "");
-        int rows = table.getRows() == null ? 0 : table.getRows().size();
-        int cols = table.getRows() == null || table.getRows().isEmpty() ? 0
-                : table.getRows().stream().mapToInt(List::size).max().orElse(0);
-        String preview = previewRawTable(convertTabulaTableToRawTableModel(
-                table, pageNum, -1, RawTableModel.ExtractorType.SPREADSHEET, null));
-        log.info("[Parser] Table REJECTED page={}: reason='{}' rows={} cols={} preview='{}'",
-                pageNum, reason, rows, cols, preview);
+        // rejection reason available via getTableRejectionReason() if needed for future metrics
     }
 
     /**
@@ -1211,7 +1137,6 @@ public class DocumentParserService {
 
         boolean sparseButStructured = isSparseButStructuredTable(rows, textChars, nonEmptyCells);
         if (totalCells > 0 && (double) emptyCells / totalCells > 0.6 && !sparseButStructured) {
-            log.debug("[Parser] Table rejected: too many empty cells ({}/{})", emptyCells, totalCells);
             return false;
         }
 
@@ -1219,7 +1144,6 @@ public class DocumentParserService {
         long headerNonEmpty = inferredHeader == null ? 0
                 : inferredHeader.headers().stream().filter(h -> h != null && !h.isBlank()).count();
         if (headerNonEmpty < 2) {
-            log.debug("[Parser] Table rejected: inferred header has too few non-empty cells ({})", headerNonEmpty);
             return false;
         }
 
@@ -1264,7 +1188,6 @@ public class DocumentParserService {
         // Bảng có quá nhiều cell rỗng (>60%) → không đáng tin cậy
         boolean sparseButStructured = isSparseButStructuredTable(rows, textChars, nonEmptyCells);
         if (totalCells > 0 && (double) emptyCells / totalCells > 0.6 && !sparseButStructured) {
-            log.debug("[Parser] Table rejected: too many empty cells ({}/{})", emptyCells, totalCells);
             return false;
         }
 
@@ -1273,7 +1196,6 @@ public class DocumentParserService {
         long headerNonEmpty = inferredHeader == null ? 0
                 : inferredHeader.headers().stream().filter(h -> h != null && !h.isBlank()).count();
         if (headerNonEmpty < 2) {
-            log.debug("[Parser] Table rejected: inferred header has too few non-empty cells ({})", headerNonEmpty);
             return false;
         }
 
@@ -1786,9 +1708,6 @@ public class DocumentParserService {
         }
         if (validBlocks.isEmpty()) return rawText;
 
-        log.info("[Parse] Page {}: EarlyDetect tìm {} table block(s) trong raw text",
-                pageNum, validBlocks.size());
-
         // Build markdown cho từng block và đánh dấu dòng thuộc block
         boolean[] inBlock = new boolean[n];
         java.util.Map<Integer, String> blockMarkdownMap = new java.util.LinkedHashMap<>();
@@ -1813,9 +1732,6 @@ public class DocumentParserService {
                 }
                 md.append("\n");
             }
-
-            log.info("[Parse] Page {}: EarlyDetect table block {} — {} rows, {} cols",
-                    pageNum, tableIdx, dataRows, headerCols);
 
             blockMarkdownMap.put(block[0], "\n[TABLE_START]\n" + md + "[TABLE_END]\n");
             for (int j = block[0]; j <= block[1]; j++) inBlock[j] = true;
@@ -1883,10 +1799,6 @@ public class DocumentParserService {
                 filtered.add(line);
             }
         }
-        if (removedCount > 0) {
-            log.debug("[cleanText] Đã xóa {} dòng header/footer phân trang", removedCount);
-        }
-
         String afterNormalize = String.join("\n", filtered)
                 .replaceAll("\\n{3,}", "\n\n")
                 // Giữ nguyên xuống dòng SAU heading để tránh dính heading với paragraph.

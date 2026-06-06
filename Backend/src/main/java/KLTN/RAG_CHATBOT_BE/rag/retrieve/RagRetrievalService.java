@@ -173,7 +173,6 @@ public class RagRetrievalService {
      */
     public RetrievalResult retrieveWithMetadata(String question, UUID widgetId, Integer finalContextTopNOverride) {
         int fixedVectorAnchorK = fixedVectorAnchorK();
-        log.info("[RAG][anchor] fixedVectorAnchorK={}", fixedVectorAnchorK);
 
         // ── STEP 0: Intent detection ───────────────────────────────────
         long analyzeStart = RagLatencyTrace.now();
@@ -188,22 +187,12 @@ public class RagRetrievalService {
                     analysis.confidence(),
                     analysis.fallbackReason());
         }
-        log.info("[RAG][analysis] type={} source={} confidence={} calls=1 fallbackReason={}",
-                queryType,
-                analysis.source(),
-                String.format(Locale.ROOT, "%.2f", analysis.confidence()),
-                analysis.fallbackReason() != null ? analysis.fallbackReason() : "none");
         int requestedFinalContextTopN = resolveFinalContextTopN(finalContextTopNOverride, queryType);
         int finalContextTopN = resolveAdaptiveFinalContextTopN(question, finalContextTopNOverride, queryType);
         if (trace != null) {
             trace.setTopN(requestedFinalContextTopN, finalContextTopN);
         }
-        String topNSource = finalContextTopNOverride != null ? "REQUEST|MODEL_CONFIG" : "DEFAULT";
-        log.info("[RAG][topN] override={} requested={} effective={} adaptiveReason={} source={}",
-                finalContextTopNOverride, requestedFinalContextTopN, finalContextTopN,
-                adaptiveTopNReason(question, queryType), topNSource);
         boolean isExpandedQuery = isExpanded(queryType);
-        log.info("[RAG] Detected intent: question='{}' queryType={} widgetId={}", question, queryType, widgetId);
 
         // ── STEP 1: Fetch all sections once (shared by heading match + scope expansion) ──
         List<DocumentSection> allSections = timedDbFetch(
@@ -234,16 +223,10 @@ public class RagRetrievalService {
             // For a leaf child → only that section. For a parent → all children too.
             lockedSectionIds = expandDescendantSectionIds(lockedSectionKey, allSections);
 
-            log.info("[RAG] Selected section: {} | Locked scope: {} section(s): {}",
-                    lockedSectionLabel, lockedSectionIds.size(), lockedSectionIds);
-        } else {
-            log.info("[RAG] No heading lock applied (best titleHits={}, threshold={})",
-                    selectedMatch == null ? 0 : selectedMatch.titleHits(), HEADING_LOCK_MIN_TITLE_HITS);
         }
 
         // ── STEP 2: Query rewriting for semantic search ────────────────
         List<String> queryVariants = queryAnalyzerService.rewriteQuery(question);
-        log.info("[RAG] Query variants: {}", queryVariants);
 
         // ── STEP 2b: Deduplicate query variants before vector search ───
         // Uses conservative normalized-text dedupe; distinct scope/mode variants are preserved.
@@ -258,11 +241,6 @@ public class RagRetrievalService {
                     variantDedupeEnabled ? "normalized_text" : "DISABLED",
                     0);  // qdrantSearchCalls updated below
         }
-        if (dedupeResult.skipped() > 0 && variantDedupeLogSkipped) {
-            log.info("[RAG][variant-dedupe] total={} unique={} skipped={} mode=normalized_text",
-                    dedupeResult.total(), dedupeResult.unique(), dedupeResult.skipped());
-        }
-
         // ── STEP 3: Vector search (unique variants only) ──────────────
         Set<UUID> anchorChunkIds = new LinkedHashSet<>();
         Set<String> sectionIds = new LinkedHashSet<>();
@@ -290,7 +268,6 @@ public class RagRetrievalService {
                 if (!lockedSectionIds.isEmpty() && chunkSectionId != null
                         && !lockedSectionIds.contains(chunkSectionId)) {
                     excludedByScope++;
-                    log.debug("[RAG] EXCLUDED (out-of-scope): sectionId='{}' not in lockedScope", chunkSectionId);
                     continue;
                 }
 
@@ -304,14 +281,8 @@ public class RagRetrievalService {
                     Arrays.stream(childSectionIdsStr.split(","))
                             .map(String::trim).filter(s -> !s.isBlank())
                             .forEach(sectionIds::add);
-                    log.info("[RAG] parent_section_summary matched → expanding to children: [{}]",
-                            childSectionIdsStr);
                 }
             }
-        }
-
-        if (excludedByScope > 0) {
-            log.info("[RAG] Semantic results excluded (out of locked scope): {} segments", excludedByScope);
         }
 
         if (trace != null) {
@@ -322,9 +293,6 @@ public class RagRetrievalService {
                     variantDedupeEnabled ? "normalized_text" : "DISABLED",
                     qdrantSearchCalls);
         }
-
-        log.info("[RAG] Vector anchors: chunks={} sections={} tables={} docs={}",
-                anchorChunkIds.size(), sectionIds.size(), tableIds.size(), vectorDocumentIds.size());
 
         // ── STEP 3b: Generic keyword search (parallel branch, supplements vector) ──
         KeywordSearchService.KeywordSearchResult keywordResult = null;
@@ -338,8 +306,6 @@ public class RagRetrievalService {
             }
             keywordScoresByChunkId = keywordResult.normalizedScoresByChunkId();
             keywordChunkIds = keywordResult.chunkIds();
-            log.info("[RAG][hybrid] strategy=VECTOR+KEYWORD vectorCandidates={} keywordCandidates={}",
-                    anchorChunkIds.size(), keywordChunkIds.size());
         }
 
         // ── STEP 4: Build context pool ─────────────────────────────────
@@ -354,9 +320,6 @@ public class RagRetrievalService {
                     () -> documentChunkRepository
                             .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
                                     widgetId, scopeSectionIds));
-            log.info("[RAG] Locked scope: {} chunks fetched from DB for sectionIds={}",
-                    lockedChunks.size(), lockedSectionIds);
-
             // ── GUARDRAIL: if locked scope found 0 chunks, the heading match may be stale ──
             // (e.g. section exists in DocumentSection but no chunks indexed yet, or key mismatch)
             // Fall back to semantic mode and clear the lock so the prompt is not mis-scoped.
@@ -377,8 +340,6 @@ public class RagRetrievalService {
                             () -> documentChunkRepository
                                     .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
                                             widgetId, tableIds));
-                    log.info("[RAG] Table expansion (locked mode): {} chunks from {} tableIds",
-                            tableChunks.size(), tableIds.size());
                     expanded.addAll(tableChunks);
                 }
             }
@@ -407,11 +368,9 @@ public class RagRetrievalService {
             // ── FALLBACK/SEMANTIC MODE ──
             // Reached when: (a) no heading lock, or (b) locked scope guardrail cleared the lock.
             List<DocumentChunk> lexicalAnchors = findLexicalAnchors(question, widgetId, vectorDocumentIds);
-            log.info("[RAG] Lexical anchors found: {}", lexicalAnchors.size());
 
             List<DocumentChunk> sectionExpansion = expandSectionRanges(
                     lexicalAnchors, widgetId, isExpandedQuery, vectorDocumentIds);
-            log.info("[RAG] Section range expansion: {} chunks", sectionExpansion.size());
             expanded.addAll(sectionExpansion);
             expanded.addAll(expandAroundAnchors(lexicalAnchors, widgetId));
 
@@ -420,8 +379,6 @@ public class RagRetrievalService {
                     List<DocumentChunk> sectionChunks = documentChunkRepository
                             .findByWidgetConfigIdAndSectionIdInOrderByDocumentIdAscOrderIndexAsc(
                                     widgetId, sectionIds);
-                    log.info("[RAG] Section expansion by sectionId: {} chunks from {} sections",
-                            sectionChunks.size(), sectionIds.size());
                     expanded.addAll(sectionChunks);
 
                     // Sibling expansion: find parentIds → pull sibling sections
@@ -430,8 +387,6 @@ public class RagRetrievalService {
                         List<DocumentChunk> siblingChunks = documentChunkRepository
                                 .findByWidgetConfigIdAndParentIdInOrderByDocumentIdAscOrderIndexAsc(
                                         widgetId, parentIds);
-                        log.info("[RAG] Sibling expansion by parentId: {} chunks from {} parents",
-                                siblingChunks.size(), parentIds.size());
                         expanded.addAll(siblingChunks);
                     }
 
@@ -439,7 +394,6 @@ public class RagRetrievalService {
                     if (!vectorDocumentIds.isEmpty()) {
                         List<DocumentChunk> parentSummaryChunks =
                                 findParentSectionSummaries(sectionIds, widgetId, vectorDocumentIds);
-                        log.info("[RAG] Parent section summaries: {} chunks", parentSummaryChunks.size());
                         expanded.addAll(parentSummaryChunks);
                     }
                 }
@@ -448,8 +402,6 @@ public class RagRetrievalService {
                     List<DocumentChunk> tableChunks = documentChunkRepository
                             .findByWidgetConfigIdAndTableIdInOrderByDocumentIdAscOrderIndexAsc(
                                     widgetId, tableIds);
-                    log.info("[RAG] Table expansion by tableId: {} chunks from {} tables",
-                            tableChunks.size(), tableIds.size());
                     expanded.addAll(tableChunks);
                 }
             } else {
@@ -501,11 +453,6 @@ public class RagRetrievalService {
                                         widgetId, rerankScope);
 
                         if (!rerankScopeChunks.isEmpty()) {
-                            log.info("[RAG] Rerank-Guided Lock ACTIVATED: score={} topSection='{}' " +
-                                    "→ lockRoot='{}' scope={} ({} chunks) — replaced {} chunk pool",
-                                    String.format("%.4f", maxScore),
-                                    topSectionId, lockRootId, rerankScope,
-                                    rerankScopeChunks.size(), expanded.size());
                             expanded = rerankScopeChunks;
                             isLockedScope = true;
                             lockedSectionLabel = "rerank-lock: '" + lockRootId + "'";
@@ -526,8 +473,6 @@ public class RagRetrievalService {
         List<DocumentChunk> boundedPreScore = boundCandidatesBeforeScoring(
                 dedupedPreScore, question, anchorChunkIds, keywordScoresByChunkId, finalContextTopN);
         if (boundedPreScore.size() < dedupedPreScore.size()) {
-            log.info("[RAG][candidates] boundedForScoring={} from={} tableQuery=true",
-                    boundedPreScore.size(), dedupedPreScore.size());
             expanded = boundedPreScore;
             dedupedPreScore = boundedPreScore;
         }
@@ -537,8 +482,6 @@ public class RagRetrievalService {
             List<KeywordSearchService.MergedCandidate> mergedPreview = KeywordSearchService.mergeCandidates(
                     dedupedPreScore, anchorChunkIds, keywordResult);
             bothSourceCount = KeywordSearchService.countBothSource(mergedPreview);
-            log.info("[RAG][hybrid] mergedCandidates={} dedupedCandidates={} bothSourceCount={}",
-                    expanded.size(), dedupedPreScore.size(), bothSourceCount);
         }
         if (trace != null) {
             trace.addMergeMs(RagLatencyTrace.elapsedMs(mergeStart));
@@ -550,23 +493,10 @@ public class RagRetrievalService {
                     dedupedPreScore.size());
         }
 
-        log.info("[RAG][candidates] vectorAnchors={} keywordAnchors={} afterExpansion={}",
-                anchorChunkIds.size(), keywordChunkIds.size(), expanded.size());
-
         // ── STEP 6: Dedupe → score all → select top-N by score → document order ──
         List<RetrievedContext> result = selectFinalContexts(
                 expanded, question, queryType, isLockedScope, finalContextTopN,
                 anchorChunkIds, keywordScoresByChunkId);
-
-        // ── STEP 7: Final context log ──────────────────────────────────
-        log.info("[RAG] Final context chunks: {} | queryType={} | lockedScope={}",
-                result.size(), queryType, lockedSectionKey != null ? lockedSectionKey : "none");
-        if (!result.isEmpty()) {
-            log.info("[RAG] Context chunk list: {}",
-                    result.stream()
-                            .map(r -> r.getSectionId() + "[" + r.getChunkType() + "]")
-                            .toList());
-        }
 
         return new RetrievalResult(result, lockedSectionLabel, analysis);
     }
@@ -832,10 +762,6 @@ public class RagRetrievalService {
             boolean isChildOfBest = candidate.sectionKey().startsWith(best.sectionKey() + ".");
 
             if (isChildOfBest) {
-                log.info("[RAG] selectMostSpecificMatch: preferring child '{}' [{}] (score={}) " +
-                                "over parent '{}' [{}] (score={}) — child is more specific",
-                        candidate.title(), candidate.sectionKey(), candidate.totalScore(),
-                        best.title(), best.sectionKey(), best.totalScore());
                 best = candidate;
             }
         }
@@ -862,8 +788,6 @@ public class RagRetrievalService {
             }
         }
 
-        log.debug("[RAG] expandDescendantSectionIds('{}') → {} sections: {}",
-                rootSectionKey, result.size(), result);
         return result;
     }
 
@@ -998,8 +922,6 @@ public class RagRetrievalService {
                         result.add(documentChunks.get(pos));
                         if (++addCount >= maxChunks) break;
                     }
-                    log.debug("[RAG] SectionId '{}' (doc={}) → {} chunks added",
-                            anchorSectionId, docId, addCount);
                     continue;
                 }
             }
@@ -1043,8 +965,6 @@ public class RagRetrievalService {
                 HeadingInfo parentCandidate = firstHeading(chunks.get(i));
                 if (parentCandidate != null && parentCandidate.level() < anchorHeading.level()) {
                     if (anchorHeading.number.startsWith(parentCandidate.number + ".")) {
-                        log.debug("[RAG] Section level-up: {} → parent {}",
-                                anchorHeading.number, parentCandidate.number);
                         anchorHeading = parentCandidate;
                         start = i;
                     }
@@ -1198,7 +1118,6 @@ public class RagRetrievalService {
         }
 
         List<DocumentChunk> deduped = dedupeCandidates(chunks);
-        log.info("[RAG][candidates] deduped={}", deduped.size());
 
         long scoringStart = RagLatencyTrace.now();
         List<ScoredChunk> scored = scoreCandidatesForSelection(
@@ -1209,7 +1128,6 @@ public class RagRetrievalService {
             trace.addScoringMs(RagLatencyTrace.elapsedMs(scoringStart));
             trace.setCandidates(deduped.size(), scored.size());
         }
-        logHybridTopRanks(scored, anchorChunkIds, keywordScoresByChunkId);
 
         long selectStart = RagLatencyTrace.now();
         SelectionWithBudget selection = selectTopNByScoreWithBudget(
@@ -1217,7 +1135,6 @@ public class RagRetrievalService {
         if (trace != null) {
             trace.addContextSelectMs(RagLatencyTrace.elapsedMs(selectStart));
         }
-        logCellAwareNormalizedRows(question, scored);
         List<DocumentChunk> ordered = sortByDocumentOrder(
                 selection.chunks(), isExpandedQuery || isLockedScope);
 
@@ -1230,43 +1147,10 @@ public class RagRetrievalService {
             trace.setContextStats(ordered.size(), contextChars);
         }
 
-        log.info("[RAG][select] selectedByScore={} finalContexts={} maxContextChars={}",
-                selection.chunks().size(), ordered.size(), maxContextChars);
-        log.info("[RAG][prompt-order] sortedByDocumentOrder=true");
-
         return ordered.stream().map(this::toRetrievedContext).toList();
     }
 
     record SelectionWithBudget(List<DocumentChunk> chunks, boolean budgetLimited) {}
-
-    private void logHybridTopRanks(List<ScoredChunk> scored,
-                                   Set<UUID> anchorChunkIds,
-                                   Map<UUID, Double> keywordScoresByChunkId) {
-        if (!keywordSearchService.isHybridEnabled() || scored == null || scored.isEmpty()) {
-            return;
-        }
-        int limit = Math.min(5, scored.size());
-        for (int i = 0; i < limit; i++) {
-            ScoredChunk sc = scored.get(i);
-            DocumentChunk c = sc.chunk();
-            if (c.getId() == null) {
-                continue;
-            }
-            boolean fromVector = anchorChunkIds != null && anchorChunkIds.contains(c.getId());
-            boolean fromKeyword = keywordScoresByChunkId != null
-                    && keywordScoresByChunkId.containsKey(c.getId());
-            String source = fromVector && fromKeyword ? "BOTH"
-                    : fromVector ? "VECTOR" : fromKeyword ? "KEYWORD" : "EXPANSION";
-            double kScore = keywordScoresByChunkId != null
-                    ? keywordScoresByChunkId.getOrDefault(c.getId(), 0.0) : 0.0;
-            double vScore = fromVector ? 1.0 : 0.0;
-            log.info("[RAG][hybrid-top] rank={} source={} chunkType={} vScore={} kScore={} rScore={}",
-                    i + 1, source, c.getChunkType(),
-                    String.format("%.3f", vScore),
-                    String.format("%.3f", kScore),
-                    String.format("%.4f", sc.finalScore()));
-        }
-    }
 
     static List<DocumentChunk> dedupeCandidates(List<DocumentChunk> chunks) {
         if (chunks == null || chunks.isEmpty()) {
@@ -1389,11 +1273,6 @@ public class RagRetrievalService {
         if (trace != null) {
             trace.addFinalSortMs(RagLatencyTrace.elapsedMs(sortStart));
         }
-        log.info("[RAG][rerank] scorer={} candidates={} cheapScored={} cellAwareCandidates={} "
-                        + "budget={} reason={} droppedByCheapGate={} hybrid={}",
-                scorer, scored.size(), cheapScored.size(),
-                expensiveSubset.stream().filter(c -> "normalized_table_row".equals(c.getChunkType())).count(),
-                budget.expensiveLimit(), budget.reason(), droppedByCheapGate, hybrid);
         return scored;
     }
 
@@ -1704,7 +1583,6 @@ public class RagRetrievalService {
         if (missing.isEmpty()) {
             return result;
         }
-        log.info("[RAG][compare-coverage] missingEntityCoverage labels={}", missing);
         for (String missingLabel : missing) {
             CellAwareTableRowScorer.ParsedStructuredLabel target = labels.stream()
                     .filter(l -> l.raw().equals(missingLabel))
@@ -1871,49 +1749,6 @@ public class RagRetrievalService {
                 .toList();
     }
 
-    private void logCellAwareNormalizedRows(String question, List<ScoredChunk> scored) {
-        if (question == null || scored == null || scored.isEmpty()) {
-            return;
-        }
-        QuerySignalExtractor.QuerySignals signals = QuerySignalExtractor.extract(question);
-        if (!KeywordSearchService.isTableLikeQuery(signals, question)) {
-            return;
-        }
-        log.info("[RAG][cell-aware] signals identifiers={} labels={} ngrams={}",
-                signals.identifiers(), signals.structuredLabels(),
-                signals.ngrams().size() > 5 ? signals.ngrams().subList(0, 5) : signals.ngrams());
-        int logged = 0;
-        for (ScoredChunk sc : scored) {
-            if (!"normalized_table_row".equals(sc.chunk().getChunkType())) {
-                continue;
-            }
-            if (logged >= 10) {
-                break;
-            }
-            DocumentChunk c = sc.chunk();
-            CellAwareTableRowScorer.CellAwareScore cs =
-                    CellAwareTableRowScorer.score(c, signals, question);
-            String cellsExcerpt = Optional.ofNullable(c.getCellsJson()).orElse("");
-            if (cellsExcerpt.length() > 120) {
-                cellsExcerpt = cellsExcerpt.substring(0, 120) + "…";
-            }
-            if (cellsExcerpt.isBlank()) {
-                cellsExcerpt = CellAwareTableRowScorer.parseCells(c).toString();
-                if (cellsExcerpt.length() > 120) {
-                    cellsExcerpt = cellsExcerpt.substring(0, 120) + "…";
-                }
-            }
-            log.info("[RAG][cell-aware-top] rank={} rowIndex={} table={} cellScore={} finalScore={} cells={}",
-                    logged + 1,
-                    c.getRowIndex(),
-                    c.getTableName(),
-                    String.format("%.2f", cs.total()),
-                    String.format("%.4f", sc.finalScore()),
-                    cellsExcerpt);
-            logged++;
-        }
-    }
-
     static List<DocumentChunk> sortByDocumentOrder(List<DocumentChunk> chunks, boolean prioritizeSummaries) {
         if (chunks == null || chunks.isEmpty()) {
             return List.of();
@@ -2043,11 +1878,9 @@ public class RagRetrievalService {
                 .anyMatch(s -> parentSectionId.equals(s.getSectionKey()));
 
         if (parentExists) {
-            log.debug("[RAG] findReasonableLockRoot: '{}' → parent '{}' (exists)", sectionId, parentSectionId);
             return parentSectionId;
         }
 
-        log.debug("[RAG] findReasonableLockRoot: '{}' → parent '{}' NOT found, using original", sectionId, parentSectionId);
         return sectionId;
     }
 

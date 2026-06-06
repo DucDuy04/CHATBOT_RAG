@@ -150,8 +150,6 @@ public class ChatService {
         RagTokenAudit.begin(auditMode, widgetId, session.getSessionKey().toString());
 
         try {
-        log.info("[Chat] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
-
         saveChatMessage(session, MessageRole.USER, question, null);
 
         TopKResolution topKResolution = resolveRetrievalTopK(widgetId, request.getTopK());
@@ -160,9 +158,6 @@ public class ChatService {
         QueryAnalyzerService.QueryType queryType = queryTypeFromRetrievalResult(retrievalResult);
         List<RetrievedContext> contexts = retrievalResult.contexts();
         String lockedScopeLabel = retrievalResult.lockedScopeLabel();
-
-        log.info("[Chat] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
-                contexts.size(), widgetId, lockedScopeLabel != null ? lockedScopeLabel : "none");
 
         int sourcePresentationCap = resolveSourcePresentationCap(request, topKResolution);
         long sourceStart = RagLatencyTrace.now();
@@ -178,7 +173,6 @@ public class ChatService {
                 queryTypeHint = "TABLE_LOOKUP";
             } else {
                 queryTypeHint = "TABLE_LIKE";
-                log.info("[Chat] text_table_like chunk detected → overriding queryTypeHint to TABLE_LIKE");
             }
         } else {
             queryTypeHint = queryType.name();
@@ -263,8 +257,6 @@ public class ChatService {
                 }
             };
             try {
-                log.info("[Stream] Nhận câu hỏi session={}, widgetId={}: {}", session.getId(), widgetId, question);
-
                 saveChatMessage(session, MessageRole.USER, question, null);
 
                 TopKResolution streamTopK = resolveRetrievalTopK(widgetId, request.getTopK());
@@ -273,9 +265,6 @@ public class ChatService {
                 QueryAnalyzerService.QueryType streamQueryType = queryTypeFromRetrievalResult(streamResult);
                 List<RetrievedContext> contexts = streamResult.contexts();
                 String streamLockedScope = streamResult.lockedScopeLabel();
-
-                log.info("[Stream] Retrieval expanded được {} contexts cho widgetId={} lockedScope={}",
-                        contexts.size(), widgetId, streamLockedScope != null ? streamLockedScope : "none");
 
                 int sourcePresentationCap = resolveSourcePresentationCap(request, streamTopK);
                 long sourceStart = RagLatencyTrace.now();
@@ -291,7 +280,6 @@ public class ChatService {
                         streamQueryTypeHint = "TABLE_LOOKUP";
                     } else {
                         streamQueryTypeHint = "TABLE_LIKE";
-                        log.info("[Chat] text_table_like chunk detected → overriding queryTypeHint to TABLE_LIKE");
                     }
                 } else {
                     streamQueryTypeHint = streamQueryType.name();
@@ -673,8 +661,6 @@ public class ChatService {
                     .orElse(null);
         }
         TopKResolution resolution = resolveTopK(requestTopK, configuredTopK);
-        log.info("[RAG][topN] finalContextTopN source={} requested={} configured={} effective={}",
-                resolution.source(), resolution.requested(), resolution.configured(), resolution.effective());
         return resolution;
     }
 
@@ -749,20 +735,6 @@ public class ChatService {
                 baseResolution.requestedMaxTokens(),
                 baseResolution.configuredMaxTokens(),
                 new LlmGenerationOptions(baseResolution.effective().temperature(), adaptiveMaxTokens)
-        );
-        log.info(
-                "[LLM] generation options tempSource={} maxTokensSource={} "
-                        + "requestedTemp={} configuredTemp={} requestedMaxTokens={} configuredMaxTokens={} "
-                        + "effectiveTemperature={} effectiveMaxTokens={} adaptiveReason={}",
-                resolution.temperatureSource(),
-                resolution.maxTokensSource(),
-                resolution.requestedTemperature(),
-                resolution.configuredTemperature(),
-                resolution.requestedMaxTokens(),
-                resolution.configuredMaxTokens(),
-                resolution.effective().temperature(),
-                resolution.effective().maxTokens(),
-                adaptiveMaxTokensReason(question, queryType)
         );
         return resolution;
     }
@@ -905,11 +877,6 @@ public class ChatService {
         int limit = Math.min(deduped.size(), cap);
         List<RetrievedContext> limited = deduped.subList(0, limit);
 
-        if (limited.size() < contexts.size()) {
-            log.info("[Chat] Response sources capped: {} retrieved → {} deduped → {} returned (cap={})",
-                    contexts.size(), deduped.size(), limited.size(), cap);
-        }
-
         return limited.stream().map(this::toSourceDto).toList();
     }
 
@@ -930,8 +897,6 @@ public class ChatService {
         if (sources.size() <= MAX_REFUSAL_RESPONSE_SOURCES) {
             return sources;
         }
-        log.info("[Chat] Leading refusal-like answer (OOS/pivot) → response sources {} → {}",
-                sources.size(), MAX_REFUSAL_RESPONSE_SOURCES);
         return List.copyOf(sources.subList(0, MAX_REFUSAL_RESPONSE_SOURCES));
     }
 

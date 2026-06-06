@@ -83,7 +83,6 @@ public class RerankService {
      */
     public RerankResult rerank(String query, List<DocumentChunk> chunks, int topN) {
         if (!rerankEnabled || cohereApiKey == null || cohereApiKey.isBlank()) {
-            log.debug("[Rerank] Bỏ qua — disabled hoặc không có API key.");
             return RerankResult.fallback(chunks);
         }
 
@@ -142,10 +141,6 @@ public class RerankService {
 
                 maxScore = Math.max(maxScore, score);
                 minScore = Math.min(minScore, score);
-
-                log.debug("[Rerank] index={} score={} sectionId={} chunkType={}",
-                        index, String.format("%.4f", score),
-                        chunk.getSectionId(), chunk.getChunkType());
             }
 
             if (minScore == Double.MAX_VALUE) minScore = 0.0;

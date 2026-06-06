@@ -148,15 +148,12 @@ public class LlmQueryClassifier {
             try {
                 queryType = QueryAnalyzerService.QueryType.valueOf(typeStr);
             } catch (IllegalArgumentException ex) {
-                log.debug("[QueryAnalysis][LLM] unknown queryType '{}' in response", typeStr);
                 return QueryAnalysisResult.ofFallback(
                         QueryAnalyzerService.QueryType.NORMAL_FACT, "unknown type:" + typeStr);
             }
 
             double confidence = node.path("confidence").asDouble(0.5);
             if (confidence < minAcceptedConfidence) {
-                log.debug("[QueryAnalysis][LLM] confidence {} below threshold {}",
-                        confidence, minAcceptedConfidence);
                 return QueryAnalysisResult.ofFallback(
                         QueryAnalyzerService.QueryType.NORMAL_FACT,
                         "confidence too low: " + confidence);
@@ -176,7 +173,6 @@ public class LlmQueryClassifier {
             return QueryAnalysisResult.ofLlm(queryType, confidence, evidence);
 
         } catch (Exception ex) {
-            log.debug("[QueryAnalysis][LLM] json parse error: {}", ex.getMessage());
             return QueryAnalysisResult.ofFallback(
                     QueryAnalyzerService.QueryType.NORMAL_FACT,
                     "parse error: " + ex.getClass().getSimpleName());

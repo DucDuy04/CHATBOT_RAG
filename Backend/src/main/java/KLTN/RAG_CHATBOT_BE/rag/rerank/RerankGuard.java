@@ -94,24 +94,18 @@ public class RerankGuard {
 
         // Rule A — too few candidates
         if (candidateCount <= skipWhenCandidatesLte) {
-            log.info("[RAG][rerank-guard] skipped reason=CANDIDATE_COUNT_LTE_THRESHOLD candidates={}",
-                    candidateCount);
             return new Decision(true, SkipReason.CANDIDATE_COUNT_LTE_THRESHOLD, candidateCount, 0.0);
         }
 
         // Rule B — high confidence score gap
         double topScoreGap = topCheapScore - secondCheapScore;
         if (topScoreGap >= skipWhenTopScoreGapGte) {
-            log.info("[RAG][rerank-guard] skipped reason=TOP_SCORE_GAP candidates={} gap={}",
-                    candidateCount, String.format("%.4f", topScoreGap));
             return new Decision(true, SkipReason.TOP_SCORE_GAP, candidateCount, topScoreGap);
         }
 
         // Rule D — exact TABLE_LOOKUP with strong pre-score match
         if (queryType == QueryAnalyzerService.QueryType.TABLE_LOOKUP
                 && topCheapScore >= skipExactLookupWhenCellScoreGte) {
-            log.info("[RAG][rerank-guard] skipped reason=EXACT_LOOKUP_STRONG_CELL_MATCH candidates={} topScore={}",
-                    candidateCount, String.format("%.4f", topCheapScore));
             return new Decision(true, SkipReason.EXACT_LOOKUP_STRONG_CELL_MATCH, candidateCount, topScoreGap);
         }
 

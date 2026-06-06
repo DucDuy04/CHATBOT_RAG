@@ -201,7 +201,7 @@ public class EmbeddingService {
 
         List<Float> queryVector = getCachedOrEmbedQuery(query);
         if (queryVector.isEmpty()) {
-            log.warn("[EmbeddingSearch] Query embedding is empty for query='{}'", query);
+            log.warn("[EmbeddingSearch] Query embedding is empty");
             return List.of();
         }
 
@@ -234,7 +234,6 @@ public class EmbeddingService {
         }
 
         List<?> points = response == null ? List.of() : asList(response.get("result"));
-        log.info("[EmbeddingSearch] query='{}', widgetId={}, matches={}", query, widgetId, points.size());
 
         return points.stream()
                 .map(this::toTextSegment)
@@ -247,14 +246,12 @@ public class EmbeddingService {
         long now = System.currentTimeMillis();
         CachedEmbedding cached = queryEmbeddingCache.get(cacheKey);
         if (cached != null && now - cached.createdAtMs() <= QUERY_EMBEDDING_CACHE_TTL_MS) {
-            log.info("[RAG][embedding-cache] hit=true keyHash={}", cacheKey.hashCode());
             return cached.vector();
         }
         if (cached != null) {
             queryEmbeddingCache.remove(cacheKey);
         }
 
-        log.info("[RAG][embedding-cache] hit=false keyHash={}", cacheKey.hashCode());
         RagTokenAudit.incrementEmbeddingCalls();
         long embedStart = RagLatencyTrace.now();
         Embedding queryEmbedding;

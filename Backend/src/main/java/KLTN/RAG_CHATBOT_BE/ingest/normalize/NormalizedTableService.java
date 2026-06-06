@@ -709,20 +709,15 @@ public class NormalizedTableService {
         }
         int pageStart = request.pageStart() > 0 ? request.pageStart() : 1;
         if (state.lastPage() > 0 && pageStart - state.lastPage() > MAX_LOGICAL_TABLE_PAGE_GAP) {
-            log.debug("[NormalizedTable] Reset logical table: page gap {} (last={} new={})",
-                    pageStart - state.lastPage(), state.lastPage(), pageStart);
             return null;
         }
         if (request.captionBeforeTable() != null && !request.captionBeforeTable().isBlank()
                 && state.tableName() != null
                 && !request.captionBeforeTable().trim().equalsIgnoreCase(state.tableName().trim())) {
-            log.debug("[NormalizedTable] Reset logical table: new caption '{}'", request.captionBeforeTable());
             return null;
         }
         int span = request.pageEnd() - request.pageStart();
         if (span > 30) {
-            log.debug("[NormalizedTable] Wide page span {}-{} — not carrying tableName across section",
-                    request.pageStart(), request.pageEnd());
             return null;
         }
         return state;

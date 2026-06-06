@@ -61,8 +61,6 @@ public class ChunkingService2 {
 
         // Phase 0: Pre-compute parent-child relationships từ danh sách sections
         Map<String, List<Section>> parentToDirectChildren = buildParentChildMap(sections);
-        log.info("[Chunk] Parent sections detected: {} (with at least one direct child)",
-                parentToDirectChildren.size());
 
         List<DocumentChunk> finalChunks = new ArrayList<>();
         int globalOrder = 0;
@@ -82,10 +80,6 @@ public class ChunkingService2 {
                     : "parent_idx_" + sectionIndex;
             String headingPathText = buildHeadingPathText(headingStack, section.header(), sectionNumber, sectionIndex);
 
-            log.debug("[Chunk] Section start: idx={} order={} id={} parentId={} level={} header='{}' path='{}'",
-                    sectionIndex, sectionOrder, sectionId, parentId, headingLevel,
-                    safeText(section.header(), ""), headingPathText);
-
             // --- Phase 1a: Nếu section này là PARENT → tạo parent_section_summary chunk ---
             List<Section> directChildren = parentToDirectChildren.get(sectionId);
             boolean isParentSection = directChildren != null && !directChildren.isEmpty();
@@ -100,8 +94,6 @@ public class ChunkingService2 {
                         sectionId, parentId, null, headingPathText,
                         globalOrder, sectionOrder, headingLevel, childSectionIds));
 
-                log.debug("[Chunk] +parent_section_summary sectionId={} children=[{}] globalOrder={}",
-                        sectionId, childSectionIds, globalOrder);
                 globalOrder++;
             }
 
@@ -111,15 +103,7 @@ public class ChunkingService2 {
             boolean hadExplicitTable = enrichedContent != null
                     && (enrichedContent.contains("[TABLE_START]") || enrichedContent.contains("[RAW_TABLE_REF:"));
             if (!hadExplicitTable) {
-                String beforeDetect = enrichedContent;
                 enrichedContent = detectAndConvertTextTables(enrichedContent);
-                boolean pseudoTableFound = enrichedContent != null
-                        && enrichedContent.contains("[TABLE_START]")
-                        && (beforeDetect == null || !beforeDetect.contains("[TABLE_START]"));
-                if (pseudoTableFound) {
-                    log.info("[Chunk] Pseudo-table detected in section '{}' (id={}) — " +
-                            "content converted to normalized table chunks.", sectionId, sectionId);
-                }
             }
 
             List<String> segments = splitByTableBlocks(enrichedContent);
@@ -206,8 +190,6 @@ public class ChunkingService2 {
                     for (String textChunk : chunkPlainText(stripped)) {
                         if (normalizedTableService.shouldDropLeakyTextChunk(textChunk, sectionSuppressProfile)) {
                             lastIngestMetrics.incDroppedLeakyTextChunks();
-                            log.debug("[Chunk] Dropped leaky text chunk in section={} len={}",
-                                    sectionId, textChunk.length());
                             continue;
                         }
                         if (textChunk.isBlank()) {
@@ -226,18 +208,11 @@ public class ChunkingService2 {
 
             // --- Logging: phân biệt parent rỗng (bình thường) vs section thật sự rỗng ---
             if (contentChunksThisSection == 0) {
-                if (isParentSection) {
-                    log.info("[Chunk] Parent section '{}' has no direct content; " +
-                            "created parent_section_summary from {} children metadata.",
-                            sectionId, directChildren.size());
-                } else {
+                if (!isParentSection) {
                     log.warn("[Chunk] WARNING: Section '{}' has no content and no children — " +
                             "this section will not be indexed via content chunks.",
                             sectionId);
                 }
-            } else {
-                log.debug("[Chunk] Section done: id='{}' level={} contentChunks={} isParent={}",
-                        sectionId, headingLevel, contentChunksThisSection, isParentSection);
             }
         }
 
@@ -249,73 +224,12 @@ public class ChunkingService2 {
 
         lastIngestMetrics.tallyFromChunks(finalChunks);
 
-        log.info("[Chunk] processSections2 done: sections={} totalChunks={} " +
-                "parentSummaries={} sectionSummaries={} tableSummaries={} normalizedRows={} text={} " +
-                "detectedTables={} normalizedTables={} failedTables={} suppressedRawChars={} " +
-                "suppressedLines={} tableLikeLinesDropped={} droppedLeakyTextChunks={} " +
-                "rowsWithCellsJson={} rowsWithOnlyOneNonEmptyCell={} rowsWithEmptyCellsRatio={} " +
-                "rowsWithGenericColumnKeys={} continuationRowsMerged={} multiRowHeadersMerged={} " +
-                "crossPageHeaderCarryCount={} sparseRowsRepaired={} droppedCellFragments={} " +
-                "headerSlotsCreated={} headerSlotsFallbackGeneric={} headerSiblingContaminationPrevented={} " +
-                "headerAmbiguousFallbackCount={} avgHeaderTokenCountBefore={} avgHeaderTokenCountAfter={} " +
-                "noisyComposedHeaderBeforeCount={} noisyComposedHeaderAfterCount={} " +
-                "compactHeaderSuspiciousCount={} compactHeaderFallbackCount={} " +
-                "spanAwareHeaderSelectedCount={} multiColumnHeaderRejectedCount={} " +
-                "headerFragmentsWithCoordinates={} headerFragmentsWithoutCoordinates={} " +
-                "valuesPreservedCount={} valuesDroppedCount={} rawTableModelsCreated={} " +
-                "rawTableModelsCreatedFromSpreadsheet={} rawTableModelsCreatedFromBasic={} " +
-                "rawTableCellsWithCoordinates={} rawTableCellsMissingCoordinates={} " +
-                "structuredTablesNormalized={} markdownTablesNormalizedLegacy={} " +
-                "pdfTablesUsingMarkdownBridge={} spreadsheetTablesUsingMarkdownBridge={} " +
-                "basicTablesUsingMarkdownBridge={} pageAttributionPhysicalCount={}",
+        log.info("[Chunk] processSections2 done: sections={} totalChunks={} parentSummaries={} "
+                        + "tablesDetected={} tablesNormalized={} tablesFailed={}",
                 sections.size(), finalChunks.size(), parentSummaryCount,
-                finalChunks.stream().filter(c -> "section_summary".equals(c.chunkType())).count(),
-                finalChunks.stream().filter(c -> "table_summary".equals(c.chunkType())).count(),
-                finalChunks.stream().filter(c -> "normalized_table_row".equals(c.chunkType())).count(),
-                finalChunks.stream().filter(c -> "text".equals(c.chunkType())).count(),
                 lastIngestMetrics.getDetectedTables(),
                 lastIngestMetrics.getNormalizedTables(),
-                lastIngestMetrics.getFailedTables(),
-                lastIngestMetrics.getSuppressedRawTableTextChars(),
-                lastIngestMetrics.getSuppressedLines(),
-                lastIngestMetrics.getTableLikeLinesDropped(),
-                lastIngestMetrics.getDroppedLeakyTextChunks(),
-                lastIngestMetrics.getRowsWithCellsJson(),
-                lastIngestMetrics.getRowsWithOnlyOneNonEmptyCell(),
-                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getRowsWithEmptyCellsRatio()),
-                lastIngestMetrics.getRowsWithGenericColumnKeys(),
-                lastIngestMetrics.getContinuationRowsMerged(),
-                lastIngestMetrics.getMultiRowHeadersMerged(),
-                lastIngestMetrics.getCrossPageHeaderCarryCount(),
-                lastIngestMetrics.getSparseRowsRepaired(),
-                lastIngestMetrics.getDroppedCellFragments(),
-                lastIngestMetrics.getHeaderSlotsCreated(),
-                lastIngestMetrics.getHeaderSlotsFallbackGeneric(),
-                lastIngestMetrics.getHeaderSiblingContaminationPrevented(),
-                lastIngestMetrics.getHeaderAmbiguousFallbackCount(),
-                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getAvgHeaderTokenCountBefore()),
-                String.format(Locale.ROOT, "%.3f", lastIngestMetrics.getAvgHeaderTokenCountAfter()),
-                lastIngestMetrics.getNoisyComposedHeaderBeforeCount(),
-                lastIngestMetrics.getNoisyComposedHeaderAfterCount(),
-                lastIngestMetrics.getCompactHeaderSuspiciousCount(),
-                lastIngestMetrics.getCompactHeaderFallbackCount(),
-                lastIngestMetrics.getSpanAwareHeaderSelectedCount(),
-                lastIngestMetrics.getMultiColumnHeaderRejectedCount(),
-                lastIngestMetrics.getHeaderFragmentsWithCoordinates(),
-                lastIngestMetrics.getHeaderFragmentsWithoutCoordinates(),
-                lastIngestMetrics.getValuesPreservedCount(),
-                lastIngestMetrics.getValuesDroppedCount(),
-                lastIngestMetrics.getRawTableModelsCreated(),
-                lastIngestMetrics.getRawTableModelsCreatedFromSpreadsheet(),
-                lastIngestMetrics.getRawTableModelsCreatedFromBasic(),
-                lastIngestMetrics.getRawTableCellsWithCoordinates(),
-                lastIngestMetrics.getRawTableCellsMissingCoordinates(),
-                lastIngestMetrics.getStructuredTablesNormalized(),
-                lastIngestMetrics.getMarkdownTablesNormalizedLegacy(),
-                lastIngestMetrics.getPdfTablesUsingMarkdownBridge(),
-                lastIngestMetrics.getSpreadsheetTablesUsingMarkdownBridge(),
-                lastIngestMetrics.getBasicTablesUsingMarkdownBridge(),
-                lastIngestMetrics.getPageAttributionPhysicalCount());
+                lastIngestMetrics.getFailedTables());
 
         return finalChunks;
     }
@@ -686,13 +600,7 @@ public class ChunkingService2 {
                     String markdown = convertLinesToMarkdownTable(candidateBlock);
                     if (markdown != null) {
                         result.append("\n[TABLE_START]\n").append(markdown).append("[TABLE_END]\n");
-                        log.info("[Chunk] Pseudo-table CONVERTED: {} lines → Markdown table " +
-                                "(cols={}, consistency check passed)",
-                                candidateBlock.size(),
-                                candidateBlock.get(0).trim().split("\\s{2,}|\t").length);
                     } else {
-                        log.info("[Chunk] Pseudo-table REJECTED: {} candidate lines → suppressed (no fallback text).",
-                                candidateBlock.size());
                         lastIngestMetrics.addSuppressedRawTableTextChars(
                                 candidateBlock.stream().mapToInt(String::length).sum());
                     }
@@ -709,11 +617,7 @@ public class ChunkingService2 {
             String markdown = convertLinesToMarkdownTable(candidateBlock);
             if (markdown != null) {
                 result.append("\n[TABLE_START]\n").append(markdown).append("[TABLE_END]\n");
-                log.info("[Chunk] Pseudo-table CONVERTED (end of text): {} lines → Markdown table",
-                        candidateBlock.size());
             } else {
-                log.info("[Chunk] Pseudo-table REJECTED (end of text): {} candidate lines → suppressed.",
-                        candidateBlock.size());
                 lastIngestMetrics.addSuppressedRawTableTextChars(
                         candidateBlock.stream().mapToInt(String::length).sum());
             }
@@ -833,9 +737,6 @@ public class ChunkingService2 {
             log.warn("[Chunk][Validation] FAIL: expected {} parent_section_summary chunks, got {}. " +
                     "Parent sections: {}", expectedParentSummaries, actualParentSummaries,
                     parentToDirectChildren.keySet());
-        } else {
-            log.info("[Chunk][Validation] parent_section_summary: OK ({}/{})",
-                    actualParentSummaries, expectedParentSummaries);
         }
 
         // parent_section_summary phải có childSectionIds
@@ -852,11 +753,6 @@ public class ChunkingService2 {
         if (blankCount > 0) {
             log.warn("[Chunk][Validation] {} chunks có content rỗng — sẽ không được index!", blankCount);
         }
-
-        // Đếm theo loại để dễ debug
-        Map<String, Long> byType = chunks.stream()
-                .collect(Collectors.groupingBy(c -> safeText(c.chunkType(), "unknown"), Collectors.counting()));
-        log.info("[Chunk][Validation] Chunk distribution: {}", byType);
 
         // Kiểm tra retrieval test: mỗi parent_section_summary phải có childSectionIds
         // trỏ đến ít nhất 1 sectionId tồn tại trong các chunk khác
